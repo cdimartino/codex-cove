@@ -146,8 +146,8 @@ commit after tagging.
 
 ## 4. CI and branch protection
 
-`.github/workflows/ci.yml` has two required jobs on pushes, pull requests, and
-manual dispatches:
+`.github/workflows/ci.yml` has two required jobs on pushes to `main`, pull
+requests, and manual dispatches:
 
 - **Build, test, and package** runs the build, unit/foundation suites, Rust
   static checks, shell syntax checks, release compilation, extension packaging,
