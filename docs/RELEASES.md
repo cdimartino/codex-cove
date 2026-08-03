@@ -204,6 +204,14 @@ review rules protect access to distribution credentials; repository secrets
 are also technically supported by the workflow when repository governance
 requires them. Never store credentials in plaintext files or workflow inputs.
 
+Create an active tag ruleset for `refs/tags/v*` that restricts both updates and
+deletions, with no routine bypass actor. Release tags are immutable inputs: if a
+tag is wrong, cut a new version instead of moving or deleting the old tag. The
+workflow independently resolves the exact tag target through GitHub's API at
+preflight, at each job boundary, after draft creation, immediately before
+publication, and after publication. These checks complement the ruleset and
+fail closed if the tag ever stops naming the reviewed commit.
+
 The workflow requires all of the following secrets:
 
 | Secret | Purpose |

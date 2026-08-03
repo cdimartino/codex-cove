@@ -51,6 +51,7 @@ jobs:
         shell: bash
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_CONFIRM: ${{ inputs.confirm }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
@@ -68,12 +69,11 @@ jobs:
             exit 1
           fi
 
-          git fetch --force origin \
-            "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH" \
-            "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          source_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-          if ! git merge-base --is-ancestor "$source_sha" "refs/remotes/origin/$DEFAULT_BRANCH"; then
-            echo "$RELEASE_TAG is not on origin/$DEFAULT_BRANCH." >&2
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          source_sha="$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")"
+          git cat-file -e "$source_sha^{commit}"
+          if ! git merge-base --is-ancestor "$source_sha" "$GITHUB_SHA"; then
+            echo "$RELEASE_TAG is not on the dispatched $DEFAULT_BRANCH commit." >&2
             exit 1
           fi
 
@@ -92,11 +92,12 @@ jobs:
         shell: bash
         env:
           EXPECTED_SHA: ${{ steps.tag.outputs.source-sha }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_SHA"
+          test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$EXPECTED_SHA"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -210,12 +211,12 @@ jobs:
         shell: bash
         env:
           EXPECTED_SHA: ${{ needs.preflight.outputs.source-sha }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
         run: |
           set -euo pipefail
-          git fetch --force origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$EXPECTED_SHA"
+          test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$EXPECTED_SHA"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -427,18 +428,20 @@ jobs:
       - name: Verify immutable release target
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
         run: |
           set -euo pipefail
-          git fetch --force origin "+refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
-          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
 
       - name: Stage, verify, and publish GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
@@ -452,6 +455,7 @@ jobs:
             --generate-notes \
             --title "Codex Cove $RELEASE_TAG"
 
+          test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           mkdir -p release-verification
           gh release download "$RELEASE_TAG" --dir release-verification
@@ -475,5 +479,7 @@ jobs:
             shasum -a 256 -c SHA256SUMS
           )
 
+          test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
           gh release edit "$RELEASE_TAG" --draft=false
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
