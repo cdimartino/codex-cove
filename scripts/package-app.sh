@@ -41,7 +41,6 @@ fi
 
 cd "$repository_root"
 
-"$repository_root/scripts/build-icon.sh"
 swift build -c release --product CodexCove
 cargo build --locked --release --manifest-path helper/Cargo.toml
 
@@ -76,11 +75,12 @@ if [ -d Resources/Themes ]; then
     cp -rf Resources/Themes "$resources_path/Themes"
 fi
 
-if [ -f Resources/AppIcon.icns ]; then
-    cp -f Resources/AppIcon.icns "$resources_path/AppIcon.icns"
-    /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$contents_path/Info.plist" 2>/dev/null ||
-        /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$contents_path/Info.plist"
-fi
+icon_resource=Resources/AppIcon.icns
+[ -f "$icon_resource" ] && [ ! -L "$icon_resource" ] ||
+    fail "expected committed app icon is missing or unsafe"
+cp -f "$icon_resource" "$resources_path/AppIcon.icns"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$contents_path/Info.plist" 2>/dev/null ||
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$contents_path/Info.plist"
 
 extension_package=extension/dist/cove-extension.vsix
 [ -f "$extension_package" ] && [ ! -L "$extension_package" ] ||
