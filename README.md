@@ -142,7 +142,7 @@ The complete interaction reference is in the [User Guide](docs/USER_GUIDE.md).
 ## Development
 
 ```sh
-make deps       # resolve Swift/Rust packages and npm ci
+make deps       # resolve locked dependencies and reject npm advisories
 make bootstrap  # read-only toolchain and dependency checks
 make build      # Swift app, Rust helper, TypeScript extension
 make test       # Swift foundations, Rust tests, extension tests
@@ -159,13 +159,14 @@ and can be regenerated after an intentional project-spec change:
 xcodegen generate --spec XcodeProject.yml --project .
 ```
 
-GitHub CI runs locked builds, tests, static checks, UI-test compilation, an
-ad-hoc packaging smoke test, and checksummed cross-builds for all four remote
-helper targets on pushes and pull requests without distribution secrets. Binary
-publication is a separate manual workflow: it accepts only an existing strict
-version tag on the protected default branch and fails unless candidate evidence,
-Developer ID signing, notarization, Gatekeeper assessment, and checksums all
-pass. See [Release Process](docs/RELEASES.md).
+GitHub CI runs locked dependency installation with a zero-advisory npm audit,
+builds, tests, static checks, UI-test compilation, an ad-hoc packaging smoke
+test, and checksummed cross-builds for all four remote helper targets. Both
+Linux-musl targets compile every Cargo target before their release binaries are
+collected. Binary publication is a separate manual workflow: it accepts only
+an existing strict version tag on the protected default branch and fails unless
+candidate evidence, Developer ID signing, notarization, Gatekeeper assessment,
+and checksums all pass. See [Release Process](docs/RELEASES.md).
 
 ## Project map
 

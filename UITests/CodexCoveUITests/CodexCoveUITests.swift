@@ -102,9 +102,11 @@ final class CodexCoveUITests: XCTestCase {
 
     @MainActor
     func testOnlyWaitingTaskIsDiscoverableWithinFiveSeconds() {
-        let startedAt = Date()
         let app = launchFixture("mixed-20")
         let waitingRow = element(taskQueueRowIdentifier("fixture-task-3"), in: app)
+        // Measure the in-app discovery path, not XCTest's cold process launch,
+        // Accessibility loading, or automation-session bootstrap.
+        let startedAt = Date()
 
         XCTAssertTrue(
             waitingRow.waitForExistence(timeout: 5),

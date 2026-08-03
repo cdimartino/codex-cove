@@ -7,15 +7,17 @@ do not edit this source-candidate input to record release results. The
 repository-root `SOURCE_CANDIDATE.receipt` is the sole release-current evidence
 record and is deliberately excluded from the source manifest.
 
-The 2026-08-03 editor process-test timeout hardening supersedes source candidate
-`a28da0923ef9526a7ebe957e88c90fbb3a12ca99a2a1d56bd9cb6620fea75067`;
-every candidate-bound result is reset.
-The replacement candidate covers the deterministic editor process tests,
-patched extension packaging dependency, Cask template, renderer, offline audit,
-rollback fixtures, launch-at-login maintenance entry points, helper
-compensation, documentation, and release handoff. Strict online audit plus a
-real Homebrew install, Doctor, upgrade-or-reinstall, and uninstall remain
-post-publication gates before the generated Cask update can merge.
+The 2026-08-03 release-gate reproducibility and UI timing hardening supersedes
+source candidate
+`89556d520ae23eb829fe9793747cdf2d40a161503ae5a86d51b5dd363eb53997`;
+every candidate-bound result is reset. The replacement candidate covers the
+deterministic editor process tests, zero-advisory dependency gate, Linux-musl
+all-target cross-builds, cold-launch-safe UI timing, patched extension packaging
+dependency, Cask template, renderer, offline audit, rollback fixtures,
+launch-at-login maintenance entry points, helper compensation, documentation,
+and release handoff. Strict online audit plus a real Homebrew install, Doctor,
+upgrade-or-reinstall, and uninstall remain post-publication gates before the
+generated Cask update can merge.
 
 ## Purpose / Big Picture
 
@@ -78,6 +80,13 @@ observing its state in the panel demonstrates the result.
   `a28da0923ef9526a7ebe957e88c90fbb3a12ca99a2a1d56bd9cb6620fea75067`
   was preserved after its dependency pass but before bootstrap binding; no
   evidence transfers.
+- [x] (2026-08-03) Made the dependency gate reject every current npm advisory,
+  made the canonical remote builder compile all Cargo targets for both
+  Linux-musl architectures, and moved the waiting-row clock after XCTest's cold
+  application bootstrap. Candidate
+  `89556d520ae23eb829fe9793747cdf2d40a161503ae5a86d51b5dd363eb53997`
+  and its focused UI timing failure were preserved after dependency, bootstrap,
+  build, component, and static passes; no evidence transfers.
 - [x] (2026-07-30 23:05Z) Implemented versioned event, decision, interactive
   request, and theme schemas with cross-language fixtures and bounded framing.
 - [x] (2026-07-30 23:05Z) Implemented the Rust shim, direct/durable app-server

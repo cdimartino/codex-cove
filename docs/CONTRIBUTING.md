@@ -19,8 +19,9 @@ make test
 
 The minimum supported toolchain is documented in
 [Installation](INSTALLATION.md#requirements). `make deps` uses checked-in
-dependency locks; `make bootstrap` reports missing tools without installing
-machine-level packages.
+dependency locks, performs a clean extension install, and fails if the current
+npm audit reports any advisory. `make bootstrap` reports missing tools without
+installing machine-level packages.
 
 Use `make run` for an uninstalled development app. It intentionally does not
 modify hooks, shell links, editor extensions, login items, or remote hosts.
@@ -78,7 +79,14 @@ sh -n scripts/*.sh Tests/*.sh
 
 The UI test target requires full Xcode 26.6+ and an unlocked console. The Make
 target keeps the Mac awake during the run and refuses to start when it cannot
-prove the console is unlocked.
+prove the console is unlocked. Timing assertions that describe an in-app action
+must start after `XCUIApplication.launch()` returns so cold XCTest and
+Accessibility bootstrap time is not attributed to the product.
+
+`make remote-artifacts` builds both macOS helper binaries and invokes
+`cargo zigbuild --all-targets` for each Linux-musl architecture before copying
+the release executable. This keeps CI, packaging, and the release receipt's two
+Linux all-target rows on one implementation path.
 
 ## Generated and authoritative files
 

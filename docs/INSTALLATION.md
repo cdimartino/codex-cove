@@ -95,9 +95,12 @@ make test
 make install
 ```
 
-`make deps` resolves Swift packages, fetches the locked Rust graph, and runs
-`npm ci` for the editor extension. It does not install machine-level tools.
-`make bootstrap` is a read-only version and dependency check.
+`make deps` resolves Swift packages, fetches the locked Rust graph, runs
+`npm ci` for the editor extension, and rejects any current npm advisory with
+`npm audit --audit-level=info`. It does not install machine-level tools.
+`make bootstrap` is a read-only version and dependency check. Remote-inclusive
+packages additionally compile every Cargo target for both Linux-musl
+architectures before collecting the four release helpers.
 
 The install target:
 

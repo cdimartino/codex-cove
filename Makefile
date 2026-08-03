@@ -6,7 +6,7 @@ XCODE_DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 deps:
 	swift package resolve --disable-sandbox
 	cargo fetch --locked --manifest-path helper/Cargo.toml
-	@if [ -f extension/package-lock.json ]; then npm --prefix extension ci; fi
+	@if [ -f extension/package-lock.json ]; then npm --prefix extension ci && npm --prefix extension audit --audit-level=info; fi
 
 bootstrap:
 	./scripts/bootstrap.sh

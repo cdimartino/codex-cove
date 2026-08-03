@@ -72,6 +72,7 @@ build_target() {
             --manifest-path "$repository_root/helper/Cargo.toml" \
             --locked \
             --release \
+            --all-targets \
             --target "$target"
     fi
 

@@ -112,6 +112,12 @@ make package-with-remote
 codesign --verify --deep --strict --verbose=2 "build/Codex Cove.app"
 ```
 
+`make deps` is the canonical dependency gate: the extension's locked clean
+install is followed by `npm audit --audit-level=info`, and any advisory blocks
+the release. `make package-with-remote` reaches the canonical remote builder,
+which runs `cargo zigbuild --all-targets` for both Linux-musl architectures
+before it copies and checksums their release executables.
+
 Also complete:
 
 - shell syntax checks for every script;

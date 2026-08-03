@@ -122,6 +122,15 @@ grant no permission. A partial batch authorizes only its stated count; any
 expired, closed, or unusable task that cannot satisfy its listed reuse makes
 the remaining observation `Blocked` or requires a newly approved replacement.
 
+## Automated release-gate provenance
+
+Record the dependency gate as passing only when `make deps` completes its
+locked clean installs and reports zero npm advisories. Record each Linux-musl
+all-target row only from the canonical remote-artifact builder, which invokes
+`cargo zigbuild --all-targets` for both architectures. Do not substitute a
+binary-only cross-build or an audit with a higher severity threshold; CI,
+packaging, and local release evidence must exercise the same Make targets.
+
 ## Result receipt
 
 Use the repository-root `SOURCE_CANDIDATE.receipt` for the release session and
@@ -282,7 +291,7 @@ Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
 current-candidate retests for the two carried editor-window P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=rust_editor_test_timeout_hardening` and
+`source_change_reason=release_gate_reproducibility_and_ui_timing_hardening` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 
