@@ -94,6 +94,19 @@ private struct CoveStoreFoundationTests {
         )
     }
 
+    static func waitUntil(
+        attempts: Int = 500,
+        condition: () async -> Bool
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if await condition() {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return await condition()
+    }
+
     static func main() async {
         do {
             try testUITestTemporaryDirectoryPolicy()
@@ -170,7 +183,11 @@ private struct CoveStoreFoundationTests {
         precondition(store.confirmApproval(for: fixture.request))
         precondition(!store.confirmApproval(for: fixture.request))
         precondition(store.decisionAttemptCount == 1)
-        try? await Task.sleep(for: .milliseconds(75))
+        let successCompleted = await waitUntil {
+            await sender.count() == 1
+                && store.state.pendingDirectRequests.isEmpty
+        }
+        precondition(successCompleted)
         let successSendCount = await sender.count()
         precondition(successSendCount == 1)
         precondition(store.state.pendingDirectRequests.isEmpty)
@@ -190,7 +207,10 @@ private struct CoveStoreFoundationTests {
             )
         )
         precondition(failureStore.confirmApproval(for: fixture.request))
-        try? await Task.sleep(for: .milliseconds(30))
+        let failureReported = await waitUntil {
+            failureStore.decisionDelivery.errorMessage(for: requestKey) != nil
+        }
+        precondition(failureReported)
         precondition(
             failureStore.decisionDelivery.errorMessage(for: requestKey) != nil
         )
@@ -570,7 +590,11 @@ private struct CoveStoreFoundationTests {
         )
         precondition(store.selectApprovalChoice(allow, for: remoteA))
         precondition(store.confirmApproval(for: remoteA))
-        try? await Task.sleep(for: .milliseconds(75))
+        let isolatedCompletion = await waitUntil {
+            await sender.paths() == ["/tmp/remote-a-decision.sock"]
+                && store.state.pendingDirectRequests == [.approval(remoteB)]
+        }
+        precondition(isolatedCompletion)
         let sentPaths = await sender.paths()
         precondition(sentPaths == ["/tmp/remote-a-decision.sock"])
         precondition(
