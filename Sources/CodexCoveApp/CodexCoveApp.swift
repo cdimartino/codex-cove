@@ -7,7 +7,11 @@ struct CodexCoveApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Codex Cove", systemImage: "water.waves") {
+        MenuBarExtra(
+            "Codex Cove",
+            systemImage: "water.waves",
+            isInserted: .constant(!appDelegate.isMaintenanceLaunch)
+        ) {
             CoveMenuBarView(
                 store: appDelegate.store,
                 showCove: appDelegate.showCove,

@@ -191,6 +191,49 @@ newer than the installed app. Prefer reinstalling the matching/newer Cove
 version. Resetting the file should be a deliberate last resort because it loses
 local preferences; do not delete the session database when only settings fail.
 
+## Homebrew install or upgrade fails
+
+The documented tap is public only after the first binary release and matching
+`Casks/codex-cove.rb` land. A `404`, missing Cask, or authentication prompt
+before then does not mean Homebrew should be pointed at a private or unverified
+artifact; use the source or manual release path instead.
+
+Once the Cask is live, refresh and inspect the resolved package before retrying:
+
+```sh
+brew update
+brew info --cask cdimartino/codex-cove/codex-cove
+brew fetch --cask cdimartino/codex-cove/codex-cove
+```
+
+For common failures:
+
+- **An app already exists in `~/Applications`.** If it is a source or manual
+  Cove installation, quit it and run
+  `"$HOME/bin/codex-cove" uninstall --keep-settings` before the Homebrew
+  install. Do not use `--force` to adopt an unverified bundle.
+- **The archive checksum does not match.** Stop. Run `brew update`, confirm the
+  Cask version and release tag agree, and report the mismatch. Do not edit the
+  Cask, use `sha256 :no_check`, replace the release asset, or disable quarantine.
+- **Postflight integration is blocked.** Inspect the install plan and the exact
+  path named by the error. Cove intentionally preserves a modified shim, hook,
+  helper, extension obligation, or manifest instead of overwriting it.
+- **An upgrade or uninstall is blocked.** Keep the app in place while
+  investigating. Homebrew coordinates its app artifact with the helper's
+  package-manager-only `--keep-app --keep-settings` cleanup. Running the ordinary
+  helper uninstall first can remove the app before Homebrew finishes.
+
+After resolving an ownership problem, repair only the published version with:
+
+```sh
+brew reinstall --cask cdimartino/codex-cove/codex-cove
+```
+
+If the public Cask itself is wrong but the GitHub release is valid, use the
+manual verified-release instructions and report the Cask defect. Maintainers
+must correct the generated Cask without moving the release tag or replacing the
+published binary.
+
 ## Install, repair, or uninstall is blocked
 
 The transaction stops when a managed path is missing, modified, replaced, has

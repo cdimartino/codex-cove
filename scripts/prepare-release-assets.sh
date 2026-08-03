@@ -204,6 +204,11 @@ cp -f "$repository_root/SOURCE_CANDIDATE.sha256" \
 cp -f "$repository_root/SOURCE_CANDIDATE.receipt" \
     "$release_root/Codex-Cove-$version-release.receipt"
 
+"$repository_root/scripts/render-homebrew-cask.sh" \
+    "$version" \
+    "$app_archive" \
+    "$release_root/codex-cove.rb" >/dev/null
+
 (
     cd "$release_root"
     find . -type f ! -name SHA256SUMS -print | LC_ALL=C sort | while IFS= read -r artifact; do

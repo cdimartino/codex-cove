@@ -9,11 +9,29 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.2.0` and remains
-> under release validation; no `0.2.0` tag or binary GitHub release has been cut
-> yet. Local packages are signed ad hoc unless a signing identity is supplied.
-> Future distribution artifacts must pass the protected release pipeline below
-> before they are described as Developer ID signed and notarized.
+> **Release status:** the source tree is currently version `0.2.0`. Check
+> [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
+> public binary availability. Local packages are signed ad hoc unless a signing
+> identity is supplied; distribution artifacts must pass the protected release
+> pipeline before they are described as Developer ID signed and notarized.
+
+## Install with Homebrew
+
+For a public GitHub release whose matching Cask has landed, install the
+notarized Apple Silicon app from the explicit public tap:
+
+```sh
+brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew install --cask cdimartino/codex-cove/codex-cove
+```
+
+The Cask installs `Codex Cove.app` in `~/Applications` and runs its bundled
+helper to apply the same current-user Codex hooks, shim, and editor integration
+as the manual installer. It does not approve hook trust or macOS permissions.
+If Homebrew reports that the Cask is unavailable, that version's release-to-tap
+handoff has not landed; use the source quick start below or the verified manual
+release path. See [Installation](docs/INSTALLATION.md#install-with-homebrew) for
+verification, migration, upgrades, and removal.
 
 ## Highlights
 
@@ -97,8 +115,8 @@ For VS Code or Cursor, run **Cove: Create Routed Terminal** from the Command
 Palette for the strongest launch-to-terminal binding. Existing integrated
 terminals can be registered with **Cove: Register Active Terminal**.
 
-See [Installation](docs/INSTALLATION.md) for binary releases, macOS
-permissions, remote helpers, upgrades, and safe removal.
+See [Installation](docs/INSTALLATION.md) for Homebrew and manual binary
+releases, macOS permissions, remote helpers, upgrades, and safe removal.
 
 ## Everyday use
 

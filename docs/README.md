@@ -4,12 +4,12 @@ Start with the guide that matches what you are trying to do.
 
 ## Users
 
-- [Installation](INSTALLATION.md) — prerequisites, source and release installs,
-  macOS permissions, upgrades, remote helpers, and removal.
+- [Installation](INSTALLATION.md) — Homebrew, source, and manual release
+  installs, macOS permissions, migration, upgrades, remote helpers, and removal.
 - [User Guide](USER_GUIDE.md) — the island, queue, decisions, exact-origin
   navigation, editor commands, privacy, notifications, and settings.
-- [Troubleshooting](TROUBLESHOOTING.md) — diagnostic commands and common local,
-  editor, permission, and remote-integration failures.
+- [Troubleshooting](TROUBLESHOOTING.md) — diagnostic commands and common
+  Homebrew, local, editor, permission, and remote-integration failures.
 - [Security & Privacy](SECURITY.md) — data handling, trust boundaries,
   permissions, filesystem protections, network behavior, and reporting.
 
@@ -22,7 +22,7 @@ Start with the guide that matches what you are trying to do.
 - [Contributing](CONTRIBUTING.md) — development setup, test layers, change
   discipline, and review expectations.
 - [Release Process](RELEASES.md) — versioning, candidate freeze, CI, packaging,
-  signing, GitHub releases, and rollback.
+  signing, GitHub releases, Homebrew Cask handoff, and rollback.
 
 ## Version-specific engineering records
 

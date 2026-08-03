@@ -28,6 +28,62 @@ After installing or changing Xcode, select it before running the checks:
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 ```
 
+## Install with Homebrew
+
+Homebrew is the preferred binary installation path for a public GitHub release
+whose matching rendered Cask has landed:
+
+```sh
+brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew install --cask cdimartino/codex-cove/codex-cove
+```
+
+This is an explicit custom tap: the first command binds the tap name to the
+public Codex Cove repository instead of relying on Homebrew's
+`homebrew-<name>` repository convention. Review that URL before accepting the
+tap. The install command downloads the exact release archive named by the Cask,
+verifies its pinned SHA-256, places `Codex Cove.app` at
+`~/Applications/Codex Cove.app`, and runs the bundled helper without `sudo` to:
+
+1. install the managed helper and the `~/bin/codex` and `~/bin/codex-cove`
+   links;
+2. structurally merge Cove's entries into `~/.codex/hooks.json`; and
+3. install the bundled private extension in VS Code and Cursor when their
+   command-line launchers are available.
+
+The Cask does not edit shell startup files, trust its own Codex hook, grant
+Accessibility or Automation, or bypass Gatekeeper. After installation:
+
+```sh
+open "$HOME/Applications/Codex Cove.app"
+export PATH="$HOME/bin:$PATH"
+"$HOME/bin/codex-cove" doctor
+```
+
+If Homebrew reports that the Cask is unavailable, the matching release-to-tap
+handoff has not landed. Build from source, or use the manual verified-release
+procedure when the GitHub release exists but its Cask follow-up is still under
+review.
+
+### Move an existing installation to Homebrew
+
+Do not ask Homebrew to overwrite a source-built or manually copied app. Quit
+Cove, remove the existing app and Cove-owned integration while retaining local
+settings, then install the Cask:
+
+```sh
+"$HOME/bin/codex-cove" uninstall --keep-settings
+brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew install --cask cdimartino/codex-cove/codex-cove
+```
+
+The uninstall transaction preserves modified or unowned paths and fails closed
+instead of deleting them. If it is blocked, follow
+[Troubleshooting](TROUBLESHOOTING.md#install-repair-or-uninstall-is-blocked)
+rather than forcing the Cask install. Once Homebrew owns the app, use Homebrew
+for upgrades and removal so its app ownership stays synchronized with Cove's
+integration manifest.
+
 ## Build and install from source
 
 ```sh
@@ -71,13 +127,15 @@ CODEX_COVE_SIGNING_IDENTITY="Developer ID Application: Example (TEAMID)" make in
 new identity and changes login-keychain trust. It is not required for normal
 installation and should not be run casually.
 
-## Install a GitHub release
+## Install a GitHub release manually
 
-Published release notes are authoritative for asset names, supported
-architectures, signing, and notarization status. Download the app archive and
-`SHA256SUMS` from the same release into an otherwise clean directory. Compare
-the archive's `shasum -a 256` output with its exact line in `SHA256SUMS`. To
-machine-check the aggregate manifest, download every listed asset and run:
+Use this as the transparent fallback when Homebrew is unavailable or while
+diagnosing Cask behavior. Published release notes are authoritative for asset
+names, supported architectures, signing, and notarization status. Download the
+app archive and `SHA256SUMS` from the same release into an otherwise clean
+directory. Compare the archive's `shasum -a 256` output with its exact line in
+`SHA256SUMS`. To machine-check the aggregate manifest, download every listed
+asset and run:
 
 ```sh
 shasum -a 256 -c SHA256SUMS
@@ -229,9 +287,22 @@ helper was removed.
 
 ## Upgrade and repair
 
-Use the same `make install` or bundled-helper install command for an upgrade.
-The install transaction refuses to replace unexpected files, directories, or
-links. Inspect a proposed helper mutation before applying it:
+For a Homebrew-managed installation, update the tap and let Homebrew coordinate
+the app replacement with Cove's integration cleanup and reinstallation:
+
+```sh
+brew update
+brew upgrade --cask cdimartino/codex-cove/codex-cove
+```
+
+Use `brew reinstall --cask cdimartino/codex-cove/codex-cove` only when the
+published Cask still names the version you intend to repair. Do not replace the
+bundle manually underneath Homebrew.
+
+For a source or manual installation, use the same `make install` or
+bundled-helper install command for an upgrade. The install transaction refuses
+to replace unexpected files, directories, or links. Inspect a proposed helper
+mutation before applying it:
 
 ```sh
 "$HOME/Applications/Codex Cove.app/Contents/Resources/bin/codex-cove" \
@@ -243,7 +314,35 @@ recheck macOS permissions if exact focus changed.
 
 ## Safe removal
 
-Quit Cove, then preview removal:
+For a Homebrew-managed installation, let the Cask quit Cove, remove Cove-owned
+integration while retaining settings, and then remove the app it owns:
+
+```sh
+brew uninstall --cask cdimartino/codex-cove/codex-cove
+```
+
+Do not run the bundled helper's ordinary uninstall first: that would remove the
+app before Homebrew can complete its own transaction. The Cask uses the narrow
+`--keep-app --keep-settings` helper mode internally, then Homebrew removes the
+verified app bundle. Untap only after uninstalling if you no longer want updates:
+
+```sh
+brew untap cdimartino/codex-cove
+```
+
+Normal Homebrew removal intentionally retains local preferences, imported
+assets, and session metadata. To remove those user files too, use the explicit
+destructive variant instead:
+
+```sh
+brew uninstall --cask --zap cdimartino/codex-cove/codex-cove
+```
+
+Review the Cask's narrow `zap` paths before running that command. They remove
+Codex Cove's Application Support, preferences, and saved application state;
+they do not remove Codex tasks or unrelated Codex configuration.
+
+For a source or manual installation, quit Cove and preview removal:
 
 ```sh
 "$HOME/bin/codex-cove" uninstall --keep-settings --plan

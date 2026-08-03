@@ -69,6 +69,32 @@ jobs:
           version="$(plutil -extract CFBundleShortVersionString raw -o - Packaging/Info.plist)"
           VERSION="$version" make verify-release-version
 
+      - name: Verify committed Homebrew cask release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cask_path='Casks/codex-cove.rb'
+          if [[ ! -e "$cask_path" && ! -L "$cask_path" ]]; then
+            echo 'No committed Homebrew cask exists; skipping published-release verification.'
+            exit 0
+          fi
+
+          version="$(./scripts/read-homebrew-cask-version.sh "$cask_path")"
+          release_tag="v$version"
+          test "$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq .visibility)" = PUBLIC
+          test "$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" = "$release_tag"
+          test "$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json isImmutable --jq .isImmutable)" = true
+
+          release_directory="$RUNNER_TEMP/homebrew-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir "$release_directory"
+          gh release download "$release_tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$release_directory"
+          ./scripts/verify-homebrew-cask-release.sh "$cask_path" "$release_directory"
+
       - name: Run test suites
         run: make test
 

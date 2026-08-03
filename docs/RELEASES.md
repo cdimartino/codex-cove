@@ -3,7 +3,8 @@
 Codex Cove releases are built from an existing, reviewed Git tag on `main`.
 The release workflow never invents or moves a tag. It validates complete
 candidate evidence, produces a Developer ID signed and notarized Apple Silicon
-app, and publishes checksummed companion assets.
+app, and publishes checksummed companion assets, including a Homebrew Cask
+rendered from the final app archive.
 
 This document describes distribution releases. `make package` and
 `make install` remain local-development workflows and fall back to ad-hoc
@@ -21,7 +22,9 @@ A release is valid only when all of these refer to the same source commit:
 - a complete privacy-safe receipt bound to that digest;
 - passing CI and all release/manual gates required by the receipt;
 - a Developer ID Application signature and valid notarization ticket; and
-- published checksums covering every downloadable artifact.
+- published checksums covering every downloadable artifact; and
+- a rendered Homebrew Cask whose version, URL, and SHA-256 name that exact
+  published app archive.
 
 The bundle identifier is `local.chris.codexcove`. Changing it breaks continuity
 for login items, deep links, macOS privacy grants, install manifests, and app
@@ -121,6 +124,20 @@ Also complete:
 - the owner first-attempt decision and exact-origin pass;
 - the uninstall/reinstall rollback drill; and
 - final zero-open-P0/P1 signoff with baseline restoration.
+
+When Homebrew packaging changes, also render the Cask from the final local app
+archive and run its Ruby syntax, fail-clean lifecycle, Homebrew style, and
+strict offline audit checks. Exercise the helper's package-manager-safe
+`--keep-app --keep-settings` path in an isolated fixture. Record these
+prepublication observations under the existing component, packaging, and
+rollback gates in the candidate receipt; a Cask that merely parses is not
+release evidence.
+
+The strict online/new-Cask audit and a real Homebrew install, Doctor,
+upgrade-or-reinstall, and uninstall cannot run until the immutable release URL
+exists and the Cask has been staged in a tap. They are a required
+post-publication, pre-Cask-merge handoff in section 10, not a circular input to
+the source candidate or GitHub release receipt.
 
 Record direct observations in the candidate receipt only. A blocked or not-run
 row is not a pass and cannot be waived by CI.
@@ -230,9 +247,10 @@ distribution workflow. It sets `CODEX_COVE_DISTRIBUTION_BUILD=1`, so the
 packager itself also refuses ad-hoc signing; there is no “skip notarization”
 release mode.
 
-The automatic GitHub token remains read-only during build jobs. Only the final
-publisher job receives the minimal `contents: write` permission needed to
-create the release and upload assets.
+The automatic GitHub token remains read-only during build jobs. The publisher
+job receives `contents: write` only to create the release and upload assets;
+the later Homebrew staging job receives `contents: write` only to push the
+generated Cask update branch. Neither job can bypass protected `main`.
 
 ## 7. Run the release workflow
 
@@ -273,6 +291,13 @@ never creates, moves, or pushes the input tag. Public repositories also receive
 GitHub artifact attestations; private repositories skip that optional
 public-verification step.
 
+The canonical asset assembler computes the final
+`Codex-Cove-<version>-macos-arm64.zip` SHA-256 before rendering
+`codex-cove.rb`. The rendered Cask must use a numeric version and that exact
+checksum; `version :latest`, `sha256 :no_check`, a mutable download URL, or a
+checksum copied from a different build is a release failure. The Cask joins the
+same verified handoff and aggregate checksum set as every other public asset.
+
 If draft download or verification fails, the workflow deliberately leaves the
 unpublished draft for inspection and a rerun refuses to overwrite it. Review
 the failure, remove only that draft through the GitHub Releases UI, and rerun
@@ -299,6 +324,7 @@ For version `0.3.0`, the workflow publishes:
 | `Codex-Cove-0.3.0-source-candidate.manifest` | Deterministic candidate file manifest |
 | `Codex-Cove-0.3.0-source-candidate.sha256` | Candidate-manifest digest |
 | `Codex-Cove-0.3.0-release.receipt` | Privacy-safe completed release evidence |
+| `codex-cove.rb` | Homebrew Cask rendered from the final app ZIP version and SHA-256 |
 | `SHA256SUMS` | SHA-256 for every other published asset |
 
 No `.p12`, private key, temporary keychain, notarization password, raw workflow
@@ -327,6 +353,13 @@ Confirm the displayed authority is the intended Developer ID Application team
 and the only app architecture is `arm64`. Verify the candidate files again from
 the tagged checkout and compare the published receipt to the reviewed one.
 
+Inspect the published `codex-cove.rb` before landing it in the tap. Its `url`
+must name the immutable release tag and
+`Codex-Cove-<version>-macos-arm64.zip`; its `sha256` must equal the app archive's
+line in `SHA256SUMS`; and its app target must remain
+`~/Applications/Codex Cove.app`. Run Homebrew style and strict Cask audit checks
+against the exact downloaded file, not a separately reconstructed copy.
+
 Install on a clean Apple Silicon test account, run Doctor, exercise one
 non-sensitive routed session, verify exact-origin behavior, and perform a safe
 `--keep-settings` uninstall/reinstall smoke before announcing broadly.
@@ -338,7 +371,53 @@ from Accessibility and Automation, add/enable the installed release again, and
 relaunch it. This is a user-supervised permission renewal, not an installer
 mutation.
 
-## 10. Publish notes and close the release
+## 10. Land the Homebrew Cask
+
+The repository is also the explicit custom tap used by the documented install:
+
+```sh
+brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew install --cask cdimartino/codex-cove/codex-cove
+```
+
+Those commands become live for a version only after the public GitHub release
+exists and its exact rendered `codex-cove.rb` has landed at
+`Casks/codex-cove.rb` on the default branch. Do not publish a Cask that points
+at a draft, private, missing, or replaceable artifact.
+
+After immutable release publication:
+
+1. download `codex-cove.rb`, `SHA256SUMS`, and the app ZIP from that release;
+2. verify the aggregate manifest and independently verify that the Cask's
+   version, URL, and SHA-256 match the ZIP, and require GitHub to report the
+   published release as immutable;
+3. let the release workflow copy the verified Cask byte-for-byte to
+   `Casks/codex-cove.rb` on its `automation/homebrew-vMAJOR.MINOR.PATCH` branch,
+   then use the emitted compare URL to open a normal pull request; do not
+   hand-edit the generated version or checksum;
+4. run `brew style`, `brew audit --new` for the first Cask (strict online audit
+   thereafter), and a real fresh install/Doctor check;
+5. exercise an upgrade from the prior Cask when one exists, then verify
+   `brew uninstall --cask` removes integration and the app while retaining
+   settings; and
+6. merge the Cask pull request through normal protected-branch CI.
+
+The Cask's uninstall contract must let Homebrew retain ownership of app removal:
+Homebrew quits Cove, invokes the embedded helper with
+`uninstall --keep-app --keep-settings`, then removes the verified app artifact.
+Its postflight first invokes the app's bounded maintenance entry point to
+restore the persisted Launch at Login preference, then invokes the embedded
+helper transaction to apply current-user integration. A failure compensates by
+unregistering Launch at Login before Homebrew rolls the app artifact back. Do
+not replace this with broad file deletion, a privileged installer, or an
+uninstall that removes the app before Homebrew reaches its app artifact.
+
+If Cask publication fails, keep the GitHub release and manual verified-download
+instructions available, fix the Cask through a new pull request, and rerun its
+tests. Never move the release tag or replace published binaries to make a Cask
+checksum pass. If the binary itself is wrong, cut a new patch release.
+
+## 11. Publish notes and close the release
 
 Release notes should state:
 
@@ -347,8 +426,9 @@ Release notes should state:
 - user-visible changes and fixed defects;
 - privacy, permission, persistence, protocol, and installer changes;
 - known limitations and any intentionally not-required matrix row;
-- upgrade and rollback instructions; and
-- the source tag and candidate digest.
+- upgrade and rollback instructions;
+- the source tag and candidate digest; and
+- whether the matching Homebrew Cask has landed and the tap install is live.
 
 The automated distribution path has no prerelease or incomplete-gate mode. If
 compatibility or owner gates are blocked, do not run it. Resolve the gate and
@@ -368,9 +448,11 @@ restores it if integration installation fails. For a distribution regression:
 2. keep the tag and evidence immutable;
 3. advise affected users to quit Cove and use the last verified package or the
    installer-retained backup;
-4. run Doctor and verify hooks, links, editor extension, settings, metadata,
+4. remove or disable promotion of the affected Cask without changing the
+   immutable release tag, and point Homebrew users to the last verified version;
+5. run Doctor and verify hooks, links, editor extension, settings, metadata,
    remote checksums, and exact permissions after rollback; and
-5. fix forward with a new patch version, full candidate freeze, gates, tag, and
+6. fix forward with a new patch version, full candidate freeze, gates, tag, and
    release workflow run.
 
 Never solve a release rollback with `git reset --hard`, a moved tag, blanket
