@@ -7,6 +7,10 @@ on:
         description: Existing release tag (vMAJOR.MINOR.PATCH) on the default branch
         required: true
         type: string
+      confirm:
+        description: Type RELEASE followed by the exact tag (for example, RELEASE v0.3.0)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -47,6 +51,7 @@ jobs:
         shell: bash
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_CONFIRM: ${{ inputs.confirm }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -56,6 +61,10 @@ jobs:
           fi
           if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release tag must match vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_CONFIRM" != "RELEASE $RELEASE_TAG" ]]; then
+            echo "Release confirmation must be exactly: RELEASE $RELEASE_TAG" >&2
             exit 1
           fi
 
