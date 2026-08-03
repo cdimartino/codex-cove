@@ -1,6 +1,7 @@
 # Codex Cove 0.2.0 owner and manual release pass
 
 Last updated: 2026-08-01, America/New_York.
+Repository-state update: 2026-08-03, America/New_York.
 
 Candidate-freeze rule: this runbook and its receipt template are
 source-candidate inputs. Once `SOURCE_CANDIDATE.manifest` is written, do not edit
@@ -281,7 +282,7 @@ Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
 current-candidate retests for the two carried editor-window P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=ci_stability_packaging_immutability` and
+`source_change_reason=homebrew_distribution_lifecycle` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 
@@ -348,12 +349,12 @@ retest/signoff fields never closes the no-open-P0/P1 release row.
 
 1. Unlock the Mac and keep the console active. Confirm the production app is
    the installed 0.2.0 bundle at
-   `/Users/chris/Applications/Codex Cove.app`.
+   `$HOME/Applications/Codex Cove.app`.
 2. Confirm one production Cove process and a healthy doctor report:
 
    ```sh
    ps -axo pid,etime,command | rg '/Codex Cove\.app/Contents/MacOS/CodexCove'
-   /Users/chris/bin/codex-cove doctor --json
+   "$HOME/bin/codex-cove" doctor --json
    ```
 
 3. Confirm doctor reports strict/deep signature verification and a passing
@@ -379,13 +380,13 @@ retest/signoff fields never closes the no-open-P0/P1 release row.
 
 Use the already-built UI-test host, not the production app:
 
-`/Users/chris/Source/codex-cove/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app`
+`<repo-root>/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app`
 
 For each row, quit the prior fixture host, create a fresh private temporary
 directory, and launch the named fixture. This example launches `mixed-20`:
 
 ```sh
-COVE_FIXTURE_HOST='/Users/chris/Source/codex-cove/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app'
+COVE_FIXTURE_HOST="$PWD/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app"
 COVE_FIXTURE_STATE="$(mktemp -d "${TMPDIR%/}/CodexCoveUITests-manual.XXXXXX")"
 chmod 700 "$COVE_FIXTURE_STATE"
 open -n "$COVE_FIXTURE_HOST" --args \
@@ -485,7 +486,7 @@ For the first single-task check, use this exact prompt and no other content:
 `Reply with exactly CODEX_COVE_INTERACTIVE_OK. Do not use tools, inspect files, or modify anything.`
 
 This is the Terminal.app task already counted in batch `L-A`; it is not an
-extra task. Run it from `/Users/chris/Source/codex-cove` in an installed,
+extra task. Run it from the repository root in an installed,
 user-visible Terminal.app pane through the installed shim. Before starting the timed owner
 attempt, have the user review System Settings > Privacy & Security for Cove's
 Terminal Automation and Accessibility access. If a first real jump must prompt
@@ -496,7 +497,7 @@ cannot be reviewed or granted, mark exact origin blocked; do not include a
 permission dialog in the under-eight-second measurement.
 
 ```sh
-CODEX_COVE_TRACE_BROKER=1 /Users/chris/bin/codex \
+CODEX_COVE_TRACE_BROKER=1 "$HOME/bin/codex" \
   --sandbox read-only \
   --ask-for-approval never \
   'Reply with exactly CODEX_COVE_INTERACTIVE_OK. Do not use tools, inspect files, or modify anything.'
@@ -570,7 +571,7 @@ requires distinct terminal attribution, Task A completing, Task B remaining
 waiting for its native command approval, and the waiting card staying usable.
 
 ```sh
-CODEX_COVE_TRACE_BROKER=1 /Users/chris/bin/codex \
+CODEX_COVE_TRACE_BROKER=1 "$HOME/bin/codex" \
   --sandbox read-only \
   --ask-for-approval on-request \
   'Use the shell tool to request approval before running /usr/bin/true, with sandbox_permissions set to require_escalated and justification "Codex Cove owner-pass routing check". Do not run it before approval. Do not use any other tool, inspect files, or modify anything.'
@@ -589,7 +590,7 @@ and native-fallback result independently. A successful Task A response does
 not compensate for a failed or blocked Task B/native-fallback row.
 
 For Codex Desktop, obtain separate batch `D-B` authorization for exactly one
-additional task in `/Users/chris/Source/codex-cove` using the exact Task B prompt above.
+additional task from the repository root using the exact Task B prompt above.
 Have the user create it in the visible Codex Desktop app. Do not reuse the CLI
 authorization or silently increase its task count. Pass requires all of the
 following:

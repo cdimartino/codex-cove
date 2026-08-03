@@ -17,6 +17,7 @@ release_directory=$2
 
 version=$("$repository_root/scripts/read-homebrew-cask-version.sh" "$committed_cask")
 archive_name="Codex-Cove-$version-macos-arm64.zip"
+expected_url='https://github.com/cdimartino/codex-cove/releases/download/v#{version}/Codex-Cove-#{version}-macos-arm64.zip'
 release_cask="$release_directory/codex-cove.rb"
 release_archive="$release_directory/$archive_name"
 release_checksums="$release_directory/SHA256SUMS"
@@ -28,6 +29,14 @@ done
 
 cmp -s "$committed_cask" "$release_cask" ||
     fail "committed cask is not byte-identical to the release cask asset"
+
+cask_url_values=$(sed -nE 's/^[[:space:]]*url "([^"]+)",[[:space:]]*$/\1/p' "$committed_cask") ||
+    fail "could not read the cask release URL"
+cask_url_count=$(printf '%s\n' "$cask_url_values" | awk 'NF { count++ } END { print count + 0 }')
+[ "$cask_url_count" -eq 1 ] || fail "cask must contain exactly one release URL stanza"
+cask_url=$(printf '%s\n' "$cask_url_values" | awk 'NF { print; exit }')
+[ "$cask_url" = "$expected_url" ] ||
+    fail "cask URL is not the exact immutable version-tagged GitHub release URL"
 
 cask_sha_values=$(sed -nE 's/^[[:space:]]*sha256 "([0-9a-f]+)"[[:space:]]*$/\1/p' "$committed_cask") ||
     fail "could not read the cask SHA-256"

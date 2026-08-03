@@ -193,10 +193,10 @@ local preferences; do not delete the session database when only settings fail.
 
 ## Homebrew install or upgrade fails
 
-The documented tap is public only after the first binary release and matching
-`Casks/codex-cove.rb` land. A `404`, missing Cask, or authentication prompt
-before then does not mean Homebrew should be pointed at a private or unverified
-artifact; use the source or manual release path instead.
+The repository used as the documented tap is public now, but a version becomes
+installable only after its binary release and matching `Casks/codex-cove.rb`
+land. A missing Cask before then does not mean Homebrew should be pointed at a
+private or unverified artifact; use the source or manual release path instead.
 
 Once the Cask is live, refresh and inspect the resolved package before retrying:
 

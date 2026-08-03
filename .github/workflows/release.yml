@@ -444,19 +444,36 @@ jobs:
           SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
         run: |
           set -euo pipefail
+          release_created=false
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "GitHub release $RELEASE_TAG already exists; refusing to replace published assets." >&2
-            exit 1
+            if [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ]]; then
+              echo "Draft release $RELEASE_TAG already exists; inspect and remove only that draft before retrying." >&2
+              exit 1
+            fi
+            if [[ "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" != true ]]; then
+              echo "Published release $RELEASE_TAG is not immutable and cannot be repaired in place; restore the repository setting and cut a new patch release." >&2
+              exit 1
+            fi
+            if [[ "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" != false ]]; then
+              echo "Published release $RELEASE_TAG is a prerelease; refusing to stage it as a stable Homebrew version." >&2
+              exit 1
+            fi
+            echo "Published immutable release $RELEASE_TAG already exists; verifying its exact assets for idempotent recovery."
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --draft \
+              --verify-tag \
+              --generate-notes \
+              --title "Codex Cove $RELEASE_TAG"
+            release_created=true
           fi
 
-          gh release create "$RELEASE_TAG" dist/* \
-            --draft \
-            --verify-tag \
-            --generate-notes \
-            --title "Codex Cove $RELEASE_TAG"
-
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          if [[ "$release_created" = true ]]; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          fi
           mkdir -p release-verification
           gh release download "$RELEASE_TAG" --dir release-verification
           (
@@ -480,8 +497,11 @@ jobs:
           )
 
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
-          gh release edit "$RELEASE_TAG" --draft=false
+          if [[ "$release_created" = true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = false
           test "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" = true
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
 
@@ -510,6 +530,27 @@ jobs:
           name: release-assets
           path: dist
 
+      - name: Extract release controls from the immutable source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          control_root="$RUNNER_TEMP/release-control"
+          mkdir -p "$control_root/scripts"
+          for script in \
+            scripts/resolve-github-tag.sh \
+            scripts/read-homebrew-cask-version.sh \
+            scripts/verify-homebrew-cask-release.sh \
+            scripts/verify-homebrew-cask-update.sh
+          do
+            target="$control_root/$script"
+            git show "$SOURCE_SHA:$script" > "$target"
+            test "$(git hash-object "$target")" = "$(git rev-parse "$SOURCE_SHA:$script")"
+            sh -n "$target"
+            chmod 0555 "$target"
+          done
+
       - name: Verify the public immutable release
         shell: bash
         env:
@@ -520,11 +561,12 @@ jobs:
           set -euo pipefail
           test "$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq .visibility)" = PUBLIC
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = false
           test "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" = true
           git merge-base --is-ancestor "$SOURCE_SHA" HEAD
           resolved_tag_sha="$(
-            git show "$SOURCE_SHA:scripts/resolve-github-tag.sh" |
-              sh -s -- "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+            "$RUNNER_TEMP/release-control/scripts/resolve-github-tag.sh" \
+              "$GITHUB_REPOSITORY" "$RELEASE_TAG"
           )"
           test "$resolved_tag_sha" = "$SOURCE_SHA"
 
@@ -535,7 +577,7 @@ jobs:
             shasum -a 256 -c SHA256SUMS
           )
           cmp -s dist/codex-cove.rb published-release/codex-cove.rb
-          ./scripts/verify-homebrew-cask-release.sh \
+          "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-release.sh" \
             dist/codex-cove.rb \
             published-release
 
@@ -548,7 +590,10 @@ jobs:
         run: |
           set -euo pipefail
           update_branch="automation/homebrew-$RELEASE_TAG"
-          candidate_version="$(./scripts/read-homebrew-cask-version.sh published-release/codex-cove.rb)"
+          candidate_version="$(
+            "$RUNNER_TEMP/release-control/scripts/read-homebrew-cask-version.sh" \
+              published-release/codex-cove.rb
+          )"
           if [[ "v$candidate_version" != "$RELEASE_TAG" ]]; then
             echo "Released cask version $candidate_version does not match $RELEASE_TAG." >&2
             exit 1
@@ -556,30 +601,35 @@ jobs:
 
           cask_already_existed=false
           if [[ -e Casks/codex-cove.rb || -L Casks/codex-cove.rb ]]; then
-            ./scripts/read-homebrew-cask-version.sh Casks/codex-cove.rb >/dev/null
+            "$RUNNER_TEMP/release-control/scripts/read-homebrew-cask-version.sh" \
+              Casks/codex-cove.rb >/dev/null
             cask_already_existed=true
             if ! cmp -s Casks/codex-cove.rb published-release/codex-cove.rb; then
-              ./scripts/verify-homebrew-cask-update.sh \
+              "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-update.sh" \
                 Casks/codex-cove.rb \
                 published-release/codex-cove.rb
             fi
           else
-            ./scripts/verify-homebrew-cask-update.sh \
+            "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-update.sh" \
               Casks/codex-cove.rb \
               published-release/codex-cove.rb
           fi
           mkdir -p Casks
-          cp published-release/codex-cove.rb Casks/codex-cove.rb
+          install -m 0644 published-release/codex-cove.rb Casks/codex-cove.rb
           cmp -s published-release/codex-cove.rb Casks/codex-cove.rb
           git add Casks/codex-cove.rb
+          test "$(git ls-files --stage -- Casks/codex-cove.rb | awk '{ print $1 }')" = 100644
+          test "$(git cat-file -t :Casks/codex-cove.rb)" = blob
           git diff --cached --check
 
           audit_repository="$RUNNER_TEMP/homebrew-cask-audit"
           mkdir -p "$audit_repository/Casks"
-          cp published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"
+          install -m 0644 published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"
           cmp -s published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"
           git -C "$audit_repository" init -q
           git -C "$audit_repository" add Casks/codex-cove.rb
+          test "$(git -C "$audit_repository" ls-files --stage -- Casks/codex-cove.rb | awk '{ print $1 }')" = 100644
+          test "$(git -C "$audit_repository" cat-file -t :Casks/codex-cove.rb)" = blob
           git -C "$audit_repository" \
             -c user.name='Codex Cove Release Audit' \
             -c user.email='audit@example.invalid' \
@@ -617,6 +667,7 @@ jobs:
             git fetch --no-tags origin "refs/heads/$update_branch:$remote_ref"
             git show "$remote_ref:Casks/codex-cove.rb" > "$RUNNER_TEMP/remote-codex-cove.rb"
             cmp -s published-release/codex-cove.rb "$RUNNER_TEMP/remote-codex-cove.rb"
+            test "$(git ls-tree "$remote_ref" -- Casks/codex-cove.rb | awk '{ print $1 " " $2 }')" = "100644 blob"
             test "$(git diff --name-only "$DEFAULT_BRANCH...$remote_ref")" = Casks/codex-cove.rb
             remote_sha=$(git rev-parse "$remote_ref")
             compare_url="https://github.com/$GITHUB_REPOSITORY/compare/$DEFAULT_BRANCH...$update_branch?expand=1"

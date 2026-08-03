@@ -342,6 +342,11 @@ Review the Cask's narrow `zap` paths before running that command. They remove
 Codex Cove's Application Support, preferences, and saved application state;
 they do not remove Codex tasks or unrelated Codex configuration.
 
+Neither normal uninstall nor `--zap` revokes macOS Accessibility or Automation
+grants. If Cove will no longer be used, remove those entries manually in
+**System Settings > Privacy & Security**, as described in
+[Security & Privacy](SECURITY.md#macos-permissions).
+
 For a source or manual installation, quit Cove and preview removal:
 
 ```sh

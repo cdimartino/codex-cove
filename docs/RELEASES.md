@@ -286,10 +286,13 @@ notarize, and assemble** job access credentials. It verifies that:
 
 The protected **Publish GitHub release** job creates a draft, downloads and
 byte-verifies every handoff asset plus `SHA256SUMS`, and publishes only after
-that comparison succeeds. It refuses to replace an existing GitHub release and
-never creates, moves, or pushes the input tag. Public repositories also receive
-GitHub artifact attestations; private repositories skip that optional
-public-verification step.
+that comparison succeeds. It never replaces an existing asset. For recovery it
+accepts an existing release only when GitHub reports it as published,
+non-prerelease, and immutable and its complete asset set is byte-identical to
+the newly assembled handoff. It never creates, moves, or pushes the input tag.
+Public repositories
+also receive GitHub artifact attestations; private repositories skip that
+optional public-verification step.
 
 The canonical asset assembler computes the final
 `Codex-Cove-<version>-macos-arm64.zip` SHA-256 before rendering
@@ -305,8 +308,17 @@ the same immutable tag; never delete or move the tag to recover the workflow.
 
 When reviewer protection is available, approve the protected `release`
 environment only after checking the tag, CI result, completed receipt, signing
-identity, and release notes. Otherwise, perform those checks before entering
-the workflow's exact `RELEASE <tag>` confirmation.
+identity, release notes, and **Settings > General > Releases > Immutable
+releases**. The normal workflow token cannot read that administration-only
+repository setting before publication. The publisher therefore checks the
+release's `isImmutable` result immediately after publication; this detects
+drift and stops the Homebrew handoff, but it is not pre-publication prevention.
+GitHub does not apply a newly enabled immutable-release setting retroactively.
+If that assertion fails, stop the handoff, treat the publication as a release
+incident, restore the repository setting for future releases, and cut a new
+patch release rather than replacing or relabeling the mutable release's assets.
+Otherwise, perform the manual checks before entering the workflow's exact
+`RELEASE <tag>` confirmation.
 
 ## 8. Published artifacts
 
@@ -416,6 +428,17 @@ If Cask publication fails, keep the GitHub release and manual verified-download
 instructions available, fix the Cask through a new pull request, and rerun its
 tests. Never move the release tag or replace published binaries to make a Cask
 checksum pass. If the binary itself is wrong, cut a new patch release.
+
+If only **Stage Homebrew cask update** fails after the release is public because
+of a transient service failure or corrected external state, use GitHub Actions'
+**Re-run failed jobs** operation on that same workflow run while its
+`release-assets` artifact is still retained (14 days). GitHub reruns the
+original workflow revision, so do not expect a rerun to repair a deterministic
+workflow bug or a mismatched pre-existing automation branch. In either of
+those cases—or after artifact expiry—download and verify the immutable public
+assets immediately, prepare the byte-identical Cask update in a normal pull
+request, and record that manual recovery in the release evidence. Never replace
+published binaries to make the Cask pass.
 
 ## 11. Publish notes and close the release
 

@@ -1271,6 +1271,7 @@ fn run_editor_command_output(
     command
         .stdout(Stdio::from(child_stdout))
         .stderr(Stdio::from(child_stderr));
+    command.process_group(0);
     let mut child = command.spawn().map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -1282,6 +1283,12 @@ fn run_editor_command_output(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                terminate_remaining_process_group(child.id()).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("{operation} exited but descendant cleanup failed: {error}"),
+                    )
+                })?;
                 return Ok(Output {
                     status,
                     stdout: read_editor_command_capture(&mut stdout, operation, "stdout")?,
@@ -1292,7 +1299,7 @@ fn run_editor_command_output(
                 std::thread::sleep(EDITOR_EXTENSION_COMMAND_POLL_INTERVAL);
             }
             Ok(None) => {
-                let cleanup = kill_and_reap_editor_command(&mut child);
+                let cleanup = kill_process_group_and_reap(&mut child);
                 let stdout = read_editor_command_capture(&mut stdout, operation, "stdout");
                 let stderr = read_editor_command_capture(&mut stderr, operation, "stderr");
                 let diagnostic = editor_command_capture_diagnostic(
@@ -1312,7 +1319,7 @@ fn run_editor_command_output(
                 ));
             }
             Err(error) => {
-                let cleanup = kill_and_reap_editor_command(&mut child);
+                let cleanup = kill_process_group_and_reap(&mut child);
                 return Err(io::Error::new(
                     error.kind(),
                     format!("{operation} wait failed: {error}; {cleanup}"),
@@ -1356,21 +1363,65 @@ fn read_editor_command_capture(
     Ok(bytes)
 }
 
-fn kill_and_reap_editor_command(child: &mut Child) -> String {
+fn terminate_process_group(pid: u32) -> io::Result<()> {
+    let process_group = libc::pid_t::try_from(pid).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("child PID {pid} cannot identify a process group"),
+        )
+    })?;
+    if process_group <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("child PID {pid} cannot identify a process group"),
+        ));
+    }
+    if unsafe { libc::kill(-process_group, libc::SIGKILL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn terminate_remaining_process_group(pid: u32) -> io::Result<()> {
+    match terminate_process_group(pid) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn kill_process_group_and_reap(child: &mut Child) -> String {
     let pid = child.id();
-    let kill_result = child.kill();
+    let group_kill_result = terminate_process_group(pid);
+    let direct_kill_result = if group_kill_result.is_err() {
+        Some(child.kill())
+    } else {
+        None
+    };
     let wait_result = child.wait();
-    match (kill_result, wait_result) {
-        (Ok(()), Ok(status)) => format!("process {pid} killed and reaped ({status})"),
-        (Err(kill_error), Ok(status)) => {
-            format!("process {pid} kill failed ({kill_error}), then reaped ({status})")
+    match (group_kill_result, direct_kill_result, wait_result) {
+        (Ok(()), _, Ok(status)) => {
+            format!("process {pid} group killed and reaped ({status})")
         }
-        (Ok(()), Err(wait_error)) => {
-            format!("process {pid} killed but could not be reaped ({wait_error})")
+        (Err(group_error), Some(Ok(())), Ok(status)) => format!(
+            "process {pid} group kill failed ({group_error}); direct process killed and reaped ({status})"
+        ),
+        (Err(group_error), Some(Err(kill_error)), Ok(status)) => format!(
+            "process {pid} group kill failed ({group_error}) and direct kill failed ({kill_error}), then reaped ({status})"
+        ),
+        (Ok(()), _, Err(wait_error)) => {
+            format!("process {pid} group killed but could not be reaped ({wait_error})")
         }
-        (Err(kill_error), Err(wait_error)) => {
-            format!("process {pid} kill failed ({kill_error}) and wait failed ({wait_error})")
-        }
+        (Err(group_error), Some(Ok(())), Err(wait_error)) => format!(
+            "process {pid} group kill failed ({group_error}); direct process killed but could not be reaped ({wait_error})"
+        ),
+        (Err(group_error), Some(Err(kill_error)), Err(wait_error)) => format!(
+            "process {pid} group kill failed ({group_error}), direct kill failed ({kill_error}), and wait failed ({wait_error})"
+        ),
+        (Err(group_error), None, status) => format!(
+            "process {pid} group kill failed ({group_error}); unexpected cleanup state ({status:?})"
+        ),
     }
 }
 
@@ -1489,7 +1540,7 @@ trait EditorExtensionCleaner {
         &mut self,
         extension_id: &str,
         targets: &[String],
-        app_path: &Path,
+        vsix_path: &Path,
     ) -> io::Result<()>;
 }
 
@@ -1510,10 +1561,10 @@ impl EditorExtensionCleaner for SystemEditorExtensionCleaner {
         &mut self,
         extension_id: &str,
         targets: &[String],
-        app_path: &Path,
+        vsix_path: &Path,
     ) -> io::Result<()> {
         let mut commands = SystemEditorExtensionCommands::default();
-        restore_editor_extension(&mut commands, extension_id, targets, app_path)
+        restore_editor_extension(&mut commands, extension_id, targets, vsix_path)
     }
 }
 
@@ -1578,21 +1629,25 @@ fn restore_editor_extension<C: EditorExtensionCommands>(
     commands: &mut C,
     extension_id: &str,
     targets: &[String],
-    app_path: &Path,
+    vsix: &Path,
 ) -> io::Result<()> {
-    let vsix = app_path.join("Contents/Resources/extension/codex-cove.vsix");
-    let metadata = fs::symlink_metadata(&vsix).map_err(|error| {
+    let metadata = fs::symlink_metadata(vsix).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("bundled editor extension is unavailable for compensation: {error}"),
         )
     })?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "bundled editor extension is unsafe for compensation",
         ));
     }
+    let expected_vsix_sha256 = install::sha256_file(vsix)?;
 
     let mut failures = Vec::new();
     for editor in targets {
@@ -1600,7 +1655,11 @@ fn restore_editor_extension<C: EditorExtensionCommands>(
             failures.push(format!("recorded editor {editor} is unreachable"));
             continue;
         }
-        match commands.install_extension(editor, &vsix) {
+        if install::sha256_file(vsix)? != expected_vsix_sha256 {
+            failures.push("compensation VSIX changed before editor installation".to_owned());
+            break;
+        }
+        match commands.install_extension(editor, vsix) {
             Err(error) => failures.push(format!("{editor} restore failed: {error}")),
             Ok(()) => match commands.query_extension(editor, extension_id) {
                 Ok(true) => eprintln!(
@@ -1613,6 +1672,10 @@ fn restore_editor_extension<C: EditorExtensionCommands>(
                     "{editor} compensation verification failed: {error}"
                 )),
             },
+        }
+        if install::sha256_file(vsix)? != expected_vsix_sha256 {
+            failures.push("compensation VSIX changed during editor installation".to_owned());
+            break;
         }
     }
     if failures.is_empty() {
@@ -1777,13 +1840,25 @@ where
             preflight.manifest().editor_extension_id.as_deref(),
             preflight.removable_app(),
         ) {
-            (Some(extension_id), Some(app_path)) => {
-                if let Err(error) = editor_cleanup.restore_extension(
-                    extension_id,
-                    &progress.editor_restore_targets,
-                    app_path,
-                ) {
-                    failures.push(error.to_string());
+            (Some(extension_id), Some(_)) => {
+                match snapshot_verified_compensation_vsix(preflight) {
+                    Ok(snapshot) => {
+                        if let Err(error) = editor_cleanup.restore_extension(
+                            extension_id,
+                            &progress.editor_restore_targets,
+                            snapshot.path(),
+                        ) {
+                            failures.push(error.to_string());
+                        }
+                    }
+                    Err(error) => failures.push(format!(
+                        "editor extension compensation input failed validation: {error}"
+                    )),
+                }
+                if let Err(error) = preflight.validate_removable_app() {
+                    failures.push(format!(
+                        "installed app changed during editor extension compensation: {error}"
+                    ));
                 }
             }
             _ => failures.push(
@@ -1795,8 +1870,17 @@ where
     if progress.login_item_attempted {
         match preflight.removable_app() {
             Some(app_path) => {
-                if let Err(error) = sync(app_path) {
-                    failures.push(format!("launch-at-login compensation failed: {error}"));
+                match preflight.validate_removable_app() {
+                    Ok(()) => {
+                        if let Err(error) = sync(app_path) {
+                            failures.push(format!(
+                                "launch-at-login compensation failed: {error}"
+                            ));
+                        }
+                    }
+                    Err(error) => failures.push(format!(
+                        "launch-at-login compensation skipped because the installed app changed: {error}"
+                    )),
                 }
             }
             None => failures
@@ -1808,6 +1892,79 @@ where
     } else {
         Err(io::Error::other(failures.join("; ")))
     }
+}
+
+fn snapshot_verified_compensation_vsix(
+    preflight: &install::UninstallPreflight,
+) -> io::Result<tempfile::NamedTempFile> {
+    preflight.validate_removable_app()?;
+    let app_path = preflight.removable_app().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "installed app is unavailable for editor extension compensation",
+        )
+    })?;
+    let source_path = app_path.join("Contents/Resources/extension/codex-cove.vsix");
+    let source_metadata = fs::symlink_metadata(&source_path)?;
+    if !source_metadata.is_file()
+        || source_metadata.file_type().is_symlink()
+        || source_metadata.uid() != unsafe { libc::geteuid() }
+        || source_metadata.nlink() != 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "bundled editor extension is not a safe current-user file",
+        ));
+    }
+    let mut source = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&source_path)?;
+    if !same_file_snapshot(&source_metadata, &source.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "bundled editor extension changed while opening",
+        ));
+    }
+    let source_sha256 = install::sha256_file(&source_path)?;
+
+    let mut snapshot = tempfile::Builder::new()
+        .prefix("codex-cove-extension-compensation-")
+        .suffix(".vsix")
+        .tempfile()?;
+    io::copy(&mut source, &mut snapshot)?;
+    snapshot.as_file_mut().flush()?;
+    snapshot.as_file().sync_all()?;
+    fs::set_permissions(snapshot.path(), fs::Permissions::from_mode(0o400))?;
+    if !same_file_snapshot(&source_metadata, &source.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "bundled editor extension changed while snapshotting",
+        ));
+    }
+    if install::sha256_file(&source_path)? != source_sha256
+        || install::sha256_file(snapshot.path())? != source_sha256
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "bundled editor extension contents changed while snapshotting",
+        ));
+    }
+    preflight.validate_removable_app()?;
+    Ok(snapshot)
+}
+
+fn same_file_snapshot(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.uid() == right.uid()
+        && left.nlink() == right.nlink()
+        && left.len() == right.len()
+        && left.mode() == right.mode()
+        && left.mtime() == right.mtime()
+        && left.mtime_nsec() == right.mtime_nsec()
+        && left.ctime() == right.ctime()
+        && left.ctime_nsec() == right.ctime_nsec()
 }
 
 fn run_local_uninstall_external_cleanup<C, F>(
@@ -1883,22 +2040,28 @@ fn find_on_path(executable: &str) -> Option<PathBuf> {
 }
 
 fn run_bounded(command: &mut Command, timeout: Duration) -> bool {
+    command.process_group(0);
     let Ok(mut child) = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         return false;
     };
     let started = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
+            Ok(Some(status)) => {
+                let cleanup_succeeded = terminate_remaining_process_group(child.id()).is_ok();
+                return status.success() && cleanup_succeeded;
+            }
             Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(25))
             }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = kill_process_group_and_reap(&mut child);
                 return false;
             }
-            Err(_) => return false,
+            Err(_) => {
+                let _ = kill_process_group_and_reap(&mut child);
+                return false;
+            }
         }
     }
 }
@@ -2041,7 +2204,7 @@ mod tests {
     #[derive(Default)]
     struct FailingEditorExtensionCleaner {
         calls: Vec<(String, Vec<String>)>,
-        restore_calls: Vec<(String, Vec<String>, PathBuf)>,
+        restore_calls: Vec<(String, Vec<String>, bool)>,
     }
 
     impl EditorExtensionCleaner for FailingEditorExtensionCleaner {
@@ -2059,12 +2222,12 @@ mod tests {
             &mut self,
             extension_id: &str,
             targets: &[String],
-            app_path: &Path,
+            vsix_path: &Path,
         ) -> io::Result<()> {
             self.restore_calls.push((
                 extension_id.to_owned(),
                 targets.to_vec(),
-                app_path.to_path_buf(),
+                vsix_path.is_file(),
             ));
             Ok(())
         }
@@ -2073,7 +2236,8 @@ mod tests {
     #[derive(Default)]
     struct RecordingEditorExtensionCleaner {
         uninstall_calls: Vec<(String, Vec<String>)>,
-        restore_calls: Vec<(String, Vec<String>, PathBuf)>,
+        restore_calls: Vec<(String, Vec<String>, bool)>,
+        mutate_app_on_restore: Option<PathBuf>,
     }
 
     impl EditorExtensionCleaner for RecordingEditorExtensionCleaner {
@@ -2094,13 +2258,19 @@ mod tests {
             &mut self,
             extension_id: &str,
             targets: &[String],
-            app_path: &Path,
+            vsix_path: &Path,
         ) -> io::Result<()> {
             self.restore_calls.push((
                 extension_id.to_owned(),
                 targets.to_vec(),
-                app_path.to_path_buf(),
+                vsix_path.is_file(),
             ));
+            if let Some(app_path) = self.mutate_app_on_restore.as_ref() {
+                fs::write(
+                    app_path.join("Contents/changed-during-editor-compensation"),
+                    b"changed",
+                )?;
+            }
             Ok(())
         }
     }
@@ -2170,13 +2340,16 @@ mod tests {
         let app = root.join("Codex Cove.app");
         let contents = app.join("Contents");
         let executable = contents.join("MacOS/CodexCove");
+        let extension = contents.join("Resources/extension/codex-cove.vsix");
         fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(extension.parent().unwrap()).unwrap();
         fs::write(
             contents.join("Info.plist"),
             b"<plist><string>local.chris.codexcove</string></plist>",
         )
         .unwrap();
         fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&extension, b"fixture editor extension").unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         app
     }
@@ -2192,8 +2365,19 @@ mod tests {
             .trim()
             .parse::<libc::pid_t>()
             .unwrap();
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+        assert_process_is_gone(pid);
+    }
+
+    fn assert_process_is_gone(pid: libc::pid_t) {
+        for _ in 0..100 {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("process {pid} remained after bounded command cleanup");
     }
 
     fn test_transport_timeout() -> Duration {
@@ -2844,7 +3028,7 @@ mod tests {
             [(
                 "codex-cove-local.cove-extension".to_owned(),
                 vec!["code".to_owned()],
-                app.clone()
+                true
             )],
             "an editor target that was already absent must remain absent"
         );
@@ -2853,6 +3037,68 @@ mod tests {
             error
                 .to_string()
                 .contains("external cleanup was compensated")
+        );
+        assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
+        assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
+        assert!(app.exists());
+    }
+
+    #[test]
+    fn compensation_revalidates_app_after_editor_restore_before_login_sync() {
+        let temp = tempdir().unwrap();
+        let layout = install::InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_installed_app(temp.path());
+        fs::write(&source, b"helper").unwrap();
+        fs::write(&real, b"codex").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        install::apply_install(
+            &source,
+            Some(&app),
+            &real,
+            &layout,
+            Some("codex-cove-local.cove-extension"),
+        )
+        .unwrap();
+        let helper_before = fs::read(&layout.managed_binary).unwrap();
+        let manifest_before = fs::read(&layout.manifest_path).unwrap();
+        let mut cleaner = RecordingEditorExtensionCleaner {
+            mutate_app_on_restore: Some(app.clone()),
+            ..Default::default()
+        };
+        let mut sync_called = false;
+
+        let error = execute_local_uninstall(
+            &layout,
+            true,
+            true,
+            &mut cleaner,
+            |_| Err(io::Error::other("mock login-item cleanup failure")),
+            |_| {
+                sync_called = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        let detail = error.to_string();
+        assert!(
+            detail.contains("external cleanup compensation was incomplete"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("installed app changed during editor extension compensation"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("launch-at-login compensation skipped"),
+            "{detail}"
+        );
+        assert!(
+            !sync_called,
+            "a changed app must never run during compensation"
         );
         assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
         assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
@@ -2981,6 +3227,63 @@ while :; do :; done
         assert!(detail.contains("extension query timed out"), "{detail}");
         assert!(detail.contains("killed and reaped"), "{detail}");
         assert_timed_out_editor_was_reaped(&detail);
+    }
+
+    #[test]
+    fn system_editor_timeout_kills_the_wrapper_process_group() {
+        let temp = tempdir().unwrap();
+        let editor = temp.path().join("editor-cli");
+        fs::write(
+            &editor,
+            "#!/bin/sh\nsleep 5 &\ndescendant=$!\nprintf 'descendant:%s\\n' \"$descendant\" >&2\nwait \"$descendant\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+        let editor = editor.to_string_lossy();
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(2));
+
+        let error = commands
+            .query_extension(&editor, "codex-cove-local.cove-extension")
+            .unwrap_err();
+        let detail = error.to_string();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let descendant_pid = detail
+            .split("descendant:")
+            .nth(1)
+            .unwrap_or_else(|| panic!("timeout diagnostic omitted descendant PID: {detail}"))
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert_process_is_gone(descendant_pid);
+    }
+
+    #[test]
+    fn bounded_failure_cleans_up_lingering_descendants() {
+        let temp = tempdir().unwrap();
+        let command_path = temp.path().join("bounded-command");
+        let descendant_pid_path = temp.path().join("descendant.pid");
+        fs::write(
+            &command_path,
+            format!(
+                "#!/bin/sh\nsleep 5 &\nprintf '%s\\n' \"$!\" > '{}'\nexit 7\n",
+                descendant_pid_path.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&command_path, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = Command::new(&command_path);
+
+        assert!(!run_bounded(&mut command, Duration::from_secs(2)));
+        let descendant_pid = fs::read_to_string(&descendant_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert_process_is_gone(descendant_pid);
     }
 
     #[test]

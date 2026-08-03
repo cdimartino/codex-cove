@@ -142,6 +142,18 @@ write_release_checksums
 "$repository_root/scripts/verify-homebrew-cask-release.sh" \
     "$cask_path" "$release_directory" >/dev/null
 
+wrong_url_cask="$temporary_root/wrong-url-cask.rb"
+sed 's|/releases/download/v#{version}/|/releases/latest/download/|' \
+    "$cask_path" >"$wrong_url_cask"
+cp "$wrong_url_cask" "$release_directory/codex-cove.rb"
+write_release_checksums
+if "$repository_root/scripts/verify-homebrew-cask-release.sh" \
+    "$wrong_url_cask" "$release_directory" >/dev/null 2>&1; then
+    fail "release verifier accepted a mutable or non-versioned cask URL"
+fi
+cp "$cask_path" "$release_directory/codex-cove.rb"
+write_release_checksums
+
 printf '\n' >>"$release_directory/codex-cove.rb"
 write_release_checksums
 if "$repository_root/scripts/verify-homebrew-cask-release.sh" \
@@ -168,7 +180,7 @@ fi
 
 release_workflow="$repository_root/.github/workflows/release.yml"
 audit_copy_line=$(grep -nF \
-    'cp published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"' \
+    'install -m 0644 published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"' \
     "$release_workflow" | cut -d: -f1)
 audit_commit_line=$(grep -nF "commit -qm 'audit exact released cask'" \
     "$release_workflow" | cut -d: -f1)
@@ -184,6 +196,28 @@ grep -F 'cmp -s published-release/codex-cove.rb "$tapped_cask"' \
 grep -F 'brew audit --cask --new "$audit_tap/codex-cove"' \
     "$release_workflow" >/dev/null ||
     fail "first-release workflow does not audit the disposable candidate as a new cask"
+grep -F 'Published immutable release $RELEASE_TAG already exists; verifying its exact assets for idempotent recovery.' \
+    "$release_workflow" >/dev/null ||
+    fail "release workflow does not explicitly support immutable-release recovery"
+grep -F 'Draft release $RELEASE_TAG already exists; inspect and remove only that draft before retrying.' \
+    "$release_workflow" >/dev/null ||
+    fail "release workflow does not fail closed for a pre-existing draft"
+grep -F 'Published release $RELEASE_TAG is a prerelease; refusing to stage it as a stable Homebrew version.' \
+    "$release_workflow" >/dev/null ||
+    fail "release workflow does not reject a pre-existing prerelease"
+grep -F '"$RUNNER_TEMP/local-release-SHA256SUMS"' "$release_workflow" >/dev/null ||
+    fail "release workflow does not hash the complete local asset set"
+grep -F '"$RUNNER_TEMP/uploaded-release-SHA256SUMS"' "$release_workflow" >/dev/null ||
+    fail "release workflow does not hash the complete published asset set"
+grep -F 'git show "$SOURCE_SHA:$script" > "$target"' \
+    "$release_workflow" >/dev/null ||
+    fail "Homebrew handoff does not extract controls from the immutable source"
+grep -F 'test "$(git hash-object "$target")" = "$(git rev-parse "$SOURCE_SHA:$script")"' \
+    "$release_workflow" >/dev/null ||
+    fail "Homebrew handoff does not hash-verify immutable-source controls"
+grep -F '"$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-release.sh"' \
+    "$release_workflow" >/dev/null ||
+    fail "Homebrew handoff does not execute the immutable release verifier"
 
 ci_workflow="$repository_root/.github/workflows/ci.yml"
 no_cask_guard_line=$(grep -nF \

@@ -7,6 +7,16 @@ do not edit this source-candidate input to record release results. The
 repository-root `SOURCE_CANDIDATE.receipt` is the sole release-current evidence
 record and is deliberately excluded from the source manifest.
 
+The 2026-08-03 Homebrew distribution and transactional package-lifecycle work
+supersedes source candidate
+`3d442eec4cba25b9fc86bca649e2c28e5c2ee1125daec1904739697dc6599603`;
+every candidate-bound result is reset.
+The replacement candidate covers the Cask template, renderer, offline audit,
+rollback fixtures, launch-at-login maintenance entry points, helper
+compensation, documentation, and release handoff. Strict online audit plus a
+real Homebrew install, Doctor, upgrade-or-reinstall, and uninstall remain
+post-publication gates before the generated Cask update can merge.
+
 ## Purpose / Big Picture
 
 Codex Cove gives a Mac user one unobtrusive notch-aligned view of local Codex
@@ -27,6 +37,13 @@ observing its state in the panel demonstrates the result.
 - [x] (2026-08-01) Added and ran `make deps` for the migrated host: Swift
   package resolution, locked Cargo dependency fetch, and reproducible extension
   dependency installation with `npm ci`.
+- [x] (2026-08-03) Added the repository-backed Homebrew Cask distribution
+  path, immutable release-to-Cask checksum binding, fail-clean postflight,
+  package-manager-owned app removal, launch-at-login maintenance entry points,
+  transactional helper compensation, offline/online audit contracts, and an
+  idempotent protected-branch handoff. Candidate
+  `3d442eec4cba25b9fc86bca649e2c28e5c2ee1125daec1904739697dc6599603`
+  was preserved and superseded; no earlier evidence transfers.
 - [x] (2026-07-30 23:05Z) Implemented versioned event, decision, interactive
   request, and theme schemas with cross-language fixtures and bounded framing.
 - [x] (2026-07-30 23:05Z) Implemented the Rust shim, direct/durable app-server
@@ -106,13 +123,13 @@ observing its state in the panel demonstrates the result.
   zero failures, 392.605 seconds. The suite includes app-owned 200% text-scale
   coverage for Settings and focused forms and verifies Settings geometry of at
   least 980 x 680 points. Result bundle:
-  `/Users/chris/Source/codex-cove/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_10-01-30--0400.xcresult`.
+  `<repo-root>/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_10-01-30--0400.xcresult`.
 - [x] Replaced the historical component/static/UI counts with one complete
   pre-freeze run against the observed source: 4,244 Swift milestone assertions; 112 Rust
   library + 22 binary + 5 approval/integration tests; 23/23 extension tests;
   build/static/Linux musl checks passed; and 23/23 uninterrupted UI tests passed
   with 0 failures, 0 skipped, and 438.319 seconds. Result bundle:
-  `/Users/chris/Source/codex-cove/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_13-54-55--0400.xcresult`.
+  `<repo-root>/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_13-54-55--0400.xcresult`.
 - [x] Rebuilt all four remote helpers, packaged/installed the observed pre-freeze
   source, and recorded the pre-freeze hashes, backup count, Doctor,
   process/socket, editor/hook, bundle-identity, and non-prompting smoke
@@ -390,7 +407,7 @@ The current-source automated observations passed 4,244 milestone assertions, 112
 library tests, 22 Rust binary tests, 5 Rust approval/integration tests, 23/23
 extension tests, and 23/23 XCUITests with zero failures, zero skipped, and
 438.319 seconds. `xcresulttool` summarized the result as `Passed`; the bundle is
-`/Users/chris/Source/codex-cove/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_13-54-55--0400.xcresult`.
+`<repo-root>/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_13-54-55--0400.xcresult`.
 This supersedes the historical pre-hardening 20/20 UI result and adds
 collapsed-Button and privacy-hidden-suggestion coverage. App-owned 200%
 text-scale fixture coverage is not a substitute
@@ -428,12 +445,12 @@ owner-pass step. Run it only after explicit approval. Before doing so, record
 the installed hashes and a content-free count/hash baseline for unrelated hook
 entries. With the user supervising, quit Cove normally and verify that no Cove
 process remains; otherwise the maintenance launch will fail the instance lock.
-Run `/Users/chris/bin/codex-cove uninstall --keep-settings`, making retained
+Run `$HOME/bin/codex-cove uninstall --keep-settings`, making retained
 preferences and session metadata an explicit exception to artifact removal.
 Then verify Cove-owned artifacts were removed without touching Codex threads,
 unrelated hooks, retained Cove settings, SSH configuration, or modified files.
 Reinstall immediately with `make install-with-remote`, explicitly relaunch
-`/Users/chris/Applications/Codex Cove.app`, and only then repeat doctor,
+`$HOME/Applications/Codex Cove.app`, and only then repeat doctor,
 signature, bundle/candidate comparison, editor-target installation, remote
 checksums, process/socket, and both nonprompting smoke verifications. Record
 every structured rollback component from the owner runbook; the aggregate
@@ -486,7 +503,7 @@ are content-free observations from the observed source and installed state.
     Linux musl all-target check: passed
     pre-freeze unlocked XCUITests: 23/23, zero failures, zero skipped, 438.319 seconds
     pre-freeze xcresult summary: Passed
-    pre-freeze xcresult bundle: /Users/chris/Source/codex-cove/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_13-54-55--0400.xcresult
+    pre-freeze xcresult bundle: <repo-root>/DerivedData/Logs/Test/Test-CodexCoveUITests-2026.08.01_13-54-55--0400.xcresult
     installedAt: 2026-08-01T18:30:35.421Z
     pre-freeze remote artifacts: all four raw/package/installed checksum sets passed
     pre-freeze remote file types: macOS Mach-O arm64/x86_64; Linux static stripped ELF arm64/x86_64
@@ -500,11 +517,11 @@ are content-free observations from the observed source and installed state.
     pre-freeze editor installs: Code and Cursor codex-cove-local.cove-extension@0.2.0
     pre-freeze versions: codex-cove 0.2.0; codex-cli 0.146.0
     pre-freeze retained timestamped app backups: 9
-    latest backup: /Users/chris/Applications/Codex Cove.app.backup.20260801T183035Z
+    latest backup: $HOME/Applications/Codex Cove.app.backup.20260801T183035Z
     pre-freeze non-prompting rate-limit smoke: initialized/read passed; primary=false; secondary=false; resetCredits=true; ignored lines=0
     pre-freeze non-prompting Desktop smoke: initialized/list passed; 5 rows; vscode/notLoaded; expected ID unset; no IDs/content recorded
     pre-freeze installed process: exactly one, PID 90751
-    pre-freeze event socket: Socket; srw-------; uid 501/chris; PID 90751 fd 4u
+    pre-freeze event socket: Socket; srw-------; uid 501/current user; PID 90751 fd 4u
     pre-freeze doctor: exit 0; healthy true; 18 checks
     pre-freeze doctor passes: codexVersion, installManifest, managedBinaryIntegrity,
       codexShim, managementLink, hooks, installedApp, appBundleIntegrity,
