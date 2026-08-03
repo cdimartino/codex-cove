@@ -3189,7 +3189,7 @@ exit 64
 "#,
         );
         let editor = editor.to_string_lossy();
-        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(2));
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(5));
 
         assert!(
             commands
@@ -3235,12 +3235,12 @@ while :; do :; done
         let editor = temp.path().join("editor-cli");
         fs::write(
             &editor,
-            "#!/bin/sh\nsleep 5 &\ndescendant=$!\nprintf 'descendant:%s\\n' \"$descendant\" >&2\nwait \"$descendant\"\n",
+            "#!/bin/sh\nsleep 30 &\ndescendant=$!\nprintf 'descendant:%s\\n' \"$descendant\" >&2\nwait \"$descendant\"\n",
         )
         .unwrap();
         fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
         let editor = editor.to_string_lossy();
-        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(2));
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(5));
 
         let error = commands
             .query_extension(&editor, "codex-cove-local.cove-extension")
@@ -3298,7 +3298,7 @@ exit 64
 "#,
         );
         let editor = editor.to_string_lossy();
-        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(2));
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(5));
 
         commands
             .install_extension(&editor, Path::new("/tmp/codex-cove.vsix"))

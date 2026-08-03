@@ -282,7 +282,7 @@ Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
 current-candidate retests for the two carried editor-window P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=homebrew_release_validation_trust_hardening` and
+`source_change_reason=rust_editor_test_timeout_hardening` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 

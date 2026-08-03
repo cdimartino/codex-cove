@@ -7,11 +7,11 @@ do not edit this source-candidate input to record release results. The
 repository-root `SOURCE_CANDIDATE.receipt` is the sole release-current evidence
 record and is deliberately excluded from the source manifest.
 
-The 2026-08-03 staged Homebrew trust-state and replay-safety hardening
-supersedes source candidate
-`00bfe5bbc2d54e1e8ad02cbd1b9748ec3d6e43da0272ceb79490a4e9626a8010`;
+The 2026-08-03 editor process-test timeout hardening supersedes source candidate
+`a28da0923ef9526a7ebe957e88c90fbb3a12ca99a2a1d56bd9cb6620fea75067`;
 every candidate-bound result is reset.
-The replacement candidate covers the Cask template, renderer, offline audit,
+The replacement candidate covers the deterministic editor process tests,
+patched extension packaging dependency, Cask template, renderer, offline audit,
 rollback fixtures, launch-at-login maintenance entry points, helper
 compensation, documentation, and release handoff. Strict online audit plus a
 real Homebrew install, Doctor, upgrade-or-reinstall, and uninstall remain
@@ -60,6 +60,24 @@ observing its state in the panel demonstrates the result.
   `00bfe5bbc2d54e1e8ad02cbd1b9748ec3d6e43da0272ceb79490a4e9626a8010`
   was preserved with dependency/bootstrap-only evidence and superseded before
   product gates; no evidence transfers.
+- [x] (2026-08-03) Updated the locked transitive `fast-uri` dependency from
+  3.1.4 to patched 3.1.5 after the current npm advisory feed failed the
+  dependency gate. Candidate
+  `d22a1c6746a439ff31216e909469c331dc6a58d3e7df00a943f53ea7245333ed`
+  and its failed dependency receipt were preserved before bootstrap or product
+  gates; no evidence transfers.
+- [x] (2026-08-03) Increased three test-only editor process deadlines from two
+  to five seconds after their parallel component run timed out while all five
+  isolated serial editor-process tests passed. Candidate
+  `76be4c498d4767183cdd3dc60592a4168cf54d35ace35c41090a6765af6883cc`
+  and its failed component receipt were preserved after dependency, bootstrap,
+  and product-build passes; no evidence transfers.
+- [x] (2026-08-03) Extended the descendant fixture lifetime from five to thirty
+  seconds so it cannot race the hardened five-second process-group timeout.
+  Partial candidate
+  `a28da0923ef9526a7ebe957e88c90fbb3a12ca99a2a1d56bd9cb6620fea75067`
+  was preserved after its dependency pass but before bootstrap binding; no
+  evidence transfers.
 - [x] (2026-07-30 23:05Z) Implemented versioned event, decision, interactive
   request, and theme schemas with cross-language fixtures and bounded framing.
 - [x] (2026-07-30 23:05Z) Implemented the Rust shim, direct/durable app-server
