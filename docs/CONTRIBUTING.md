@@ -84,6 +84,10 @@ prove the console is unlocked.
 - `XcodeProject.yml` is authoritative for
   `CodexCoveUITests.xcodeproj`. After changing target membership, regenerate
   with XcodeGen 2.46+ and review the project diff.
+- `Resources/CodexCoveIcon-1024.png` and `Resources/AppIcon.icns` are committed
+  release inputs. Run `make icon` only when intentionally updating them, review
+  both binary changes, and commit them together. Packaging consumes the
+  committed icon and must not rewrite source files.
 - `extension/package-lock.json` and `helper/Cargo.lock` are committed dependency
   locks. Update them only with the corresponding intentional dependency change.
 - Built themes, sounds, the app bundle, editor output/VSIX, Rust target files,

@@ -146,8 +146,8 @@ commit after tagging.
 
 ## 4. CI and branch protection
 
-`.github/workflows/ci.yml` has two required jobs on pushes, pull requests, and
-manual dispatches:
+`.github/workflows/ci.yml` has two required jobs on pushes to `main`, pull
+requests, and manual dispatches:
 
 - **Build, test, and package** runs the build, unit/foundation suites, Rust
   static checks, shell syntax checks, release compilation, extension packaging,
@@ -194,12 +194,23 @@ tag and distribution.
 
 ## 6. Configure the protected release environment
 
-Create a GitHub environment named `release` with required reviewers and limit
-deployment to the protected release branch/tag policy. Prefer environment
-secrets so review protects access to distribution credentials; repository
-secrets are also technically supported by the workflow when repository
-governance requires them. Never store credentials in plaintext files or
-workflow inputs.
+Create a GitHub environment named `release`, limit deployment to protected
+branches, and add required reviewers when the repository billing plan supports
+that protection rule. Some private-repository plans reject environment
+reviewers; in that case, record the limitation, retain the protected-branch
+restriction, and rely on the workflow's exact `RELEASE <tag>` confirmation as
+the deliberate approval boundary. Prefer environment secrets so supported
+review rules protect access to distribution credentials; repository secrets
+are also technically supported by the workflow when repository governance
+requires them. Never store credentials in plaintext files or workflow inputs.
+
+Create an active tag ruleset for `refs/tags/v*` that restricts both updates and
+deletions, with no routine bypass actor. Release tags are immutable inputs: if a
+tag is wrong, cut a new version instead of moving or deleting the old tag. The
+workflow independently resolves the exact tag target through GitHub's API at
+preflight, at each job boundary, after draft creation, immediately before
+publication, and after publication. These checks complement the ruleset and
+fail closed if the tag ever stops naming the reviewed commit.
 
 The workflow requires all of the following secrets:
 
@@ -231,7 +242,8 @@ is:
 
 ```sh
 gh workflow run release.yml --ref main \
-  -f tag=v0.3.0
+  -f tag=v0.3.0 \
+  -f confirm='RELEASE v0.3.0'
 ```
 
 The secret-free **Verify release candidate** job first verifies that:
@@ -266,9 +278,10 @@ unpublished draft for inspection and a rerun refuses to overwrite it. Review
 the failure, remove only that draft through the GitHub Releases UI, and rerun
 the same immutable tag; never delete or move the tag to recover the workflow.
 
-The protected `release` environment approval should occur only after the owner
-has checked the tag, CI result, completed receipt, signing identity, and release
-notes.
+When reviewer protection is available, approve the protected `release`
+environment only after checking the tag, CI result, completed receipt, signing
+identity, and release notes. Otherwise, perform those checks before entering
+the workflow's exact `RELEASE <tag>` confirmation.
 
 ## 8. Published artifacts
 

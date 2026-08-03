@@ -281,7 +281,7 @@ Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
 current-candidate retests for the two carried editor-window P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=repository_docs_ci_release_automation` and
+`source_change_reason=ci_stability_packaging_immutability` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 
