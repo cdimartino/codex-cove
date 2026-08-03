@@ -7,9 +7,9 @@ do not edit this source-candidate input to record release results. The
 repository-root `SOURCE_CANDIDATE.receipt` is the sole release-current evidence
 record and is deliberately excluded from the source manifest.
 
-The 2026-08-03 Homebrew distribution and transactional package-lifecycle work
+The 2026-08-03 staged Homebrew trust-state and replay-safety hardening
 supersedes source candidate
-`3d442eec4cba25b9fc86bca649e2c28e5c2ee1125daec1904739697dc6599603`;
+`00bfe5bbc2d54e1e8ad02cbd1b9748ec3d6e43da0272ceb79490a4e9626a8010`;
 every candidate-bound result is reset.
 The replacement candidate covers the Cask template, renderer, offline audit,
 rollback fixtures, launch-at-login maintenance entry points, helper
@@ -44,6 +44,22 @@ observing its state in the panel demonstrates the result.
   idempotent protected-branch handoff. Candidate
   `3d442eec4cba25b9fc86bca649e2c28e5c2ee1125daec1904739697dc6599603`
   was preserved and superseded; no earlier evidence transfers.
+- [x] (2026-08-03) Added the exact staged-branch, immutable-asset, disposable-tap
+  install/Doctor/reinstall/uninstall handoff needed before the first Cask pull
+  request merges. Candidate
+  `3f8935453bc4164bf262598de87470c4901a8316543562c6d8e8e74c33386140`
+  was preserved and superseded; no evidence transfers to its replacement.
+- [x] (2026-08-03) Added clean-tag enforcement, immutable prior-release
+  anchoring, strict settings checksums, exact installed-version assertions, and
+  a two-commit disposable-tap upgrade gate. Binding-only candidate
+  `55e61cdb2d33c676a55537d70308a5be64918d01b53603ef0f5ec0d8039fcd63`
+  was preserved and superseded before product gates; no evidence transfers.
+- [x] (2026-08-03) Bound staged-Cask validation to a full Homebrew trust-state
+  delta and exact restoration, rejected partial upgrade-tap replay before any
+  mutation, and repeated future-upgrade cleanup requirements. The candidate
+  `00bfe5bbc2d54e1e8ad02cbd1b9748ec3d6e43da0272ceb79490a4e9626a8010`
+  was preserved with dependency/bootstrap-only evidence and superseded before
+  product gates; no evidence transfers.
 - [x] (2026-07-30 23:05Z) Implemented versioned event, decision, interactive
   request, and theme schemas with cross-language fixtures and bounded framing.
 - [x] (2026-07-30 23:05Z) Implemented the Rust shim, direct/durable app-server

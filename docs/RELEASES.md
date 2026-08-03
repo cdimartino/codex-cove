@@ -414,6 +414,520 @@ After immutable release publication:
    settings; and
 6. merge the Cask pull request through normal protected-branch CI.
 
+### Validate the staged Cask before merging
+
+The public tap commands above cannot validate a Cask that exists only on the
+workflow's staging branch. Before merging that branch, run the following from
+the tagged checkout on a clean Apple Silicon test account. Substitute the exact
+40-character head SHA reported by the Cask pull request; do not use a branch
+name as the expected identity.
+
+```sh
+set -eu
+
+cove_tag='<exact vMAJOR.MINOR.PATCH release tag>'
+printf '%s\n' "$cove_tag" |
+  grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+cove_version=${cove_tag#v}
+cove_branch="automation/homebrew-$cove_tag"
+cove_expected_head='<exact 40-character Cask PR head>'
+cove_validation_root=$(mktemp -d "${TMPDIR:-/tmp}/codex-cove-homebrew.XXXXXX")
+cove_staged_checkout="$cove_validation_root/staged"
+cove_release_assets="$cove_validation_root/release"
+cove_tap_suffix=$(printf '%s' "$cove_version" | tr '.' '-')
+cove_tap="codexcovevalidation/codex-cove-$cove_tap_suffix"
+cove_cask="$cove_tap/codex-cove"
+cove_app="$HOME/Applications/Codex Cove.app"
+cove_support="$HOME/Library/Application Support/Codex Cove"
+cove_settings="$cove_support/settings.json"
+cove_socket="$cove_support/run/events.sock"
+
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+cove_release_head=$(./scripts/resolve-github-tag.sh \
+  cdimartino/codex-cove "$cove_tag")
+test "$(git rev-parse HEAD)" = "$cove_release_head"
+test "$(git rev-parse "$cove_tag^{commit}")" = "$cove_release_head"
+test "${#cove_expected_head}" -eq 40
+case "$cove_expected_head" in
+  *[!0-9a-f]*) exit 1 ;;
+esac
+test "$(uname -m)" = arm64
+test "$(gh repo view cdimartino/codex-cove --json visibility --jq .visibility)" = PUBLIC
+cove_default_branch=$(gh repo view cdimartino/codex-cove \
+  --json defaultBranchRef --jq .defaultBranchRef.name)
+cove_default_head=$(gh api \
+  "repos/cdimartino/codex-cove/commits/$cove_default_branch" --jq .sha)
+test "${#cove_default_head}" -eq 40
+case "$cove_default_head" in
+  *[!0-9a-f]*) exit 1 ;;
+esac
+cove_prior_cask_count=$(gh api \
+  "repos/cdimartino/codex-cove/git/trees/$cove_default_head?recursive=1" \
+  --jq '[.tree[] | select(.path == "Casks/codex-cove.rb" and .type == "blob")] | length')
+case "$cove_prior_cask_count" in
+  0 | 1) ;;
+  *) exit 1 ;;
+esac
+test "$(gh release view "$cove_tag" -R cdimartino/codex-cove --json isDraft --jq .isDraft)" = false
+test "$(gh release view "$cove_tag" -R cdimartino/codex-cove --json isPrerelease --jq .isPrerelease)" = false
+test "$(gh release view "$cove_tag" -R cdimartino/codex-cove --json isImmutable --jq .isImmutable)" = true
+test ! -e "$cove_app"
+test ! -L "$cove_app"
+test ! -e "$cove_support"
+test ! -L "$cove_support"
+test ! -e "$HOME/bin/codex-cove"
+test ! -L "$HOME/bin/codex-cove"
+test ! -e "$HOME/bin/codex"
+test ! -L "$HOME/bin/codex"
+test ! -e "$cove_socket"
+test ! -S "$cove_socket"
+if pgrep -u "$(id -u)" -x CodexCove >/dev/null 2>&1; then
+  exit 1
+fi
+cove_existing_taps=$(HOMEBREW_NO_AUTO_UPDATE=1 brew tap)
+if printf '%s\n' "$cove_existing_taps" | grep -Fx "$cove_tap" >/dev/null; then
+  exit 1
+fi
+cove_installed_casks=$(HOMEBREW_NO_AUTO_UPDATE=1 brew list --cask --versions)
+if printf '%s\n' "$cove_installed_casks" | \
+  awk '$1 == "codex-cove" { found = 1 } END { exit !found }'; then
+  exit 1
+fi
+cove_trust_before=$(HOMEBREW_NO_AUTO_UPDATE=1 brew trust --json=v1)
+cove_assert_one_cask_trust_added() {
+  cove_trust_now=$(HOMEBREW_NO_AUTO_UPDATE=1 brew trust --json=v1)
+  COVE_TRUST_BASELINE="$cove_trust_before" \
+    COVE_TRUST_CURRENT="$cove_trust_now" \
+    ruby -rjson -e '
+      baseline = JSON.parse(ENV.fetch("COVE_TRUST_BASELINE"))
+      current = JSON.parse(ENV.fetch("COVE_TRUST_CURRENT"))
+      keys = %w[taps formulae casks commands]
+      valid = baseline.is_a?(Hash) && current.is_a?(Hash) &&
+              baseline.keys.sort == keys.sort &&
+              current.keys.sort == keys.sort &&
+              keys.all? { |key| baseline.fetch(key).is_a?(Array) } &&
+              keys.all? { |key| current.fetch(key).is_a?(Array) } &&
+              %w[taps formulae commands].all? do |key|
+                baseline.fetch(key) == current.fetch(key)
+              end &&
+              (baseline.fetch("casks") - current.fetch("casks")).empty? &&
+              current.fetch("casks").length ==
+                baseline.fetch("casks").length + 1
+      exit(valid ? 0 : 1)
+    '
+}
+cove_assert_trust_restored() {
+  cove_trust_now=$(HOMEBREW_NO_AUTO_UPDATE=1 brew trust --json=v1)
+  COVE_TRUST_BASELINE="$cove_trust_before" \
+    COVE_TRUST_CURRENT="$cove_trust_now" \
+    ruby -rjson -e '
+      baseline = JSON.parse(ENV.fetch("COVE_TRUST_BASELINE"))
+      current = JSON.parse(ENV.fetch("COVE_TRUST_CURRENT"))
+      exit(baseline == current ? 0 : 1)
+    '
+}
+cove_assert_cask_state() {
+  cove_expected_available=$1
+  cove_expected_installed=$2
+  cove_expected_outdated=$3
+  HOMEBREW_NO_AUTO_UPDATE=1 brew info --json=v2 --cask "$cove_cask" |
+    COVE_EXPECTED_TOKEN="$cove_cask" \
+    COVE_EXPECTED_TAP="$cove_tap" \
+    COVE_EXPECTED_AVAILABLE="$cove_expected_available" \
+    COVE_EXPECTED_INSTALLED="$cove_expected_installed" \
+    COVE_EXPECTED_OUTDATED="$cove_expected_outdated" \
+    ruby -rjson -e '
+      casks = JSON.parse($stdin.read).fetch("casks")
+      exit 1 unless casks.length == 1
+      cask = casks.fetch(0)
+      expected_outdated = ENV.fetch("COVE_EXPECTED_OUTDATED") == "true"
+      valid = cask.fetch("full_token") == ENV.fetch("COVE_EXPECTED_TOKEN") &&
+              cask.fetch("tap") == ENV.fetch("COVE_EXPECTED_TAP") &&
+              cask.fetch("version") == ENV.fetch("COVE_EXPECTED_AVAILABLE") &&
+              cask.fetch("installed") == ENV.fetch("COVE_EXPECTED_INSTALLED") &&
+              cask.fetch("outdated") == expected_outdated
+      exit(valid ? 0 : 1)
+    '
+}
+
+mkdir "$cove_release_assets"
+gh repo clone cdimartino/codex-cove "$cove_staged_checkout" -- \
+  --branch "$cove_branch" --single-branch
+test "$(git -C "$cove_staged_checkout" rev-parse HEAD)" = "$cove_expected_head"
+cove_staged_version=$(./scripts/read-homebrew-cask-version.sh \
+  "$cove_staged_checkout/Casks/codex-cove.rb")
+test "$cove_staged_version" = "$cove_version"
+git -C "$cove_staged_checkout" fetch --no-tags origin \
+  "refs/heads/$cove_default_branch:refs/remotes/origin/$cove_default_branch"
+test "$(git -C "$cove_staged_checkout" rev-parse \
+  "origin/$cove_default_branch^{commit}")" = "$cove_default_head"
+test "$(git -C "$cove_staged_checkout" merge-base \
+  "$cove_default_head" HEAD)" = "$cove_default_head"
+test "$(git -C "$cove_staged_checkout" diff --name-only \
+  "$cove_default_head...HEAD")" = Casks/codex-cove.rb
+gh release download "$cove_tag" -R cdimartino/codex-cove \
+  -D "$cove_release_assets"
+(
+  cd "$cove_release_assets"
+  shasum -a 256 --strict -c SHA256SUMS
+)
+./scripts/verify-homebrew-cask-release.sh \
+  "$cove_staged_checkout/Casks/codex-cove.rb" \
+  "$cove_release_assets"
+
+HOMEBREW_NO_AUTO_UPDATE=1 brew tap "$cove_tap" "$cove_staged_checkout"
+cove_tapped_checkout=$(brew --repository "$cove_tap")
+test "$(git -C "$cove_tapped_checkout" rev-parse HEAD)" = "$cove_expected_head"
+cmp "$cove_staged_checkout/Casks/codex-cove.rb" \
+  "$cove_tapped_checkout/Casks/codex-cove.rb"
+cmp "$cove_release_assets/codex-cove.rb" \
+  "$cove_tapped_checkout/Casks/codex-cove.rb"
+
+HOMEBREW_NO_AUTO_UPDATE=1 brew trust --cask "$cove_cask"
+cove_assert_one_cask_trust_added
+HOMEBREW_NO_AUTO_UPDATE=1 brew style --cask "$cove_cask"
+case "$cove_prior_cask_count" in
+  0) HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --new "$cove_cask" ;;
+  1) HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --strict --online "$cove_cask" ;;
+esac
+```
+
+Homebrew does not accept a Cask file path for the online audit. The disposable
+tap and three-part `user/repository/cask` token above ensure the audited bytes
+are the staged bytes. Item-specific trust also avoids trusting future content
+from the entire temporary tap. The default branch's exact tree selects
+`--new` only when no prior Cask exists; updates use `--strict --online`.
+
+For the first Cask release, continue in the same shell on the same clean
+account. The explicit version and prior-Cask checks below prevent a future
+release from accidentally claiming this 0.2.0 same-version replacement path as
+a real upgrade. The management command exits nonzero when Doctor is unhealthy;
+keep both private JSON reports for review. The waits are bounded so launch or
+termination failure cannot turn this gate into an indefinite hang.
+
+```sh
+set -eu
+: "${cove_validation_root:?run the preparation block in this shell first}"
+: "${cove_cask:?run the preparation block in this shell first}"
+: "${cove_app:?run the preparation block in this shell first}"
+: "${cove_settings:?run the preparation block in this shell first}"
+: "${cove_socket:?run the preparation block in this shell first}"
+test "$cove_tag" = v0.2.0
+test "$cove_prior_cask_count" -eq 0
+
+test ! -e "$cove_app"
+test ! -L "$cove_app"
+test ! -e "$HOME/bin/codex-cove"
+test ! -L "$HOME/bin/codex-cove"
+test ! -e "$HOME/bin/codex"
+test ! -L "$HOME/bin/codex"
+test ! -e "$cove_settings"
+
+cove_wait_for_socket() {
+  cove_wait_count=0
+  until [ -S "$cove_socket" ]; do
+    cove_wait_count=$((cove_wait_count + 1))
+    [ "$cove_wait_count" -lt 20 ] || return 1
+    sleep 1
+  done
+}
+
+cove_wait_for_exit() {
+  cove_wait_count=0
+  while pgrep -u "$(id -u)" -x CodexCove >/dev/null; do
+    cove_wait_count=$((cove_wait_count + 1))
+    [ "$cove_wait_count" -lt 20 ] || return 1
+    sleep 1
+  done
+}
+
+HOMEBREW_NO_AUTO_UPDATE=1 \
+  brew install --cask --require-sha "$cove_cask"
+open "$cove_app"
+cove_wait_for_socket
+"$HOME/bin/codex-cove" doctor --json \
+  >"$cove_validation_root/doctor-fresh.json"
+test "$("$HOME/bin/codex-cove" --version)" = "codex-cove $cove_version"
+cove_assert_cask_state "$cove_version" "$cove_version" false
+codesign --verify --deep --strict --verbose=2 "$cove_app"
+xcrun stapler validate "$cove_app"
+spctl --assess --type execute --verbose=4 "$cove_app"
+test "$(lipo -archs "$cove_app/Contents/MacOS/CodexCove")" = arm64
+```
+
+With Cove still open, note the current value of one benign preference, change
+it to a different valid value, wait for the control to settle, and quit Cove
+normally from its app menu. Do not manufacture or edit `settings.json`
+directly. Then continue in the same shell:
+
+```sh
+set -eu
+: "${cove_validation_root:?run the preparation block in this shell first}"
+: "${cove_cask:?run the preparation block in this shell first}"
+: "${cove_settings:?run the preparation block in this shell first}"
+cove_wait_for_exit
+test ! -e "$cove_socket"
+test -f "$cove_settings"
+test ! -L "$cove_settings"
+cove_changed_settings_checksum="$cove_validation_root/settings-after-change.sha256"
+shasum -a 256 "$cove_settings" >"$cove_changed_settings_checksum"
+HOMEBREW_NO_AUTO_UPDATE=1 \
+  brew reinstall --cask --require-sha "$cove_cask"
+shasum -a 256 --strict -c "$cove_changed_settings_checksum"
+open "$cove_app"
+cove_wait_for_socket
+"$HOME/bin/codex-cove" doctor --json \
+  >"$cove_validation_root/doctor-reinstall.json"
+test "$("$HOME/bin/codex-cove" --version)" = "codex-cove $cove_version"
+cove_assert_cask_state "$cove_version" "$cove_version" false
+```
+
+Before continuing, obtain explicit authorization for one non-sensitive routed
+session. Run it while the reinstalled app is live and verify its exact origin.
+Inspect both Doctor reports for `healthy: true`, the private socket, the
+installed signature, all remote helpers, and every editor target expected on
+that account. Restore the noted preference in Cove Settings, wait for the
+control to settle, and quit Cove normally. Only then continue in the same shell
+and uninstall:
+
+```sh
+set -eu
+: "${cove_changed_settings_checksum:?complete the reinstall block first}"
+cove_wait_for_exit
+test ! -e "$cove_socket"
+if shasum -a 256 --strict -c "$cove_changed_settings_checksum" \
+  >/dev/null 2>&1; then
+  exit 1
+fi
+cove_retained_settings_checksum="$cove_validation_root/settings-before-uninstall.sha256"
+shasum -a 256 "$cove_settings" >"$cove_retained_settings_checksum"
+HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask "$cove_cask"
+test ! -e "$cove_app"
+test ! -L "$cove_app"
+test ! -e "$HOME/bin/codex-cove"
+test ! -L "$HOME/bin/codex-cove"
+test ! -e "$HOME/bin/codex"
+test ! -L "$HOME/bin/codex"
+test -f "$cove_settings"
+test ! -L "$cove_settings"
+shasum -a 256 --strict -c "$cove_retained_settings_checksum"
+
+HOMEBREW_NO_AUTO_UPDATE=1 brew untrust --cask "$cove_cask"
+HOMEBREW_NO_AUTO_UPDATE=1 brew untap "$cove_tap"
+cove_assert_trust_restored
+```
+
+After uninstall, verify Cove handlers and installed editor extensions are absent
+while unrelated handlers and extensions remain. Never use `--force` or `--zap`
+for this gate: normal uninstall must retain the settings file byte-for-byte.
+Preserve the private validation directory until the reports and command output
+are reviewed and archived; remove only that exact directory afterward.
+
+If a command fails, do not rerun over the partial state. Preserve the validation
+directory and inspect it first. Then use normal `brew uninstall --cask` if the
+Cask was installed, followed by item-specific `brew untrust --cask` and
+`brew untap`; stop for manual recovery if any cleanup step fails.
+
+For 0.2.0, same-version `reinstall` is the available replacement-path test.
+
+### Validate upgrades after the first Cask
+
+For every later release, a same-version reinstall does not satisfy the upgrade
+gate. Run the common preparation and audit block above from the new tag, with
+the new staged-branch head. It will report `cove_prior_cask_count=1` and leave
+the exact new Cask in the disposable tap, but not install it. Continue in that
+same shell on a clean account. This replaces the first-Cask blocks above.
+
+First, replace the disposable tap with a local two-commit tap whose initial
+commit contains the exact prior Cask from the default branch, then install and
+verify that prior public release:
+
+```sh
+set -eu
+: "${cove_validation_root:?run the common preparation block first}"
+: "${cove_staged_checkout:?run the common preparation block first}"
+: "${cove_tapped_checkout:?run the common preparation block first}"
+test "$cove_tag" != v0.2.0
+test "$cove_prior_cask_count" -eq 1
+
+cove_upgrade_tap_source="$cove_validation_root/upgrade-tap-source"
+cove_prior_cask="$cove_validation_root/prior-codex-cove.rb"
+test ! -e "$cove_upgrade_tap_source"
+test ! -L "$cove_upgrade_tap_source"
+test ! -e "$cove_prior_cask"
+test ! -L "$cove_prior_cask"
+
+HOMEBREW_NO_AUTO_UPDATE=1 brew untrust --cask "$cove_cask"
+HOMEBREW_NO_AUTO_UPDATE=1 brew untap "$cove_tap"
+cove_assert_trust_restored
+
+mkdir "$cove_upgrade_tap_source"
+mkdir "$cove_upgrade_tap_source/Casks"
+git -C "$cove_staged_checkout" show \
+  "$cove_default_head:Casks/codex-cove.rb" >"$cove_prior_cask"
+cove_prior_version=$(./scripts/read-homebrew-cask-version.sh "$cove_prior_cask")
+cove_prior_tag="v$cove_prior_version"
+./scripts/verify-homebrew-cask-update.sh \
+  "$cove_prior_cask" \
+  "$cove_staged_checkout/Casks/codex-cove.rb"
+
+cove_prior_release_assets="$cove_validation_root/prior-release"
+test "$(gh release view "$cove_prior_tag" -R cdimartino/codex-cove \
+  --json isDraft --jq .isDraft)" = false
+test "$(gh release view "$cove_prior_tag" -R cdimartino/codex-cove \
+  --json isPrerelease --jq .isPrerelease)" = false
+test "$(gh release view "$cove_prior_tag" -R cdimartino/codex-cove \
+  --json isImmutable --jq .isImmutable)" = true
+mkdir "$cove_prior_release_assets"
+gh release download "$cove_prior_tag" -R cdimartino/codex-cove \
+  -D "$cove_prior_release_assets"
+(
+  cd "$cove_prior_release_assets"
+  shasum -a 256 --strict -c SHA256SUMS
+)
+./scripts/verify-homebrew-cask-release.sh \
+  "$cove_prior_cask" \
+  "$cove_prior_release_assets"
+
+install -m 0644 "$cove_prior_cask" \
+  "$cove_upgrade_tap_source/Casks/codex-cove.rb"
+git -C "$cove_upgrade_tap_source" init -q -b main
+git -C "$cove_upgrade_tap_source" add Casks/codex-cove.rb
+git -C "$cove_upgrade_tap_source" \
+  -c user.name='Codex Cove Release Validation' \
+  -c user.email='validation@example.invalid' \
+  -c commit.gpgsign=false \
+  commit -qm 'stage prior Codex Cove cask'
+cove_prior_tap_head=$(git -C "$cove_upgrade_tap_source" rev-parse HEAD)
+
+HOMEBREW_NO_AUTO_UPDATE=1 \
+  brew tap "$cove_tap" "$cove_upgrade_tap_source"
+cove_tapped_checkout=$(brew --repository "$cove_tap")
+test "$(git -C "$cove_tapped_checkout" rev-parse HEAD)" = \
+  "$cove_prior_tap_head"
+cmp "$cove_prior_cask" "$cove_tapped_checkout/Casks/codex-cove.rb"
+HOMEBREW_NO_AUTO_UPDATE=1 brew trust --cask "$cove_cask"
+cove_assert_one_cask_trust_added
+
+cove_wait_for_socket() {
+  cove_wait_count=0
+  until [ -S "$cove_socket" ]; do
+    cove_wait_count=$((cove_wait_count + 1))
+    [ "$cove_wait_count" -lt 20 ] || return 1
+    sleep 1
+  done
+}
+
+cove_wait_for_exit() {
+  cove_wait_count=0
+  while pgrep -u "$(id -u)" -x CodexCove >/dev/null; do
+    cove_wait_count=$((cove_wait_count + 1))
+    [ "$cove_wait_count" -lt 20 ] || return 1
+    sleep 1
+  done
+}
+
+HOMEBREW_NO_AUTO_UPDATE=1 \
+  brew install --cask --require-sha "$cove_cask"
+open "$cove_app"
+cove_wait_for_socket
+"$HOME/bin/codex-cove" doctor --json \
+  >"$cove_validation_root/doctor-prior.json"
+test "$("$HOME/bin/codex-cove" --version)" = \
+  "codex-cove $cove_prior_version"
+cove_assert_cask_state "$cove_prior_version" "$cove_prior_version" false
+codesign --verify --deep --strict --verbose=2 "$cove_app"
+xcrun stapler validate "$cove_app"
+spctl --assess --type execute --verbose=4 "$cove_app"
+```
+
+With the prior release still open, note one benign preference, change it to a
+different valid value, wait for it to settle, and quit Cove normally. Continue
+in the same shell to advance the exact same tap to its second commit and perform
+the real upgrade:
+
+```sh
+set -eu
+cove_wait_for_exit
+test ! -e "$cove_socket"
+test -f "$cove_settings"
+test ! -L "$cove_settings"
+cove_preupgrade_settings_checksum="$cove_validation_root/settings-before-upgrade.sha256"
+shasum -a 256 "$cove_settings" >"$cove_preupgrade_settings_checksum"
+
+install -m 0644 "$cove_staged_checkout/Casks/codex-cove.rb" \
+  "$cove_upgrade_tap_source/Casks/codex-cove.rb"
+git -C "$cove_upgrade_tap_source" add Casks/codex-cove.rb
+git -C "$cove_upgrade_tap_source" \
+  -c user.name='Codex Cove Release Validation' \
+  -c user.email='validation@example.invalid' \
+  -c commit.gpgsign=false \
+  commit -qm 'advance to staged Codex Cove cask'
+cove_staged_tap_head=$(git -C "$cove_upgrade_tap_source" rev-parse HEAD)
+git -C "$cove_tapped_checkout" pull --ff-only origin main
+test "$(git -C "$cove_tapped_checkout" rev-parse HEAD)" = \
+  "$cove_staged_tap_head"
+cmp "$cove_staged_checkout/Casks/codex-cove.rb" \
+  "$cove_tapped_checkout/Casks/codex-cove.rb"
+cmp "$cove_release_assets/codex-cove.rb" \
+  "$cove_tapped_checkout/Casks/codex-cove.rb"
+HOMEBREW_NO_AUTO_UPDATE=1 brew style --cask "$cove_cask"
+HOMEBREW_NO_AUTO_UPDATE=1 \
+  brew audit --cask --strict --online "$cove_cask"
+cove_assert_cask_state "$cove_version" "$cove_prior_version" true
+
+HOMEBREW_NO_AUTO_UPDATE=1 \
+  brew upgrade --cask --require-sha "$cove_cask"
+shasum -a 256 --strict -c "$cove_preupgrade_settings_checksum"
+open "$cove_app"
+cove_wait_for_socket
+"$HOME/bin/codex-cove" doctor --json \
+  >"$cove_validation_root/doctor-upgrade.json"
+test "$("$HOME/bin/codex-cove" --version)" = "codex-cove $cove_version"
+cove_assert_cask_state "$cove_version" "$cove_version" false
+codesign --verify --deep --strict --verbose=2 "$cove_app"
+xcrun stapler validate "$cove_app"
+spctl --assess --type execute --verbose=4 "$cove_app"
+test "$(lipo -archs "$cove_app/Contents/MacOS/CodexCove")" = arm64
+```
+
+Obtain explicit authorization for one non-sensitive routed session on the new
+version and verify its exact origin. Inspect the prior and upgraded Doctor
+reports, restore the noted preference, wait for it to settle, and quit Cove
+normally. Finish in the same shell:
+
+```sh
+set -eu
+cove_wait_for_exit
+test ! -e "$cove_socket"
+if shasum -a 256 --strict -c "$cove_preupgrade_settings_checksum" \
+  >/dev/null 2>&1; then
+  exit 1
+fi
+cove_upgrade_retained_checksum="$cove_validation_root/settings-before-upgrade-uninstall.sha256"
+shasum -a 256 "$cove_settings" >"$cove_upgrade_retained_checksum"
+HOMEBREW_NO_AUTO_UPDATE=1 brew uninstall --cask "$cove_cask"
+test ! -e "$cove_app"
+test ! -L "$cove_app"
+test ! -e "$HOME/bin/codex-cove"
+test ! -L "$HOME/bin/codex-cove"
+test ! -e "$HOME/bin/codex"
+test ! -L "$HOME/bin/codex"
+test -f "$cove_settings"
+test ! -L "$cove_settings"
+shasum -a 256 --strict -c "$cove_upgrade_retained_checksum"
+HOMEBREW_NO_AUTO_UPDATE=1 brew untrust --cask "$cove_cask"
+HOMEBREW_NO_AUTO_UPDATE=1 brew untap "$cove_tap"
+cove_assert_trust_restored
+```
+
+After the future-upgrade uninstall, perform the same handler and
+editor-extension cleanup check as the first-Cask path: Cove-owned entries must
+be absent and unrelated entries must remain. On any failure, preserve the
+validation directory, use only normal Cask uninstall plus item-specific
+untrust/untap cleanup, require the full trust snapshot to match its baseline,
+and stop for manual recovery if any cleanup assertion fails.
+
 The Cask's uninstall contract must let Homebrew retain ownership of app removal:
 Homebrew quits Cove, invokes the embedded helper with
 `uninstall --keep-app --keep-settings`, then removes the verified app artifact.
