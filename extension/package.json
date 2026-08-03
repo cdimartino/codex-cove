@@ -1,0 +1,136 @@
+{
+  "name": "cove-extension",
+  "displayName": "Codex Cove",
+  "description": "Codex-only VS Code and Cursor extension for local session registration, status, and terminal focus.",
+  "version": "0.2.0",
+  "private": true,
+  "publisher": "codex-cove-local",
+  "repository": {
+    "type": "git",
+    "url": "file:../.."
+  },
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:cove.createRoutedTerminal",
+    "onCommand:cove.registerActiveTerminal",
+    "onCommand:cove.focusExactRegisteredTerminal",
+    "onCommand:cove.showStatus"
+  ],
+  "main": "./out/src/extension.js",
+  "files": [
+    "out/src/**",
+    "schemas/**",
+    "LICENSE",
+    "package.json",
+    "tsconfig.json"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "cove.createRoutedTerminal",
+        "title": "Cove: Create Routed Terminal"
+      },
+      {
+        "command": "cove.registerActiveTerminal",
+        "title": "Cove: Register Active Terminal"
+      },
+      {
+        "command": "cove.focusExactRegisteredTerminal",
+        "title": "Cove: Focus Exact Registered Terminal"
+      },
+      {
+        "command": "cove.showStatus",
+        "title": "Cove: Show Status"
+      },
+      {
+        "command": "cove.copyStatus",
+        "title": "Cove: Copy Status"
+      }
+    ],
+    "terminal": {
+      "profiles": [
+        {
+          "id": "cove.routedTerminal",
+          "title": "Codex Cove",
+          "icon": "$(terminal)"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Cove",
+      "properties": {
+        "cove.socketPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional local Unix domain socket path for Codex Cove event delivery."
+        },
+        "cove.registerOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register already-open integrated terminals when the extension activates."
+        },
+        "cove.statusChannel": {
+          "type": "string",
+          "default": "Codex Cove",
+          "description": "Output channel name used for status reporting."
+        },
+        "cove.schemaMode": {
+          "type": "string",
+          "enum": [
+            "v1"
+          ],
+          "default": "v1",
+          "description": "Schema version to expose for Cove JSON documents."
+        }
+      }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": [
+          "**/cove-event.json",
+          "**/cove-event*.json"
+        ],
+        "url": "./schemas/cove-event.v1.schema.json"
+      },
+      {
+        "fileMatch": [
+          "**/decision-frame.json",
+          "**/decision-frame*.json"
+        ],
+        "url": "./schemas/decision-frame.v1.schema.json"
+      },
+      {
+        "fileMatch": [
+          "**/interactive-request.json",
+          "**/interactive-request*.json"
+        ],
+        "url": "./schemas/interactive-request.v1.schema.json"
+      },
+      {
+        "fileMatch": [
+          "**/theme-definition.json",
+          "**/theme-definition*.json"
+        ],
+        "url": "./schemas/theme-definition.v1.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc -p . && node ./scripts/copy-schemas.mjs",
+    "test": "npm run build && node --test ./out/test/**/*.test.js",
+    "package": "npm run build && node ./scripts/mkdir-dist.mjs && vsce package --no-dependencies --out ./dist/cove-extension.vsix",
+    "clean": "node ./scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "@types/vscode": "^1.92.0",
+    "@vscode/vsce": "^3.6.2",
+    "typescript": "^5.9.2"
+  }
+}

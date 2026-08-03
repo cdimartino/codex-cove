@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "nativeGlass.highContrast",
+  "name": "Native Glass · High Contrast",
+  "family": "nativeGlass",
+  "palette": {
+    "name": "High Contrast",
+    "colors": {
+      "background": "#000000",
+      "surface": "#111111",
+      "primaryText": "#FFFFFF",
+      "mutedText": "#D0D0D0",
+      "accent": "#00FFFF",
+      "working": "#66B3FF",
+      "waitingApproval": "#FFFF00",
+      "waitingInput": "#FF66FF",
+      "compacting": "#CC99FF",
+      "completed": "#00FF66",
+      "failed": "#FF3355",
+      "interrupted": "#FF9900",
+      "idle": "#D0D0D0"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Rounded",
+    "sizeScale": 1,
+    "weight": "medium",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 24,
+  "border": {
+    "color": "#FFFFFF",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#000000",
+    "x": 0,
+    "y": 12,
+    "blur": 30,
+    "opacity": 0.3
+  },
+  "noise": 0.03,
+  "blur": "regular",
+  "collapsedOpacity": 0.72,
+  "expandedOpacity": 0.88,
+  "animation": {
+    "enabled": true,
+    "durationMs": 180,
+    "easing": "easeOut"
+  }
+}

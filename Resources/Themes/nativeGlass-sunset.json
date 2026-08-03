@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "nativeGlass.sunset",
+  "name": "Native Glass · Sunset",
+  "family": "nativeGlass",
+  "palette": {
+    "name": "Sunset",
+    "colors": {
+      "background": "#1A0B1D",
+      "surface": "#342035",
+      "primaryText": "#FFF1E9",
+      "mutedText": "#C49AAF",
+      "accent": "#FF9A62",
+      "working": "#A892FF",
+      "waitingApproval": "#FFD166",
+      "waitingInput": "#FF91C8",
+      "compacting": "#C89CFF",
+      "completed": "#6EE7A8",
+      "failed": "#FF5B77",
+      "interrupted": "#FFAA73",
+      "idle": "#C49AAF"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Rounded",
+    "sizeScale": 1,
+    "weight": "medium",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 24,
+  "border": {
+    "color": "#FF9A62",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#0D050F",
+    "x": 0,
+    "y": 12,
+    "blur": 30,
+    "opacity": 0.3
+  },
+  "noise": 0.03,
+  "blur": "regular",
+  "collapsedOpacity": 0.72,
+  "expandedOpacity": 0.88,
+  "animation": {
+    "enabled": true,
+    "durationMs": 180,
+    "easing": "easeOut"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "retroTerminal.sunset",
+  "name": "Retro Terminal · Sunset",
+  "family": "retroTerminal",
+  "palette": {
+    "name": "Sunset",
+    "colors": {
+      "background": "#1A0B1D",
+      "surface": "#342035",
+      "primaryText": "#FFF1E9",
+      "mutedText": "#C49AAF",
+      "accent": "#FF9A62",
+      "working": "#A892FF",
+      "waitingApproval": "#FFD166",
+      "waitingInput": "#FF91C8",
+      "compacting": "#C89CFF",
+      "completed": "#6EE7A8",
+      "failed": "#FF5B77",
+      "interrupted": "#FFAA73",
+      "idle": "#C49AAF"
+    }
+  },
+  "typography": {
+    "family": "SF Mono",
+    "sizeScale": 0.96,
+    "weight": "medium",
+    "lineHeight": 1.1
+  },
+  "cornerRadius": 10,
+  "border": {
+    "color": "#FF9A62",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#0D050F",
+    "x": 0,
+    "y": 6,
+    "blur": 16,
+    "opacity": 0.4
+  },
+  "noise": 0.08,
+  "blur": "thin",
+  "collapsedOpacity": 0.86,
+  "expandedOpacity": 0.94,
+  "animation": {
+    "enabled": true,
+    "durationMs": 120,
+    "easing": "linear"
+  }
+}

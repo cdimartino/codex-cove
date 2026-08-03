@@ -1,0 +1,1 @@
+{"hookEventName":"PermissionRequest","session_id":"hook-fallback","tool_name":"shell","tool_input":{"command":"printf ok"}}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "launchId": "launch-fixture",
+  "sessionId": "thread-fixture",
+  "requestId": 42,
+  "result": {
+    "decision": "accept"
+  }
+}
+

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "minimalOLED.highContrast",
+  "name": "Minimal OLED · High Contrast",
+  "family": "minimalOLED",
+  "palette": {
+    "name": "High Contrast",
+    "colors": {
+      "background": "#000000",
+      "surface": "#111111",
+      "primaryText": "#FFFFFF",
+      "mutedText": "#D0D0D0",
+      "accent": "#00FFFF",
+      "working": "#66B3FF",
+      "waitingApproval": "#FFFF00",
+      "waitingInput": "#FF66FF",
+      "compacting": "#CC99FF",
+      "completed": "#00FF66",
+      "failed": "#FF3355",
+      "interrupted": "#FF9900",
+      "idle": "#D0D0D0"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Text",
+    "sizeScale": 1,
+    "weight": "regular",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 18,
+  "border": {
+    "color": "#FFFFFF",
+    "width": 0,
+    "style": "none"
+  },
+  "shadow": {
+    "color": "#000000",
+    "x": 0,
+    "y": 0,
+    "blur": 0,
+    "opacity": 0
+  },
+  "noise": 0,
+  "blur": "off",
+  "collapsedOpacity": 1,
+  "expandedOpacity": 1,
+  "animation": {
+    "enabled": true,
+    "durationMs": 140,
+    "easing": "easeInOut"
+  }
+}

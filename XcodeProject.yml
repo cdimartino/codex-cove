@@ -1,0 +1,70 @@
+name: CodexCoveUITests
+
+options:
+  minimumXcodeGenVersion: 2.46.0
+  xcodeVersion: "26.0"
+  deploymentTarget:
+    macOS: "14.0"
+
+packages:
+  CodexCove:
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  CodexCoveUITestHost:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/CodexCoveApp
+      - path: Resources
+        buildPhase: resources
+        excludes:
+          # The production packaging script generates AppIcon.icns from this
+          # source iconset. The UI-test host needs neither copy, and including
+          # both makes Xcode produce two resources at the same output path.
+          - AppIcon.iconset
+          - AppIcon.icns
+    dependencies:
+      - package: CodexCove
+        product: CoveCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.chris.codexcove.uitesthost
+        PRODUCT_NAME: Codex Cove UI Test Host
+        MARKETING_VERSION: 0.2.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Codex Cove UI Test Host
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_LSUIElement: YES
+
+  CodexCoveUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: UITests/CodexCoveUITests
+    dependencies:
+      - target: CodexCoveUITestHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.chris.codexcove.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: CodexCoveUITestHost
+
+schemes:
+  CodexCoveUITests:
+    build:
+      targets:
+        CodexCoveUITestHost: all
+        CodexCoveUITests:
+          - test
+    test:
+      gatherCoverageData: true
+      targets:
+        - name: CodexCoveUITests
+          parallelizable: false

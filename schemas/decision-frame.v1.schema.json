@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-cove.local/schemas/decision-frame.v1.schema.json",
+  "title": "DecisionFrame",
+  "description": "Broker response contract for a decision request.",
+  "schemaVersion": 1,
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "requestId"
+  ],
+  "oneOf": [
+    {
+      "required": [
+        "result"
+      ]
+    },
+    {
+      "required": [
+        "error"
+      ]
+    }
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "launchId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requestId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "integer"
+        }
+      ]
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "type": "object"
+    },
+    "error": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

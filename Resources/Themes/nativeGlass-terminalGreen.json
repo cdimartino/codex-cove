@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "nativeGlass.terminalGreen",
+  "name": "Native Glass · Terminal Green",
+  "family": "nativeGlass",
+  "palette": {
+    "name": "Terminal Green",
+    "colors": {
+      "background": "#020704",
+      "surface": "#07150C",
+      "primaryText": "#B9FFD0",
+      "mutedText": "#62A878",
+      "accent": "#54FF8A",
+      "working": "#82FFB0",
+      "waitingApproval": "#E8FF6A",
+      "waitingInput": "#9DFFDF",
+      "compacting": "#B0FF96",
+      "completed": "#35F27A",
+      "failed": "#FF667D",
+      "interrupted": "#FFAD66",
+      "idle": "#62A878"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Rounded",
+    "sizeScale": 1,
+    "weight": "medium",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 24,
+  "border": {
+    "color": "#54FF8A",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#010302",
+    "x": 0,
+    "y": 12,
+    "blur": 30,
+    "opacity": 0.3
+  },
+  "noise": 0.03,
+  "blur": "regular",
+  "collapsedOpacity": 0.72,
+  "expandedOpacity": 0.88,
+  "animation": {
+    "enabled": true,
+    "durationMs": 180,
+    "easing": "easeOut"
+  }
+}

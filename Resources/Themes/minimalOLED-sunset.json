@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "minimalOLED.sunset",
+  "name": "Minimal OLED · Sunset",
+  "family": "minimalOLED",
+  "palette": {
+    "name": "Sunset",
+    "colors": {
+      "background": "#1A0B1D",
+      "surface": "#342035",
+      "primaryText": "#FFF1E9",
+      "mutedText": "#C49AAF",
+      "accent": "#FF9A62",
+      "working": "#A892FF",
+      "waitingApproval": "#FFD166",
+      "waitingInput": "#FF91C8",
+      "compacting": "#C89CFF",
+      "completed": "#6EE7A8",
+      "failed": "#FF5B77",
+      "interrupted": "#FFAA73",
+      "idle": "#C49AAF"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Text",
+    "sizeScale": 1,
+    "weight": "regular",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 18,
+  "border": {
+    "color": "#FF9A62",
+    "width": 0,
+    "style": "none"
+  },
+  "shadow": {
+    "color": "#0D050F",
+    "x": 0,
+    "y": 0,
+    "blur": 0,
+    "opacity": 0
+  },
+  "noise": 0,
+  "blur": "off",
+  "collapsedOpacity": 1,
+  "expandedOpacity": 1,
+  "animation": {
+    "enabled": true,
+    "durationMs": 140,
+    "easing": "easeInOut"
+  }
+}

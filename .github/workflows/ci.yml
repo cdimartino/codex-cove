@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Build, test, and package
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      RUST_BACKTRACE: "1"
+      RUST_TOOLCHAIN: 1.97.1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Report toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          rustc --version
+          cargo --version
+          node --version
+          npm --version
+
+      - name: Install locked dependencies
+        run: make deps
+
+      - name: Verify synchronized release versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(plutil -extract CFBundleShortVersionString raw -o - Packaging/Info.plist)"
+          VERSION="$version" make verify-release-version
+
+      - name: Run test suites
+        run: make test
+
+      - name: Run Rust static checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path helper/Cargo.toml --all -- --check
+          cargo clippy \
+            --locked \
+            --manifest-path helper/Cargo.toml \
+            --all-targets \
+            --all-features \
+            -- \
+            -D warnings
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r script; do
+            case "$(head -n 1 "$script")" in
+              *bash*) bash -n "$script" ;;
+              *zsh*) zsh -n "$script" ;;
+              *) sh -n "$script" ;;
+            esac
+          done < <(find scripts Tests -type f -name '*.sh' -print | LC_ALL=C sort)
+
+      - name: Build release binaries and extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift build --disable-sandbox --configuration release
+          cargo build --locked --release --manifest-path helper/Cargo.toml
+          npm --prefix extension run package
+
+      - name: Compile UI tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project CodexCoveUITests.xcodeproj \
+            -scheme CodexCoveUITests \
+            -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing
+
+      - name: Smoke-test app packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          make package
+          codesign --verify --deep --strict --verbose=2 'build/Codex Cove.app'
+
+      - name: Verify generators did not change source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            git status --short --untracked-files=all
+            git diff --
+            exit 1
+          fi
+
+  remote-helpers:
+    name: Cross-build remote helpers
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_ZIGBUILD_VERSION: 0.23.0
+      COVE_RUSTUP_TOOLCHAIN: 1.97.1
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      RUST_TOOLCHAIN: 1.97.1
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: Install cross-build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v zig >/dev/null 2>&1; then
+            brew install zig
+          fi
+          cargo install cargo-zigbuild \
+            --locked \
+            --version "$CARGO_ZIGBUILD_VERSION"
+
+      - name: Build and verify all remote helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          make remote-artifacts
+          expected_version="$(sed -nE 's/^version = "([^"]+)"$/\1/p' helper/Cargo.toml | head -n 1)"
+          test -n "$expected_version"
+          test "$(lipo -archs build/remote/aarch64-apple-darwin/codex-cove)" = arm64
+          test "$(lipo -archs build/remote/x86_64-apple-darwin/codex-cove)" = x86_64
+          file build/remote/aarch64-unknown-linux-musl/codex-cove | grep -F 'ELF 64-bit LSB executable, ARM aarch64'
+          file build/remote/x86_64-unknown-linux-musl/codex-cove | grep -F 'ELF 64-bit LSB executable, x86-64'
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-unknown-linux-musl \
+            x86_64-unknown-linux-musl; do
+            LC_ALL=C grep -aF "codex-cove $expected_version" \
+              "build/remote/$target/codex-cove" >/dev/null
+          done
+          (
+            cd build/remote
+            shasum -a 256 -c SHA256SUMS
+          )

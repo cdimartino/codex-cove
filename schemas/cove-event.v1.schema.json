@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-cove.local/schemas/cove-event.v1.schema.json",
+  "title": "CoveEvent",
+  "description": "Versioned event envelope for Codex Cove integrations.",
+  "schemaVersion": 1,
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "kind",
+    "timestamp",
+    "source",
+    "sessionId",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "localCli",
+        "codexDesktop",
+        "remoteCli"
+      ]
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "turnId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "launchId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hostId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

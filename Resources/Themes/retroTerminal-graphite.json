@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "retroTerminal.graphite",
+  "name": "Retro Terminal · Graphite",
+  "family": "retroTerminal",
+  "palette": {
+    "name": "Graphite",
+    "colors": {
+      "background": "#081016",
+      "surface": "#13212B",
+      "primaryText": "#EDF7F7",
+      "mutedText": "#89A2A7",
+      "accent": "#55E6D0",
+      "working": "#52B8FF",
+      "waitingApproval": "#FFC857",
+      "waitingInput": "#FF8AD8",
+      "compacting": "#A892FF",
+      "completed": "#42E58A",
+      "failed": "#FF627D",
+      "interrupted": "#FF8C69",
+      "idle": "#89A2A7"
+    }
+  },
+  "typography": {
+    "family": "SF Mono",
+    "sizeScale": 0.96,
+    "weight": "medium",
+    "lineHeight": 1.1
+  },
+  "cornerRadius": 10,
+  "border": {
+    "color": "#55E6D0",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#020608",
+    "x": 0,
+    "y": 6,
+    "blur": 16,
+    "opacity": 0.4
+  },
+  "noise": 0.08,
+  "blur": "thin",
+  "collapsedOpacity": 0.86,
+  "expandedOpacity": 0.94,
+  "animation": {
+    "enabled": true,
+    "durationMs": 120,
+    "easing": "linear"
+  }
+}

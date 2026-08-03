@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-cove.local/schemas/interactive-request.v1.schema.json",
+  "title": "InteractiveRequest",
+  "description": "Interactive UI request for approvals, questions, and plans.",
+  "schemaVersion": 1,
+  "type": "object",
+  "required": [
+    "requestId",
+    "kind",
+    "sessionId",
+    "title",
+    "body",
+    "options",
+    "raw"
+  ],
+  "properties": {
+    "requestId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "integer"
+        }
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "approval",
+        "question",
+        "plan"
+      ]
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "launchId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisionSocket": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1
+    },
+    "options": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "shortcut": {
+            "type": "string"
+          },
+          "destructive": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "raw": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

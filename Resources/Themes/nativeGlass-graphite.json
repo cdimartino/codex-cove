@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "nativeGlass.graphite",
+  "name": "Native Glass · Graphite",
+  "family": "nativeGlass",
+  "palette": {
+    "name": "Graphite",
+    "colors": {
+      "background": "#081016",
+      "surface": "#13212B",
+      "primaryText": "#EDF7F7",
+      "mutedText": "#89A2A7",
+      "accent": "#55E6D0",
+      "working": "#52B8FF",
+      "waitingApproval": "#FFC857",
+      "waitingInput": "#FF8AD8",
+      "compacting": "#A892FF",
+      "completed": "#42E58A",
+      "failed": "#FF627D",
+      "interrupted": "#FF8C69",
+      "idle": "#89A2A7"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Rounded",
+    "sizeScale": 1,
+    "weight": "medium",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 24,
+  "border": {
+    "color": "#55E6D0",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#020608",
+    "x": 0,
+    "y": 12,
+    "blur": 30,
+    "opacity": 0.3
+  },
+  "noise": 0.03,
+  "blur": "regular",
+  "collapsedOpacity": 0.72,
+  "expandedOpacity": 0.88,
+  "animation": {
+    "enabled": true,
+    "durationMs": 180,
+    "easing": "easeOut"
+  }
+}

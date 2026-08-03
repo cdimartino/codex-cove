@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-cove.local/schemas/theme-definition.v1.schema.json",
+  "title": "ThemeDefinition",
+  "description": "Complete, versioned visual theme for Codex Cove.",
+  "schemaVersion": 1,
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "id",
+    "name",
+    "family",
+    "palette",
+    "typography",
+    "cornerRadius",
+    "border",
+    "shadow",
+    "noise",
+    "blur",
+    "collapsedOpacity",
+    "expandedOpacity",
+    "animation"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9](?!.*\\.\\.)[A-Za-z0-9._-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "family": {
+      "type": "string",
+      "enum": [
+        "nativeGlass",
+        "retroTerminal",
+        "minimalOLED"
+      ]
+    },
+    "palette": {
+      "type": "object",
+      "required": [
+        "name",
+        "colors"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "colors": {
+          "type": "object",
+          "required": [
+            "background",
+            "surface",
+            "primaryText",
+            "mutedText",
+            "accent",
+            "working",
+            "waitingApproval",
+            "waitingInput",
+            "compacting",
+            "completed",
+            "failed",
+            "interrupted",
+            "idle"
+          ],
+          "properties": {
+            "background": { "$ref": "#/$defs/color" },
+            "surface": { "$ref": "#/$defs/color" },
+            "primaryText": { "$ref": "#/$defs/color" },
+            "mutedText": { "$ref": "#/$defs/color" },
+            "accent": { "$ref": "#/$defs/color" },
+            "working": { "$ref": "#/$defs/color" },
+            "waitingApproval": { "$ref": "#/$defs/color" },
+            "waitingInput": { "$ref": "#/$defs/color" },
+            "compacting": { "$ref": "#/$defs/color" },
+            "completed": { "$ref": "#/$defs/color" },
+            "failed": { "$ref": "#/$defs/color" },
+            "interrupted": { "$ref": "#/$defs/color" },
+            "idle": { "$ref": "#/$defs/color" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "typography": {
+      "type": "object",
+      "required": [
+        "family",
+        "sizeScale",
+        "weight",
+        "lineHeight"
+      ],
+      "properties": {
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sizeScale": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 2
+        },
+        "weight": {
+          "type": "string",
+          "enum": [
+            "light",
+            "regular",
+            "medium",
+            "semibold",
+            "bold"
+          ]
+        },
+        "lineHeight": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 3
+        }
+      },
+      "additionalProperties": false
+    },
+    "cornerRadius": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 64
+    },
+    "border": {
+      "type": "object",
+      "required": [
+        "color",
+        "width",
+        "style"
+      ],
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "width": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "style": {
+          "type": "string",
+          "enum": [
+            "solid",
+            "dashed",
+            "none"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "shadow": {
+      "type": "object",
+      "required": [
+        "color",
+        "x",
+        "y",
+        "blur",
+        "opacity"
+      ],
+      "properties": {
+        "color": { "$ref": "#/$defs/color" },
+        "x": {
+          "type": "number",
+          "minimum": -128,
+          "maximum": 128
+        },
+        "y": {
+          "type": "number",
+          "minimum": -128,
+          "maximum": 128
+        },
+        "blur": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "noise": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "blur": {
+      "type": "string",
+      "enum": [
+        "off",
+        "thin",
+        "regular",
+        "thick"
+      ]
+    },
+    "collapsedOpacity": {
+      "type": "number",
+      "minimum": 0.35,
+      "maximum": 1
+    },
+    "expandedOpacity": {
+      "type": "number",
+      "minimum": 0.35,
+      "maximum": 1
+    },
+    "animation": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "durationMs",
+        "easing"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2000
+        },
+        "easing": {
+          "type": "string",
+          "enum": [
+            "linear",
+            "easeIn",
+            "easeOut",
+            "easeInOut",
+            "spring"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
+    }
+  },
+  "additionalProperties": false
+}

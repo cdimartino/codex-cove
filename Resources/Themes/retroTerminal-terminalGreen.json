@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "retroTerminal.terminalGreen",
+  "name": "Retro Terminal · Terminal Green",
+  "family": "retroTerminal",
+  "palette": {
+    "name": "Terminal Green",
+    "colors": {
+      "background": "#020704",
+      "surface": "#07150C",
+      "primaryText": "#B9FFD0",
+      "mutedText": "#62A878",
+      "accent": "#54FF8A",
+      "working": "#82FFB0",
+      "waitingApproval": "#E8FF6A",
+      "waitingInput": "#9DFFDF",
+      "compacting": "#B0FF96",
+      "completed": "#35F27A",
+      "failed": "#FF667D",
+      "interrupted": "#FFAD66",
+      "idle": "#62A878"
+    }
+  },
+  "typography": {
+    "family": "SF Mono",
+    "sizeScale": 0.96,
+    "weight": "medium",
+    "lineHeight": 1.1
+  },
+  "cornerRadius": 10,
+  "border": {
+    "color": "#54FF8A",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#010302",
+    "x": 0,
+    "y": 6,
+    "blur": 16,
+    "opacity": 0.4
+  },
+  "noise": 0.08,
+  "blur": "thin",
+  "collapsedOpacity": 0.86,
+  "expandedOpacity": 0.94,
+  "animation": {
+    "enabled": true,
+    "durationMs": 120,
+    "easing": "linear"
+  }
+}

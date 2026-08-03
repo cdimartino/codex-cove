@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "retroTerminal.highContrast",
+  "name": "Retro Terminal · High Contrast",
+  "family": "retroTerminal",
+  "palette": {
+    "name": "High Contrast",
+    "colors": {
+      "background": "#000000",
+      "surface": "#111111",
+      "primaryText": "#FFFFFF",
+      "mutedText": "#D0D0D0",
+      "accent": "#00FFFF",
+      "working": "#66B3FF",
+      "waitingApproval": "#FFFF00",
+      "waitingInput": "#FF66FF",
+      "compacting": "#CC99FF",
+      "completed": "#00FF66",
+      "failed": "#FF3355",
+      "interrupted": "#FF9900",
+      "idle": "#D0D0D0"
+    }
+  },
+  "typography": {
+    "family": "SF Mono",
+    "sizeScale": 0.96,
+    "weight": "medium",
+    "lineHeight": 1.1
+  },
+  "cornerRadius": 10,
+  "border": {
+    "color": "#FFFFFF",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#000000",
+    "x": 0,
+    "y": 6,
+    "blur": 16,
+    "opacity": 0.4
+  },
+  "noise": 0.08,
+  "blur": "thin",
+  "collapsedOpacity": 0.86,
+  "expandedOpacity": 0.94,
+  "animation": {
+    "enabled": true,
+    "durationMs": 120,
+    "easing": "linear"
+  }
+}

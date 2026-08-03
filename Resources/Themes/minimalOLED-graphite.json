@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "minimalOLED.graphite",
+  "name": "Minimal OLED · Graphite",
+  "family": "minimalOLED",
+  "palette": {
+    "name": "Graphite",
+    "colors": {
+      "background": "#081016",
+      "surface": "#13212B",
+      "primaryText": "#EDF7F7",
+      "mutedText": "#89A2A7",
+      "accent": "#55E6D0",
+      "working": "#52B8FF",
+      "waitingApproval": "#FFC857",
+      "waitingInput": "#FF8AD8",
+      "compacting": "#A892FF",
+      "completed": "#42E58A",
+      "failed": "#FF627D",
+      "interrupted": "#FF8C69",
+      "idle": "#89A2A7"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Text",
+    "sizeScale": 1,
+    "weight": "regular",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 18,
+  "border": {
+    "color": "#55E6D0",
+    "width": 0,
+    "style": "none"
+  },
+  "shadow": {
+    "color": "#020608",
+    "x": 0,
+    "y": 0,
+    "blur": 0,
+    "opacity": 0
+  },
+  "noise": 0,
+  "blur": "off",
+  "collapsedOpacity": 1,
+  "expandedOpacity": 1,
+  "animation": {
+    "enabled": true,
+    "durationMs": 140,
+    "easing": "easeInOut"
+  }
+}

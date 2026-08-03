@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "retroTerminal.ocean",
+  "name": "Retro Terminal · Ocean",
+  "family": "retroTerminal",
+  "palette": {
+    "name": "Ocean",
+    "colors": {
+      "background": "#031925",
+      "surface": "#073348",
+      "primaryText": "#E8FBFF",
+      "mutedText": "#81ADBB",
+      "accent": "#37D9ED",
+      "working": "#57A9FF",
+      "waitingApproval": "#FFD166",
+      "waitingInput": "#F4A8FF",
+      "compacting": "#9E9BFF",
+      "completed": "#4DE3A1",
+      "failed": "#FF6B7A",
+      "interrupted": "#FF9D76",
+      "idle": "#81ADBB"
+    }
+  },
+  "typography": {
+    "family": "SF Mono",
+    "sizeScale": 0.96,
+    "weight": "medium",
+    "lineHeight": 1.1
+  },
+  "cornerRadius": 10,
+  "border": {
+    "color": "#37D9ED",
+    "width": 1,
+    "style": "solid"
+  },
+  "shadow": {
+    "color": "#011017",
+    "x": 0,
+    "y": 6,
+    "blur": 16,
+    "opacity": 0.4
+  },
+  "noise": 0.08,
+  "blur": "thin",
+  "collapsedOpacity": 0.86,
+  "expandedOpacity": 0.94,
+  "animation": {
+    "enabled": true,
+    "durationMs": 120,
+    "easing": "linear"
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "minimalOLED.terminalGreen",
+  "name": "Minimal OLED · Terminal Green",
+  "family": "minimalOLED",
+  "palette": {
+    "name": "Terminal Green",
+    "colors": {
+      "background": "#020704",
+      "surface": "#07150C",
+      "primaryText": "#B9FFD0",
+      "mutedText": "#62A878",
+      "accent": "#54FF8A",
+      "working": "#82FFB0",
+      "waitingApproval": "#E8FF6A",
+      "waitingInput": "#9DFFDF",
+      "compacting": "#B0FF96",
+      "completed": "#35F27A",
+      "failed": "#FF667D",
+      "interrupted": "#FFAD66",
+      "idle": "#62A878"
+    }
+  },
+  "typography": {
+    "family": "SF Pro Text",
+    "sizeScale": 1,
+    "weight": "regular",
+    "lineHeight": 1.2
+  },
+  "cornerRadius": 18,
+  "border": {
+    "color": "#54FF8A",
+    "width": 0,
+    "style": "none"
+  },
+  "shadow": {
+    "color": "#010302",
+    "x": 0,
+    "y": 0,
+    "blur": 0,
+    "opacity": 0
+  },
+  "noise": 0,
+  "blur": "off",
+  "collapsedOpacity": 1,
+  "expandedOpacity": 1,
+  "animation": {
+    "enabled": true,
+    "durationMs": 140,
+    "easing": "easeInOut"
+  }
+}
