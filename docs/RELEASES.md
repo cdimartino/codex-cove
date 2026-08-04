@@ -518,9 +518,16 @@ brew install --cask cdimartino/codex-cove/codex-cove
 ```
 
 Those commands become live for a version only after the public GitHub release
-exists and its exact rendered `codex-cove.rb` has landed at
-`Casks/codex-cove.rb` on the default branch. Do not publish a Cask that points
-at a draft, private, missing, or replaceable artifact.
+exists and its rendered `codex-cove.rb` has landed at `Casks/codex-cove.rb` on
+the default branch. Do not publish a Cask that points at a draft, private,
+missing, or replaceable artifact.
+
+A reviewed recipe-only correction may update the live tap after publication
+without moving the immutable tag or replacing its assets. CI must independently
+verify the original release Cask and checksum manifest, then require the live
+Cask to be the deterministic output of the current template for the exact
+immutable archive version and SHA-256. Never use this path to replace or mutate
+the binary.
 
 After immutable release publication:
 

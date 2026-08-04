@@ -44,12 +44,9 @@ grep -F 'args: ["install", "--app-path", app_path]' "$cask_path" >/dev/null ||
     fail "postflight helper installation is missing"
 grep -F 'env:  { "PATH" => ENV.fetch("HOMEBREW_PATH", ENV.fetch("PATH")) }' \
     "$cask_path" >/dev/null || fail "postflight does not restore Homebrew's caller PATH"
-grep -F '["--sync-login-item-and-quit"]' "$cask_path" >/dev/null ||
-    fail "postflight login-item synchronization is missing"
-grep -F 'timeout: 10' "$cask_path" >/dev/null ||
-    fail "postflight login-item synchronization is not bounded"
-grep -F '["--unregister-login-item-and-quit"]' "$cask_path" >/dev/null ||
-    fail "postflight failure compensation is missing"
+if grep -F -- '--sync-login-item-and-quit' "$cask_path" >/dev/null; then
+    fail "postflight must not make optional Launch at Login state an install prerequisite"
+fi
 grep -F 'ENV["PATH"] = ENV.fetch("HOMEBREW_PATH", ENV.fetch("PATH"))' \
     "$cask_path" >/dev/null || fail "uninstall does not restore Homebrew's caller PATH"
 grep -F 'args:       ["uninstall", "--keep-settings", "--keep-app"]' \
@@ -141,6 +138,29 @@ write_release_checksums() {
 write_release_checksums
 "$repository_root/scripts/verify-homebrew-cask-release.sh" \
     "$cask_path" "$release_directory" >/dev/null
+"$repository_root/scripts/verify-homebrew-cask-tap.sh" \
+    "$cask_path" "$release_directory" >/dev/null
+
+# The public tap may receive a reviewed recipe-only correction without moving
+# the immutable tag or replacing its app archive. The release's own Cask asset
+# remains independently checksummed while the live Cask must render exactly
+# from the current repository template and the immutable archive.
+awk '
+    $0 == "  postflight do" {
+        print "  # immutable release recipe before tap correction"
+    }
+    { print }
+' "$cask_path" >"$release_directory/codex-cove.rb"
+write_release_checksums
+"$repository_root/scripts/verify-homebrew-cask-tap.sh" \
+    "$cask_path" "$release_directory" >/dev/null
+sed '1s/^/# tap drift\n/' "$cask_path" >"$cask_path.tap-drift"
+if "$repository_root/scripts/verify-homebrew-cask-tap.sh" \
+    "$cask_path.tap-drift" "$release_directory" >/dev/null 2>&1; then
+    fail "tap verifier accepted a Cask that was not rendered from the current template"
+fi
+cp "$cask_path" "$release_directory/codex-cove.rb"
+write_release_checksums
 
 wrong_url_cask="$temporary_root/wrong-url-cask.rb"
 sed 's|/releases/download/v#{version}/|/releases/latest/download/|' \
@@ -233,6 +253,9 @@ first_release_query_line=$(grep -nF \
 [ -n "$no_cask_guard_line" ] && [ -n "$first_release_query_line" ] &&
     [ "$no_cask_guard_line" -lt "$first_release_query_line" ] ||
     fail "CI does not skip network release verification before the first committed cask"
+grep -F './scripts/verify-homebrew-cask-tap.sh "$cask_path" "$release_directory"' \
+    "$ci_workflow" >/dev/null ||
+    fail "CI does not verify the live tap against the current template and immutable release"
 
 if command -v brew >/dev/null 2>&1; then
     brew ruby \

@@ -21,19 +21,9 @@ cask "codex-cove" do
   postflight do
     app_path = File.expand_path("~/Applications/Codex Cove.app")
 
-    begin
-      system_command "#{app_path}/Contents/MacOS/CodexCove",
-                     args:    ["--sync-login-item-and-quit"],
-                     timeout: 10
-      system_command "#{app_path}/Contents/Resources/bin/codex-cove",
-                     args: ["install", "--app-path", app_path],
-                     env:  { "PATH" => ENV.fetch("HOMEBREW_PATH", ENV.fetch("PATH")) }
-    rescue
-      system_command "#{app_path}/Contents/MacOS/CodexCove",
-                     args:    ["--unregister-login-item-and-quit"],
-                     timeout: 10
-      raise
-    end
+    system_command "#{app_path}/Contents/Resources/bin/codex-cove",
+                   args: ["install", "--app-path", app_path],
+                   env:  { "PATH" => ENV.fetch("HOMEBREW_PATH", ENV.fetch("PATH")) }
   end
 
   uninstall_preflight do
