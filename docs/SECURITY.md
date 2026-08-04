@@ -133,9 +133,32 @@ checksums, link targets, hook structure, and install manifest. An unexpected or
 modified path blocks the transaction and is preserved. Uninstall never edits
 SSH configuration or unrelated hooks and never contacts an unselected host.
 
+The Homebrew Cask preserves this boundary rather than reimplementing integration
+with broad shell mutations. It installs the app at the same
+`~/Applications/Codex Cove.app` path and invokes only code embedded in the
+verified app: a bounded app maintenance mode first restores the persisted
+Launch at Login preference, then the helper transaction applies integration.
+Postflight failure compensates by unregistering Launch at Login before
+Homebrew rolls the app back. During removal or upgrade, Homebrew first quits
+Cove, asks that helper to remove Cove-owned integration with
+`--keep-app --keep-settings`, and then removes or replaces the app artifact
+Homebrew owns. `--keep-app` is a narrow package-manager handoff; it does not
+relax manifest, ownership, bundle identity, or checksum validation.
+
+The helper stages and validates its local filesystem transaction before it
+invokes bounded editor or login-item cleanup, then revalidates before commit.
+Those external stores do not share a transaction with Cove. If a later step
+fails, Cove restores its local retry state and attempts idempotent compensation:
+only editor targets proven present before cleanup are reinstalled, and the
+persisted Launch at Login preference is resynchronized. Compensation failure is
+reported explicitly; it is not claimed as an atomic rollback. Rerunning the
+Cask operation safely rechecks the recorded cleanup obligations.
+
 Use `codex-cove install --app-path PATH --plan`,
-`codex-cove uninstall --plan`, and `codex-cove remote ... --plan` to inspect
-planned mutations before applying them.
+`codex-cove uninstall --plan`, `codex-cove remote deploy ALIAS --plan`, and
+`codex-cove remote remove ALIAS --plan` to inspect supported planned mutations
+before applying them. `remote add` updates local configuration directly and has
+no plan mode.
 
 ## macOS permissions
 
@@ -166,6 +189,12 @@ with `codex-cove remote add`. Relay commands use strict host-key checking,
 password prompt is hidden behind the app, and Cove does not enumerate SSH
 configuration.
 
+Homebrew and a web browser may separately contact GitHub to obtain a tap or
+release. That package-manager download is not runtime network behavior by the
+Cove app. The public Cask must use the immutable version-tag URL and a literal
+SHA-256 for the matching app archive; users should not substitute a private
+mirror or disable checksum/quarantine checks merely to make installation pass.
+
 ## Diagnostics
 
 `codex-cove doctor` reports installation identity, schemas, app-server
@@ -184,6 +213,15 @@ Rust and npm dependencies are locked. Release source is bound to a Git commit
 and, when the release runbook requires it, a deterministic source-candidate
 manifest and detached privacy-safe receipt. Published archives should include a
 SHA-256 checksum.
+
+The Homebrew definition is executable Ruby from an explicit custom tap. Inspect
+the repository URL before tapping it, and install the fully qualified
+`cdimartino/codex-cove/codex-cove` token. For each version, the release pipeline
+renders `codex-cove.rb` from the final local app ZIP checksum, includes that Cask
+in the aggregate `SHA256SUMS`, and publishes it with the immutable release. The
+verified file is then reviewed and landed unchanged at `Casks/codex-cove.rb`.
+Never accept `sha256 :no_check`, `version :latest`, a mutable asset URL, code
+that removes quarantine, or a Cask that requires `sudo` for Cove integration.
 
 The default local packaging path is ad hoc signed. Ad-hoc signing validates
 bundle structure at package/install time but does not establish publisher

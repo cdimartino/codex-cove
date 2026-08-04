@@ -17,12 +17,12 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{CStr, OsStr};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Child, Command, ExitCode, Output, Stdio};
 use std::time::Duration;
 
 fn main() -> ExitCode {
@@ -959,9 +959,16 @@ fn management_remote_install(args: &[String]) -> io::Result<i32> {
 fn management_install(args: &[String], uninstall: bool) -> io::Result<i32> {
     let layout = install::InstallLayout::current()?;
     let keep_settings = args.iter().any(|arg| arg == "--keep-settings");
+    let keep_app = args.iter().any(|arg| arg == "--keep-app");
+    if keep_app && !uninstall {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--keep-app is valid only with uninstall",
+        ));
+    }
     if args.iter().any(|arg| arg == "--plan") {
         let plan = if uninstall {
-            install::uninstall_plan_for_layout_with_settings(&layout, keep_settings)?
+            install::uninstall_plan_for_layout_with_options(&layout, keep_settings, keep_app)?
         } else {
             let config = Config::load()?;
             install::install_plan_for_layout(&env::current_exe()?, &config, &layout)?
@@ -985,10 +992,16 @@ fn management_install(args: &[String], uninstall: bool) -> io::Result<i32> {
         execute_local_uninstall(
             &layout,
             keep_settings,
+            keep_app,
             &mut editor_cleanup,
             unregister_login_item,
+            sync_login_item,
         )?;
-        println!("Codex Cove integration removed");
+        if keep_app {
+            println!("Codex Cove integration removed; app retained for external package manager");
+        } else {
+            println!("Codex Cove integration removed");
+        }
         return Ok(0);
     }
 
@@ -1070,7 +1083,7 @@ fn management_install(args: &[String], uninstall: bool) -> io::Result<i32> {
     )?;
     let mut extension_warnings = Vec::new();
     if let Some(vsix) = bundled_vsix {
-        let mut commands = SystemEditorExtensionCommands;
+        let mut commands = SystemEditorExtensionCommands::default();
         let report =
             install_editor_extension(&mut commands, &vsix, EXTENSION_ID, &previous_targets);
         match install::record_editor_extension_installation(
@@ -1158,7 +1171,20 @@ trait EditorExtensionCommands {
     fn uninstall_extension(&mut self, editor: &str, extension_id: &str) -> io::Result<()>;
 }
 
-struct SystemEditorExtensionCommands;
+const EDITOR_EXTENSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const EDITOR_EXTENSION_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+struct SystemEditorExtensionCommands {
+    timeout: Duration,
+}
+
+impl Default for SystemEditorExtensionCommands {
+    fn default() -> Self {
+        Self {
+            timeout: EDITOR_EXTENSION_COMMAND_TIMEOUT,
+        }
+    }
+}
 
 impl SystemEditorExtensionCommands {
     fn path(editor: &str) -> io::Result<PathBuf> {
@@ -1169,6 +1195,11 @@ impl SystemEditorExtensionCommands {
             )
         })
     }
+
+    #[cfg(test)]
+    fn with_timeout(timeout: Duration) -> Self {
+        Self { timeout }
+    }
 }
 
 impl EditorExtensionCommands for SystemEditorExtensionCommands {
@@ -1177,14 +1208,12 @@ impl EditorExtensionCommands for SystemEditorExtensionCommands {
     }
 
     fn query_extension(&mut self, editor: &str, extension_id: &str) -> io::Result<bool> {
-        let output = Command::new(Self::path(editor)?)
-            .arg("--list-extensions")
-            .output()?;
+        let operation = format!("{editor} extension query");
+        let mut command = Command::new(Self::path(editor)?);
+        command.arg("--list-extensions");
+        let output = run_editor_command_output(&mut command, &operation, self.timeout)?;
         if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "{editor} extension query exited {}",
-                output.status
-            )));
+            return Err(editor_command_exit_error(&operation, &output));
         }
         Ok(output
             .stdout
@@ -1193,31 +1222,232 @@ impl EditorExtensionCommands for SystemEditorExtensionCommands {
     }
 
     fn install_extension(&mut self, editor: &str, vsix: &Path) -> io::Result<()> {
-        let status = Command::new(Self::path(editor)?)
+        let operation = format!("{editor} extension install");
+        let mut command = Command::new(Self::path(editor)?);
+        command
             .args(["--install-extension"])
             .arg(vsix)
-            .arg("--force")
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "{editor} extension install exited {status}"
-            )))
-        }
+            .arg("--force");
+        run_editor_command_status(&mut command, &operation, self.timeout)
     }
 
     fn uninstall_extension(&mut self, editor: &str, extension_id: &str) -> io::Result<()> {
-        let status = Command::new(Self::path(editor)?)
-            .args(["--uninstall-extension", extension_id])
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "{editor} extension uninstall exited {status}"
-            )))
+        let operation = format!("{editor} extension uninstall");
+        let mut command = Command::new(Self::path(editor)?);
+        command.args(["--uninstall-extension", extension_id]);
+        run_editor_command_status(&mut command, &operation, self.timeout)
+    }
+}
+
+fn run_editor_command_output(
+    command: &mut Command,
+    operation: &str,
+    timeout: Duration,
+) -> io::Result<Output> {
+    let mut stdout = tempfile::tempfile().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not prepare stdout capture: {error}"),
+        )
+    })?;
+    let mut stderr = tempfile::tempfile().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not prepare stderr capture: {error}"),
+        )
+    })?;
+    let child_stdout = stdout.try_clone().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not attach stdout capture: {error}"),
+        )
+    })?;
+    let child_stderr = stderr.try_clone().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not attach stderr capture: {error}"),
+        )
+    })?;
+    command
+        .stdout(Stdio::from(child_stdout))
+        .stderr(Stdio::from(child_stderr));
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not start: {error}"),
+        )
+    })?;
+    let started = std::time::Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                terminate_remaining_process_group(child.id()).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("{operation} exited but descendant cleanup failed: {error}"),
+                    )
+                })?;
+                return Ok(Output {
+                    status,
+                    stdout: read_editor_command_capture(&mut stdout, operation, "stdout")?,
+                    stderr: read_editor_command_capture(&mut stderr, operation, "stderr")?,
+                });
+            }
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(EDITOR_EXTENSION_COMMAND_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                let cleanup = kill_process_group_and_reap(&mut child);
+                let stdout = read_editor_command_capture(&mut stdout, operation, "stdout");
+                let stderr = read_editor_command_capture(&mut stderr, operation, "stderr");
+                let diagnostic = editor_command_capture_diagnostic(
+                    stdout.as_deref().unwrap_or_default(),
+                    stderr.as_deref().unwrap_or_default(),
+                );
+                let capture_error = stdout
+                    .err()
+                    .or_else(|| stderr.err())
+                    .map(|error| format!("; capture error: {error}"))
+                    .unwrap_or_default();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "{operation} timed out after {timeout:?}; {cleanup}{diagnostic}{capture_error}"
+                    ),
+                ));
+            }
+            Err(error) => {
+                let cleanup = kill_process_group_and_reap(&mut child);
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{operation} wait failed: {error}; {cleanup}"),
+                ));
+            }
         }
+    }
+}
+
+fn run_editor_command_status(
+    command: &mut Command,
+    operation: &str,
+    timeout: Duration,
+) -> io::Result<()> {
+    let output = run_editor_command_output(command, operation, timeout)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(editor_command_exit_error(operation, &output))
+    }
+}
+
+fn read_editor_command_capture(
+    capture: &mut File,
+    operation: &str,
+    stream: &str,
+) -> io::Result<Vec<u8>> {
+    capture.seek(SeekFrom::Start(0)).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not rewind captured {stream}: {error}"),
+        )
+    })?;
+    let mut bytes = Vec::new();
+    capture.read_to_end(&mut bytes).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("{operation} could not read captured {stream}: {error}"),
+        )
+    })?;
+    Ok(bytes)
+}
+
+fn terminate_process_group(pid: u32) -> io::Result<()> {
+    let process_group = libc::pid_t::try_from(pid).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("child PID {pid} cannot identify a process group"),
+        )
+    })?;
+    if process_group <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("child PID {pid} cannot identify a process group"),
+        ));
+    }
+    if unsafe { libc::kill(-process_group, libc::SIGKILL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn terminate_remaining_process_group(pid: u32) -> io::Result<()> {
+    match terminate_process_group(pid) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn kill_process_group_and_reap(child: &mut Child) -> String {
+    let pid = child.id();
+    let group_kill_result = terminate_process_group(pid);
+    let direct_kill_result = if group_kill_result.is_err() {
+        Some(child.kill())
+    } else {
+        None
+    };
+    let wait_result = child.wait();
+    match (group_kill_result, direct_kill_result, wait_result) {
+        (Ok(()), _, Ok(status)) => {
+            format!("process {pid} group killed and reaped ({status})")
+        }
+        (Err(group_error), Some(Ok(())), Ok(status)) => format!(
+            "process {pid} group kill failed ({group_error}); direct process killed and reaped ({status})"
+        ),
+        (Err(group_error), Some(Err(kill_error)), Ok(status)) => format!(
+            "process {pid} group kill failed ({group_error}) and direct kill failed ({kill_error}), then reaped ({status})"
+        ),
+        (Ok(()), _, Err(wait_error)) => {
+            format!("process {pid} group killed but could not be reaped ({wait_error})")
+        }
+        (Err(group_error), Some(Ok(())), Err(wait_error)) => format!(
+            "process {pid} group kill failed ({group_error}); direct process killed but could not be reaped ({wait_error})"
+        ),
+        (Err(group_error), Some(Err(kill_error)), Err(wait_error)) => format!(
+            "process {pid} group kill failed ({group_error}), direct kill failed ({kill_error}), and wait failed ({wait_error})"
+        ),
+        (Err(group_error), None, status) => format!(
+            "process {pid} group kill failed ({group_error}); unexpected cleanup state ({status:?})"
+        ),
+    }
+}
+
+fn editor_command_exit_error(operation: &str, output: &Output) -> io::Error {
+    io::Error::other(format!(
+        "{operation} exited {}{}",
+        output.status,
+        editor_command_capture_diagnostic(&output.stdout, &output.stderr)
+    ))
+}
+
+fn editor_command_capture_diagnostic(stdout: &[u8], stderr: &[u8]) -> String {
+    let preferred = if stderr.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        stderr
+    } else {
+        stdout
+    };
+    let detail = String::from_utf8_lossy(preferred)
+        .trim()
+        .chars()
+        .take(512)
+        .collect::<String>();
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
     }
 }
 
@@ -1300,15 +1530,41 @@ fn install_editor_extension<C: EditorExtensionCommands>(
 }
 
 trait EditorExtensionCleaner {
-    fn uninstall_extension(&mut self, extension_id: &str, targets: &[String]) -> io::Result<()>;
+    fn uninstall_extension(
+        &mut self,
+        extension_id: &str,
+        targets: &[String],
+        restore_targets: &mut Vec<String>,
+    ) -> io::Result<()>;
+    fn restore_extension(
+        &mut self,
+        extension_id: &str,
+        targets: &[String],
+        vsix_path: &Path,
+    ) -> io::Result<()>;
 }
 
 struct SystemEditorExtensionCleaner;
 
 impl EditorExtensionCleaner for SystemEditorExtensionCleaner {
-    fn uninstall_extension(&mut self, extension_id: &str, targets: &[String]) -> io::Result<()> {
-        let mut commands = SystemEditorExtensionCommands;
-        cleanup_editor_extension(&mut commands, extension_id, targets)
+    fn uninstall_extension(
+        &mut self,
+        extension_id: &str,
+        targets: &[String],
+        restore_targets: &mut Vec<String>,
+    ) -> io::Result<()> {
+        let mut commands = SystemEditorExtensionCommands::default();
+        cleanup_editor_extension(&mut commands, extension_id, targets, restore_targets)
+    }
+
+    fn restore_extension(
+        &mut self,
+        extension_id: &str,
+        targets: &[String],
+        vsix_path: &Path,
+    ) -> io::Result<()> {
+        let mut commands = SystemEditorExtensionCommands::default();
+        restore_editor_extension(&mut commands, extension_id, targets, vsix_path)
     }
 }
 
@@ -1316,6 +1572,7 @@ fn cleanup_editor_extension<C: EditorExtensionCommands>(
     commands: &mut C,
     extension_id: &str,
     targets: &[String],
+    restore_targets: &mut Vec<String>,
 ) -> io::Result<()> {
     let mut failures = Vec::new();
     for editor in targets {
@@ -1334,22 +1591,28 @@ fn cleanup_editor_extension<C: EditorExtensionCommands>(
             Err(error) => {
                 failures.push(format!("{editor} extension query failed: {error}"));
             }
-            Ok(true) => match commands.uninstall_extension(editor, extension_id) {
-                Err(error) => {
-                    failures.push(format!("{editor} extension uninstall failed: {error}"))
+            Ok(true) => {
+                // The target was present before this attempt. Record it before
+                // invoking the editor because even a failing command may have
+                // removed it and therefore require compensation.
+                restore_targets.push(editor.clone());
+                match commands.uninstall_extension(editor, extension_id) {
+                    Err(error) => {
+                        failures.push(format!("{editor} extension uninstall failed: {error}"))
+                    }
+                    Ok(()) => match commands.query_extension(editor, extension_id) {
+                        Ok(false) => eprintln!(
+                            "codex-cove: removed and verified editor extension {extension_id} from {editor}"
+                        ),
+                        Ok(true) => failures.push(format!(
+                            "{editor} still reports {extension_id} after uninstall"
+                        )),
+                        Err(error) => failures.push(format!(
+                            "{editor} post-uninstall verification failed: {error}"
+                        )),
+                    },
                 }
-                Ok(()) => match commands.query_extension(editor, extension_id) {
-                    Ok(false) => eprintln!(
-                        "codex-cove: removed and verified editor extension {extension_id} from {editor}"
-                    ),
-                    Ok(true) => failures.push(format!(
-                        "{editor} still reports {extension_id} after uninstall"
-                    )),
-                    Err(error) => failures.push(format!(
-                        "{editor} post-uninstall verification failed: {error}"
-                    )),
-                },
-            },
+            }
         }
     }
     if failures.is_empty() {
@@ -1362,23 +1625,366 @@ fn cleanup_editor_extension<C: EditorExtensionCommands>(
     }
 }
 
-fn execute_local_uninstall<C, F>(
+fn restore_editor_extension<C: EditorExtensionCommands>(
+    commands: &mut C,
+    extension_id: &str,
+    targets: &[String],
+    vsix: &Path,
+) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(vsix).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("bundled editor extension is unavailable for compensation: {error}"),
+        )
+    })?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.nlink() != 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bundled editor extension is unsafe for compensation",
+        ));
+    }
+    let expected_vsix_sha256 = install::sha256_file(vsix)?;
+
+    let mut failures = Vec::new();
+    for editor in targets {
+        if !commands.is_available(editor) {
+            failures.push(format!("recorded editor {editor} is unreachable"));
+            continue;
+        }
+        if install::sha256_file(vsix)? != expected_vsix_sha256 {
+            failures.push("compensation VSIX changed before editor installation".to_owned());
+            break;
+        }
+        match commands.install_extension(editor, vsix) {
+            Err(error) => failures.push(format!("{editor} restore failed: {error}")),
+            Ok(()) => match commands.query_extension(editor, extension_id) {
+                Ok(true) => eprintln!(
+                    "codex-cove: restored and verified editor extension {extension_id} in {editor}"
+                ),
+                Ok(false) => failures.push(format!(
+                    "{editor} did not report {extension_id} after compensation"
+                )),
+                Err(error) => failures.push(format!(
+                    "{editor} compensation verification failed: {error}"
+                )),
+            },
+        }
+        if install::sha256_file(vsix)? != expected_vsix_sha256 {
+            failures.push("compensation VSIX changed during editor installation".to_owned());
+            break;
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "editor extension compensation failed ({})",
+            failures.join("; ")
+        )))
+    }
+}
+
+fn execute_local_uninstall<C, F, S>(
     layout: &install::InstallLayout,
     keep_settings: bool,
+    keep_app: bool,
     editor_cleanup: &mut C,
     mut unregister: F,
+    mut sync: S,
+) -> io::Result<()>
+where
+    C: EditorExtensionCleaner,
+    F: FnMut(&Path) -> io::Result<()>,
+    S: FnMut(&Path) -> io::Result<()>,
+{
+    if keep_app {
+        let mut external_cleanup_started = false;
+        let mut progress = LocalUninstallExternalCleanupProgress::default();
+        let result = install::apply_uninstall_with_options_before_commit(
+            layout,
+            keep_settings,
+            true,
+            |preflight| {
+                external_cleanup_started = true;
+                run_local_uninstall_external_cleanup(
+                    preflight,
+                    editor_cleanup,
+                    &mut unregister,
+                    &mut progress,
+                )
+            },
+        );
+        let error = match result {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        if !external_cleanup_started || fs::symlink_metadata(&layout.manifest_path).is_err() {
+            return Err(error);
+        }
+        return compensate_preserved_local_uninstall(
+            error,
+            layout,
+            &progress,
+            editor_cleanup,
+            &mut sync,
+        );
+    }
+
+    // All local artifact checks complete before either external cleanup or the
+    // transactional filesystem mutation begins.
+    let preflight = install::preflight_uninstall(layout)?;
+    let mut progress = LocalUninstallExternalCleanupProgress::default();
+    if let Err(error) = run_local_uninstall_external_cleanup(
+        &preflight,
+        editor_cleanup,
+        &mut unregister,
+        &mut progress,
+    ) {
+        return compensate_preserved_local_uninstall(
+            error,
+            layout,
+            &progress,
+            editor_cleanup,
+            &mut sync,
+        );
+    }
+    match install::apply_uninstall_with_options(layout, keep_settings, false) {
+        Ok(()) => Ok(()),
+        Err(error) if fs::symlink_metadata(&layout.manifest_path).is_ok() => {
+            compensate_preserved_local_uninstall(
+                error,
+                layout,
+                &progress,
+                editor_cleanup,
+                &mut sync,
+            )
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Default)]
+struct LocalUninstallExternalCleanupProgress {
+    editor_restore_targets: Vec<String>,
+    login_item_attempted: bool,
+}
+
+impl LocalUninstallExternalCleanupProgress {
+    fn changed_external_state(&self) -> bool {
+        !self.editor_restore_targets.is_empty() || self.login_item_attempted
+    }
+}
+
+fn compensate_preserved_local_uninstall<C, S>(
+    error: io::Error,
+    layout: &install::InstallLayout,
+    progress: &LocalUninstallExternalCleanupProgress,
+    editor_cleanup: &mut C,
+    sync: &mut S,
+) -> io::Result<()>
+where
+    C: EditorExtensionCleaner,
+    S: FnMut(&Path) -> io::Result<()>,
+{
+    if !progress.changed_external_state() {
+        return Err(error);
+    }
+    let restored_preflight = match install::preflight_uninstall(layout) {
+        Ok(preflight) => preflight,
+        Err(validation_error) => {
+            let kind = error.kind();
+            return Err(io::Error::new(
+                kind,
+                format!(
+                    "{error}; external cleanup compensation was skipped because the preserved installation did not pass validation: {validation_error}"
+                ),
+            ));
+        }
+    };
+    let compensation = compensate_local_uninstall_external_cleanup(
+        &restored_preflight,
+        progress,
+        editor_cleanup,
+        sync,
+    );
+    let kind = error.kind();
+    match compensation {
+        Ok(()) => Err(io::Error::new(
+            kind,
+            format!("{error}; external cleanup was compensated and the installation was preserved"),
+        )),
+        Err(compensation_error) => Err(io::Error::new(
+            kind,
+            format!("{error}; external cleanup compensation was incomplete: {compensation_error}"),
+        )),
+    }
+}
+
+fn compensate_local_uninstall_external_cleanup<C, S>(
+    preflight: &install::UninstallPreflight,
+    progress: &LocalUninstallExternalCleanupProgress,
+    editor_cleanup: &mut C,
+    sync: &mut S,
+) -> io::Result<()>
+where
+    C: EditorExtensionCleaner,
+    S: FnMut(&Path) -> io::Result<()>,
+{
+    let mut failures = Vec::new();
+    if !progress.editor_restore_targets.is_empty() {
+        match (
+            preflight.manifest().editor_extension_id.as_deref(),
+            preflight.removable_app(),
+        ) {
+            (Some(extension_id), Some(_)) => {
+                match snapshot_verified_compensation_vsix(preflight) {
+                    Ok(snapshot) => {
+                        if let Err(error) = editor_cleanup.restore_extension(
+                            extension_id,
+                            &progress.editor_restore_targets,
+                            snapshot.path(),
+                        ) {
+                            failures.push(error.to_string());
+                        }
+                    }
+                    Err(error) => failures.push(format!(
+                        "editor extension compensation input failed validation: {error}"
+                    )),
+                }
+                if let Err(error) = preflight.validate_removable_app() {
+                    failures.push(format!(
+                        "installed app changed during editor extension compensation: {error}"
+                    ));
+                }
+            }
+            _ => failures.push(
+                "editor extension compensation lacks a validated app or extension identifier"
+                    .to_owned(),
+            ),
+        }
+    }
+    if progress.login_item_attempted {
+        match preflight.removable_app() {
+            Some(app_path) => {
+                match preflight.validate_removable_app() {
+                    Ok(()) => {
+                        if let Err(error) = sync(app_path) {
+                            failures.push(format!(
+                                "launch-at-login compensation failed: {error}"
+                            ));
+                        }
+                    }
+                    Err(error) => failures.push(format!(
+                        "launch-at-login compensation skipped because the installed app changed: {error}"
+                    )),
+                }
+            }
+            None => failures
+                .push("launch-at-login compensation lacks a validated installed app".to_owned()),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(io::Error::other(failures.join("; ")))
+    }
+}
+
+fn snapshot_verified_compensation_vsix(
+    preflight: &install::UninstallPreflight,
+) -> io::Result<tempfile::NamedTempFile> {
+    preflight.validate_removable_app()?;
+    let app_path = preflight.removable_app().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "installed app is unavailable for editor extension compensation",
+        )
+    })?;
+    let source_path = app_path.join("Contents/Resources/extension/codex-cove.vsix");
+    let source_metadata = fs::symlink_metadata(&source_path)?;
+    if !source_metadata.is_file()
+        || source_metadata.file_type().is_symlink()
+        || source_metadata.uid() != unsafe { libc::geteuid() }
+        || source_metadata.nlink() != 1
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "bundled editor extension is not a safe current-user file",
+        ));
+    }
+    let mut source = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&source_path)?;
+    if !same_file_snapshot(&source_metadata, &source.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "bundled editor extension changed while opening",
+        ));
+    }
+    let source_sha256 = install::sha256_file(&source_path)?;
+
+    let mut snapshot = tempfile::Builder::new()
+        .prefix("codex-cove-extension-compensation-")
+        .suffix(".vsix")
+        .tempfile()?;
+    io::copy(&mut source, &mut snapshot)?;
+    snapshot.as_file_mut().flush()?;
+    snapshot.as_file().sync_all()?;
+    fs::set_permissions(snapshot.path(), fs::Permissions::from_mode(0o400))?;
+    if !same_file_snapshot(&source_metadata, &source.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "bundled editor extension changed while snapshotting",
+        ));
+    }
+    if install::sha256_file(&source_path)? != source_sha256
+        || install::sha256_file(snapshot.path())? != source_sha256
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "bundled editor extension contents changed while snapshotting",
+        ));
+    }
+    preflight.validate_removable_app()?;
+    Ok(snapshot)
+}
+
+fn same_file_snapshot(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.uid() == right.uid()
+        && left.nlink() == right.nlink()
+        && left.len() == right.len()
+        && left.mode() == right.mode()
+        && left.mtime() == right.mtime()
+        && left.mtime_nsec() == right.mtime_nsec()
+        && left.ctime() == right.ctime()
+        && left.ctime_nsec() == right.ctime_nsec()
+}
+
+fn run_local_uninstall_external_cleanup<C, F>(
+    preflight: &install::UninstallPreflight,
+    editor_cleanup: &mut C,
+    unregister: &mut F,
+    progress: &mut LocalUninstallExternalCleanupProgress,
 ) -> io::Result<()>
 where
     C: EditorExtensionCleaner,
     F: FnMut(&Path) -> io::Result<()>,
 {
-    // All local artifact checks complete before either external cleanup or the
-    // transactional filesystem mutation begins.
-    let preflight = install::preflight_uninstall(layout)?;
     if let Some(extension_id) = preflight.manifest().editor_extension_id.as_deref() {
         let targets = preflight.manifest().editor_cleanup_targets()?;
         editor_cleanup
-            .uninstall_extension(extension_id, &targets)
+            .uninstall_extension(
+                extension_id,
+                &targets,
+                &mut progress.editor_restore_targets,
+            )
             .map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -1389,12 +1995,24 @@ where
             })?;
     }
     if let Some(app_path) = preflight.removable_app() {
+        // Editor cleanup can be slow. Revalidate the exact app immediately
+        // before asking it to mutate launch-at-login registration.
+        preflight.validate_removable_app()?;
+        progress.login_item_attempted = true;
         unregister(app_path)?;
     }
-    install::apply_uninstall(layout, keep_settings)
+    Ok(())
 }
 
 fn unregister_login_item(app_path: &Path) -> io::Result<()> {
+    run_login_item_maintenance(app_path, "--unregister-login-item-and-quit", "cleanup")
+}
+
+fn sync_login_item(app_path: &Path) -> io::Result<()> {
+    run_login_item_maintenance(app_path, "--sync-login-item-and-quit", "sync")
+}
+
+fn run_login_item_maintenance(app_path: &Path, argument: &str, operation: &str) -> io::Result<()> {
     let executable = app_path.join("Contents/MacOS/CodexCove");
     if !codex_cove::config::is_executable(&executable) {
         return Err(io::Error::new(
@@ -1403,13 +2021,13 @@ fn unregister_login_item(app_path: &Path) -> io::Result<()> {
         ));
     }
     let mut command = Command::new(executable);
-    command.arg("--unregister-login-item-and-quit");
+    command.arg(argument);
     if run_bounded(&mut command, Duration::from_secs(5)) {
         Ok(())
     } else {
-        Err(io::Error::other(
-            "launch-at-login cleanup did not complete; preserving installation",
-        ))
+        Err(io::Error::other(format!(
+            "launch-at-login {operation} did not complete; preserving installation"
+        )))
     }
 }
 
@@ -1422,22 +2040,28 @@ fn find_on_path(executable: &str) -> Option<PathBuf> {
 }
 
 fn run_bounded(command: &mut Command, timeout: Duration) -> bool {
+    command.process_group(0);
     let Ok(mut child) = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         return false;
     };
     let started = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
+            Ok(Some(status)) => {
+                let cleanup_succeeded = terminate_remaining_process_group(child.id()).is_ok();
+                return status.success() && cleanup_succeeded;
+            }
             Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(25))
             }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = kill_process_group_and_reap(&mut child);
                 return false;
             }
-            Err(_) => return false,
+            Err(_) => {
+                let _ = kill_process_group_and_reap(&mut child);
+                return false;
+            }
         }
     }
 }
@@ -1522,7 +2146,8 @@ fn print_help() {
     println!(
         "Codex Cove helper\n\
          usage: codex-cove <doctor|privacy|theme|remote|install|uninstall|hook>\n\
-         install --app-path PATH applies user-local integration; --plan previews"
+         install --app-path PATH applies user-local integration; --plan previews\n\
+         uninstall [--keep-settings] [--keep-app] removes integration; --keep-app leaves the verified bundle for an external package manager"
     );
 }
 
@@ -1579,6 +2204,7 @@ mod tests {
     #[derive(Default)]
     struct FailingEditorExtensionCleaner {
         calls: Vec<(String, Vec<String>)>,
+        restore_calls: Vec<(String, Vec<String>, bool)>,
     }
 
     impl EditorExtensionCleaner for FailingEditorExtensionCleaner {
@@ -1586,9 +2212,66 @@ mod tests {
             &mut self,
             extension_id: &str,
             targets: &[String],
+            _restore_targets: &mut Vec<String>,
         ) -> io::Result<()> {
             self.calls.push((extension_id.to_owned(), targets.to_vec()));
             Err(io::Error::other("mock editor refused cleanup"))
+        }
+
+        fn restore_extension(
+            &mut self,
+            extension_id: &str,
+            targets: &[String],
+            vsix_path: &Path,
+        ) -> io::Result<()> {
+            self.restore_calls.push((
+                extension_id.to_owned(),
+                targets.to_vec(),
+                vsix_path.is_file(),
+            ));
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingEditorExtensionCleaner {
+        uninstall_calls: Vec<(String, Vec<String>)>,
+        restore_calls: Vec<(String, Vec<String>, bool)>,
+        mutate_app_on_restore: Option<PathBuf>,
+    }
+
+    impl EditorExtensionCleaner for RecordingEditorExtensionCleaner {
+        fn uninstall_extension(
+            &mut self,
+            extension_id: &str,
+            targets: &[String],
+            restore_targets: &mut Vec<String>,
+        ) -> io::Result<()> {
+            self.uninstall_calls
+                .push((extension_id.to_owned(), targets.to_vec()));
+            // Simulate code being installed and cursor already being absent.
+            restore_targets.push("code".to_owned());
+            Ok(())
+        }
+
+        fn restore_extension(
+            &mut self,
+            extension_id: &str,
+            targets: &[String],
+            vsix_path: &Path,
+        ) -> io::Result<()> {
+            self.restore_calls.push((
+                extension_id.to_owned(),
+                targets.to_vec(),
+                vsix_path.is_file(),
+            ));
+            if let Some(app_path) = self.mutate_app_on_restore.as_ref() {
+                fs::write(
+                    app_path.join("Contents/changed-during-editor-compensation"),
+                    b"changed",
+                )?;
+            }
+            Ok(())
         }
     }
 
@@ -1643,6 +2326,58 @@ mod tests {
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         (temp, path)
+    }
+
+    fn fake_editor_cli(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("editor-cli");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        (temp, path)
+    }
+
+    fn fake_installed_app(root: &Path) -> PathBuf {
+        let app = root.join("Codex Cove.app");
+        let contents = app.join("Contents");
+        let executable = contents.join("MacOS/CodexCove");
+        let extension = contents.join("Resources/extension/codex-cove.vsix");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::create_dir_all(extension.parent().unwrap()).unwrap();
+        fs::write(
+            contents.join("Info.plist"),
+            b"<plist><string>local.chris.codexcove</string></plist>",
+        )
+        .unwrap();
+        fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&extension, b"fixture editor extension").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        app
+    }
+
+    fn assert_timed_out_editor_was_reaped(timeout_error: &str) {
+        let pid = timeout_error
+            .split("; process ")
+            .nth(1)
+            .expect("timeout error must report the child process")
+            .split_whitespace()
+            .next()
+            .expect("timeout error must include the child PID")
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert_process_is_gone(pid);
+    }
+
+    fn assert_process_is_gone(pid: libc::pid_t) {
+        for _ in 0..100 {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("process {pid} remained after bounded command cleanup");
     }
 
     fn test_transport_timeout() -> Duration {
@@ -2150,10 +2885,17 @@ mod tests {
         let mut cleaner = FailingEditorExtensionCleaner::default();
         let mut unregister_called = false;
 
-        let error = execute_local_uninstall(&layout, false, &mut cleaner, |_| {
-            unregister_called = true;
-            Ok(())
-        })
+        let error = execute_local_uninstall(
+            &layout,
+            false,
+            false,
+            &mut cleaner,
+            |_| {
+                unregister_called = true;
+                Ok(())
+            },
+            |_| Ok(()),
+        )
         .unwrap_err();
 
         assert_eq!(
@@ -2184,6 +2926,238 @@ mod tests {
     }
 
     #[test]
+    fn keep_app_validation_failure_skips_external_cleanup_callbacks() {
+        let temp = tempdir().unwrap();
+        let layout = install::InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_installed_app(temp.path());
+        fs::write(&source, b"helper").unwrap();
+        fs::write(&real, b"codex").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        install::apply_install(
+            &source,
+            Some(&app),
+            &real,
+            &layout,
+            Some("codex-cove-local.cove-extension"),
+        )
+        .unwrap();
+        fs::write(app.join("Contents/unexpected-change"), b"changed").unwrap();
+        let mut cleaner = FailingEditorExtensionCleaner::default();
+        let mut unregister_called = false;
+
+        let error = execute_local_uninstall(
+            &layout,
+            true,
+            true,
+            &mut cleaner,
+            |_| {
+                unregister_called = true;
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        let detail = error.to_string();
+        assert!(
+            detail.contains("installed app bundle checksum changed"),
+            "{detail}"
+        );
+        assert!(
+            cleaner.calls.is_empty(),
+            "editor cleanup must not run before retained-app validation"
+        );
+        assert!(
+            !unregister_called,
+            "login-item cleanup must not run before retained-app validation"
+        );
+        assert!(layout.managed_binary.exists());
+        assert!(layout.manifest_path.exists());
+        assert!(app.exists());
+    }
+
+    #[test]
+    fn keep_app_failure_restores_only_editor_targets_present_before_cleanup() {
+        let temp = tempdir().unwrap();
+        let layout = install::InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_installed_app(temp.path());
+        fs::write(&source, b"helper").unwrap();
+        fs::write(&real, b"codex").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        install::apply_install(
+            &source,
+            Some(&app),
+            &real,
+            &layout,
+            Some("codex-cove-local.cove-extension"),
+        )
+        .unwrap();
+        let helper_before = fs::read(&layout.managed_binary).unwrap();
+        let manifest_before = fs::read(&layout.manifest_path).unwrap();
+        let mut cleaner = RecordingEditorExtensionCleaner::default();
+        let mut sync_calls = Vec::new();
+
+        let error = execute_local_uninstall(
+            &layout,
+            true,
+            true,
+            &mut cleaner,
+            |_| Err(io::Error::other("mock login-item cleanup failure")),
+            |path| {
+                sync_calls.push(path.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            cleaner.uninstall_calls,
+            [(
+                "codex-cove-local.cove-extension".to_owned(),
+                vec!["code".to_owned(), "cursor".to_owned()]
+            )]
+        );
+        assert_eq!(
+            cleaner.restore_calls,
+            [(
+                "codex-cove-local.cove-extension".to_owned(),
+                vec!["code".to_owned()],
+                true
+            )],
+            "an editor target that was already absent must remain absent"
+        );
+        assert_eq!(sync_calls.as_slice(), std::slice::from_ref(&app));
+        assert!(
+            error
+                .to_string()
+                .contains("external cleanup was compensated")
+        );
+        assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
+        assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
+        assert!(app.exists());
+    }
+
+    #[test]
+    fn compensation_revalidates_app_after_editor_restore_before_login_sync() {
+        let temp = tempdir().unwrap();
+        let layout = install::InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_installed_app(temp.path());
+        fs::write(&source, b"helper").unwrap();
+        fs::write(&real, b"codex").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        install::apply_install(
+            &source,
+            Some(&app),
+            &real,
+            &layout,
+            Some("codex-cove-local.cove-extension"),
+        )
+        .unwrap();
+        let helper_before = fs::read(&layout.managed_binary).unwrap();
+        let manifest_before = fs::read(&layout.manifest_path).unwrap();
+        let mut cleaner = RecordingEditorExtensionCleaner {
+            mutate_app_on_restore: Some(app.clone()),
+            ..Default::default()
+        };
+        let mut sync_called = false;
+
+        let error = execute_local_uninstall(
+            &layout,
+            true,
+            true,
+            &mut cleaner,
+            |_| Err(io::Error::other("mock login-item cleanup failure")),
+            |_| {
+                sync_called = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        let detail = error.to_string();
+        assert!(
+            detail.contains("external cleanup compensation was incomplete"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("installed app changed during editor extension compensation"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("launch-at-login compensation skipped"),
+            "{detail}"
+        );
+        assert!(
+            !sync_called,
+            "a changed app must never run during compensation"
+        );
+        assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
+        assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
+        assert!(app.exists());
+    }
+
+    #[test]
+    fn keep_app_detects_app_mutation_during_external_cleanup_before_commit() {
+        let temp = tempdir().unwrap();
+        let layout = install::InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_installed_app(temp.path());
+        fs::write(&source, b"helper").unwrap();
+        fs::write(&real, b"codex").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o755)).unwrap();
+        install::apply_install(&source, Some(&app), &real, &layout, None).unwrap();
+        let helper_before = fs::read(&layout.managed_binary).unwrap();
+        let manifest_before = fs::read(&layout.manifest_path).unwrap();
+        let mut cleaner = RecordingEditorExtensionCleaner::default();
+        let app_for_mutation = app.clone();
+        let mut sync_called = false;
+
+        let error = execute_local_uninstall(
+            &layout,
+            true,
+            true,
+            &mut cleaner,
+            move |_| {
+                fs::write(
+                    app_for_mutation.join("Contents/unexpected-change"),
+                    b"changed during cleanup",
+                )?;
+                Ok(())
+            },
+            |_| {
+                sync_called = true;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        let detail = error.to_string();
+        assert!(
+            detail.contains("installed app bundle checksum changed"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("compensation was skipped"),
+            "an unvalidated replacement must never be executed for compensation: {detail}"
+        );
+        assert!(!sync_called);
+        assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
+        assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
+        assert!(app.exists());
+    }
+
+    #[test]
     fn editor_install_records_only_verified_targets_for_a_new_install() {
         let mut commands = FakeEditorExtensionCommands {
             available: ["code".to_owned()].into_iter().collect(),
@@ -2200,6 +3174,169 @@ mod tests {
         assert_eq!(report.cleanup_targets, ["code".to_owned()]);
         assert!(report.failures.is_empty());
         assert!(commands.installed.contains("code"));
+    }
+
+    #[test]
+    fn system_editor_query_preserves_stdout_and_reports_exit_details() {
+        let (_temp, editor) = fake_editor_cli(
+            r#"
+if [ "$1" = "--list-extensions" ]; then
+    printf 'other.extension\r\ncodex-cove-local.cove-extension\r\n'
+    exit 0
+fi
+printf 'unexpected query arguments\n' >&2
+exit 64
+"#,
+        );
+        let editor = editor.to_string_lossy();
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(5));
+
+        assert!(
+            commands
+                .query_extension(&editor, "codex-cove-local.cove-extension")
+                .unwrap()
+        );
+
+        let (_temp, failing_editor) =
+            fake_editor_cli("printf 'fixture query failure detail\\n' >&2\nexit 23");
+        let failing_editor = failing_editor.to_string_lossy();
+        let error = commands
+            .query_extension(&failing_editor, "codex-cove-local.cove-extension")
+            .unwrap_err();
+        assert!(error.to_string().contains("exit status: 23"));
+        assert!(error.to_string().contains("fixture query failure detail"));
+    }
+
+    #[test]
+    fn system_editor_query_timeout_kills_and_reaps_child() {
+        let (_temp, editor) = fake_editor_cli(
+            r#"
+printf 'fixture query entered busy loop\n' >&2
+while :; do :; done
+"#,
+        );
+        let editor = editor.to_string_lossy();
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_millis(500));
+
+        let error = commands
+            .query_extension(&editor, "codex-cove-local.cove-extension")
+            .unwrap_err();
+        let detail = error.to_string();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(detail.contains("extension query timed out"), "{detail}");
+        assert!(detail.contains("killed and reaped"), "{detail}");
+        assert_timed_out_editor_was_reaped(&detail);
+    }
+
+    #[test]
+    fn system_editor_timeout_kills_the_wrapper_process_group() {
+        let temp = tempdir().unwrap();
+        let editor = temp.path().join("editor-cli");
+        fs::write(
+            &editor,
+            "#!/bin/sh\nsleep 30 &\ndescendant=$!\nprintf 'descendant:%s\\n' \"$descendant\" >&2\nwait \"$descendant\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+        let editor = editor.to_string_lossy();
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(5));
+
+        let error = commands
+            .query_extension(&editor, "codex-cove-local.cove-extension")
+            .unwrap_err();
+        let detail = error.to_string();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        let descendant_pid = detail
+            .split("descendant:")
+            .nth(1)
+            .unwrap_or_else(|| panic!("timeout diagnostic omitted descendant PID: {detail}"))
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert_process_is_gone(descendant_pid);
+    }
+
+    #[test]
+    fn bounded_failure_cleans_up_lingering_descendants() {
+        let temp = tempdir().unwrap();
+        let command_path = temp.path().join("bounded-command");
+        let descendant_pid_path = temp.path().join("descendant.pid");
+        fs::write(
+            &command_path,
+            format!(
+                "#!/bin/sh\nsleep 5 &\nprintf '%s\\n' \"$!\" > '{}'\nexit 7\n",
+                descendant_pid_path.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&command_path, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut command = Command::new(&command_path);
+
+        assert!(!run_bounded(&mut command, Duration::from_secs(2)));
+        let descendant_pid = fs::read_to_string(&descendant_pid_path)
+            .unwrap()
+            .trim()
+            .parse::<libc::pid_t>()
+            .unwrap();
+        assert_process_is_gone(descendant_pid);
+    }
+
+    #[test]
+    fn system_editor_status_paths_succeed_and_report_exit_details() {
+        let (_temp, editor) = fake_editor_cli(
+            r#"
+case "$1" in
+    --install-extension|--uninstall-extension) exit 0 ;;
+esac
+printf 'unexpected status arguments\n' >&2
+exit 64
+"#,
+        );
+        let editor = editor.to_string_lossy();
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_secs(5));
+
+        commands
+            .install_extension(&editor, Path::new("/tmp/codex-cove.vsix"))
+            .unwrap();
+        commands
+            .uninstall_extension(&editor, "codex-cove-local.cove-extension")
+            .unwrap();
+
+        let (_temp, failing_editor) =
+            fake_editor_cli("printf 'fixture install failure detail\\n' >&2\nexit 29");
+        let failing_editor = failing_editor.to_string_lossy();
+        let error = commands
+            .install_extension(&failing_editor, Path::new("/tmp/codex-cove.vsix"))
+            .unwrap_err();
+        assert!(error.to_string().contains("exit status: 29"));
+        assert!(error.to_string().contains("fixture install failure detail"));
+    }
+
+    #[test]
+    fn system_editor_status_timeout_kills_and_reaps_child() {
+        let (_temp, editor) = fake_editor_cli(
+            r#"
+printf 'fixture uninstall entered busy loop\n' >&2
+while :; do :; done
+"#,
+        );
+        let editor = editor.to_string_lossy();
+        let mut commands = SystemEditorExtensionCommands::with_timeout(Duration::from_millis(500));
+
+        let error = commands
+            .uninstall_extension(&editor, "codex-cove-local.cove-extension")
+            .unwrap_err();
+        let detail = error.to_string();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(detail.contains("extension uninstall timed out"), "{detail}");
+        assert!(detail.contains("killed and reaped"), "{detail}");
+        assert_timed_out_editor_was_reaped(&detail);
     }
 
     #[test]
@@ -2238,13 +3375,16 @@ mod tests {
             ..Default::default()
         };
 
+        let mut restore_targets = Vec::new();
         let error = cleanup_editor_extension(
             &mut commands,
             "codex-cove-local.cove-extension",
             &["code".to_owned(), "cursor".to_owned()],
+            &mut restore_targets,
         )
         .unwrap_err();
 
+        assert_eq!(restore_targets, ["code".to_owned()]);
         assert!(!commands.installed.contains("code"));
         assert!(commands.installed.contains("cursor"));
         assert!(
@@ -2258,12 +3398,15 @@ mod tests {
     #[test]
     fn editor_cleanup_requires_zero_available_legacy_targets_but_not_unrecorded_peers() {
         let mut no_editors = FakeEditorExtensionCommands::default();
+        let mut restore_targets = Vec::new();
         let error = cleanup_editor_extension(
             &mut no_editors,
             "codex-cove-local.cove-extension",
             &["code".to_owned(), "cursor".to_owned()],
+            &mut restore_targets,
         )
         .unwrap_err();
+        assert!(restore_targets.is_empty());
         assert!(
             error
                 .to_string()
@@ -2280,12 +3423,15 @@ mod tests {
             installed: ["code".to_owned()].into_iter().collect(),
             ..Default::default()
         };
+        let mut restore_targets = Vec::new();
         cleanup_editor_extension(
             &mut code_only,
             "codex-cove-local.cove-extension",
             &["code".to_owned()],
+            &mut restore_targets,
         )
         .unwrap();
+        assert_eq!(restore_targets, ["code".to_owned()]);
         assert!(code_only.installed.is_empty());
     }
 }

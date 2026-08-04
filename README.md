@@ -9,11 +9,29 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.2.0` and remains
-> under release validation; no `0.2.0` tag or binary GitHub release has been cut
-> yet. Local packages are signed ad hoc unless a signing identity is supplied.
-> Future distribution artifacts must pass the protected release pipeline below
-> before they are described as Developer ID signed and notarized.
+> **Release status:** the source tree is currently version `0.2.0`. Check
+> [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
+> public binary availability. Local packages are signed ad hoc unless a signing
+> identity is supplied; distribution artifacts must pass the protected release
+> pipeline before they are described as Developer ID signed and notarized.
+
+## Install with Homebrew
+
+For a public GitHub release whose matching Cask has landed, install the
+notarized Apple Silicon app from the explicit public tap:
+
+```sh
+brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew install --cask cdimartino/codex-cove/codex-cove
+```
+
+The Cask installs `Codex Cove.app` in `~/Applications` and runs its bundled
+helper to apply the same current-user Codex hooks, shim, and editor integration
+as the manual installer. It does not approve hook trust or macOS permissions.
+If Homebrew reports that the Cask is unavailable, that version's release-to-tap
+handoff has not landed; use the source quick start below or the verified manual
+release path. See [Installation](docs/INSTALLATION.md#install-with-homebrew) for
+verification, migration, upgrades, and removal.
 
 ## Highlights
 
@@ -97,8 +115,8 @@ For VS Code or Cursor, run **Cove: Create Routed Terminal** from the Command
 Palette for the strongest launch-to-terminal binding. Existing integrated
 terminals can be registered with **Cove: Register Active Terminal**.
 
-See [Installation](docs/INSTALLATION.md) for binary releases, macOS
-permissions, remote helpers, upgrades, and safe removal.
+See [Installation](docs/INSTALLATION.md) for Homebrew and manual binary
+releases, macOS permissions, remote helpers, upgrades, and safe removal.
 
 ## Everyday use
 
@@ -124,7 +142,7 @@ The complete interaction reference is in the [User Guide](docs/USER_GUIDE.md).
 ## Development
 
 ```sh
-make deps       # resolve Swift/Rust packages and npm ci
+make deps       # resolve locked dependencies and reject npm advisories
 make bootstrap  # read-only toolchain and dependency checks
 make build      # Swift app, Rust helper, TypeScript extension
 make test       # Swift foundations, Rust tests, extension tests
@@ -141,13 +159,14 @@ and can be regenerated after an intentional project-spec change:
 xcodegen generate --spec XcodeProject.yml --project .
 ```
 
-GitHub CI runs locked builds, tests, static checks, UI-test compilation, an
-ad-hoc packaging smoke test, and checksummed cross-builds for all four remote
-helper targets on pushes and pull requests without distribution secrets. Binary
-publication is a separate manual workflow: it accepts only an existing strict
-version tag on the protected default branch and fails unless candidate evidence,
-Developer ID signing, notarization, Gatekeeper assessment, and checksums all
-pass. See [Release Process](docs/RELEASES.md).
+GitHub CI runs locked dependency installation with a zero-advisory npm audit,
+builds, tests, static checks, UI-test compilation, an ad-hoc packaging smoke
+test, and checksummed cross-builds for all four remote helper targets. Both
+Linux-musl targets compile every Cargo target before their release binaries are
+collected. Binary publication is a separate manual workflow: it accepts only
+an existing strict version tag on the protected default branch and fails unless
+candidate evidence, Developer ID signing, notarization, Gatekeeper assessment,
+and checksums all pass. See [Release Process](docs/RELEASES.md).
 
 ## Project map
 
@@ -181,15 +200,17 @@ engineering evidence; they are not a substitute for the user guides above.
 
 ## Privacy in one paragraph
 
-Prompts, responses, commands, diffs, token metrics, and request details stay in
-memory. Cove persists settings plus bounded task metadata such as opaque task
-and launch identifiers, status, unread and reminder state, timestamps, source,
-and opaque terminal-location identifiers. Local runtime directories and files
-are current-user only. Event diagnostics redact sensitive payload fields;
-Doctor may show the local paths it inspected, so review its output before
-sharing. Cove contacts no service of its own; remote transport is opened only
-to SSH aliases you explicitly add, while Codex continues to use its own network
-services.
+Prompts, responses, commands, diffs, token metrics, and request details are not
+written to Cove's durable store. When notifications are enabled, macOS
+Notification Center may retain delivered banner content according to system
+settings. Cove otherwise persists settings plus bounded task metadata such as
+opaque task and launch identifiers, status, unread and reminder state,
+timestamps, source, and opaque terminal-location identifiers. Local runtime
+directories and files are current-user only. Event diagnostics redact sensitive
+payload fields; Doctor may show the local paths it inspected, so review its
+output before sharing. Cove contacts no service of its own; remote transport is
+opened only to SSH aliases you explicitly add, while Codex continues to use its
+own network services.
 
 ## License
 

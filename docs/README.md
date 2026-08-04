@@ -4,12 +4,12 @@ Start with the guide that matches what you are trying to do.
 
 ## Users
 
-- [Installation](INSTALLATION.md) — prerequisites, source and release installs,
-  macOS permissions, upgrades, remote helpers, and removal.
+- [Installation](INSTALLATION.md) — Homebrew, source, and manual release
+  installs, macOS permissions, migration, upgrades, remote helpers, and removal.
 - [User Guide](USER_GUIDE.md) — the island, queue, decisions, exact-origin
   navigation, editor commands, privacy, notifications, and settings.
-- [Troubleshooting](TROUBLESHOOTING.md) — diagnostic commands and common local,
-  editor, permission, and remote-integration failures.
+- [Troubleshooting](TROUBLESHOOTING.md) — diagnostic commands and common
+  Homebrew, local, editor, permission, and remote-integration failures.
 - [Security & Privacy](SECURITY.md) — data handling, trust boundaries,
   permissions, filesystem protections, network behavior, and reporting.
 
@@ -22,7 +22,9 @@ Start with the guide that matches what you are trying to do.
 - [Contributing](CONTRIBUTING.md) — development setup, test layers, change
   discipline, and review expectations.
 - [Release Process](RELEASES.md) — versioning, candidate freeze, CI, packaging,
-  signing, GitHub releases, and rollback.
+  signing, GitHub releases, Homebrew Cask handoff, and rollback.
+- [Codex Cove 0.2.0 release notes](releases/v0.2.0.md) — immutable user-facing
+  contents and compatibility notes for the `v0.2.0` release contract.
 
 ## Version-specific engineering records
 
@@ -37,5 +39,6 @@ matrices, and release evidence for a specific development cycle:
 - `HANDOFF.md`
 
 These records may describe incomplete gates or historical observations. Use the
-guides above for current product behavior, and the release notes for the status
-of a published artifact.
+guides above for current product behavior, the release notes for immutable
+contents and compatibility, and GitHub Releases plus the Homebrew Cask for
+artifact availability.

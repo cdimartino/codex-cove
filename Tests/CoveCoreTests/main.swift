@@ -12,6 +12,7 @@ struct CoveCoreSmokeTests {
         try run("theme opacity and round trip", testThemeOpacityBoundsAndRoundTrip)
         try run("quiet-hour boundaries and project rules", testQuietPolicies)
         try run("quiet settings persistence", testQuietSettingsRoundTrip)
+        try run("privacy scene activation recovery", testPrivacySceneActivationRecovery)
         try run("pin ordering and glance attention", testPinOrderingAndGlanceAttention)
         try run("follow-up reminder boundary", testFollowUpReminderBoundary)
         try run("notification preferences and launch boundary", testNotificationPreferencesAndLaunchBoundary)
@@ -144,6 +145,35 @@ struct CoveCoreSmokeTests {
             }
             precondition(generated.document == catalog.document)
         }
+    }
+
+    static func testPrivacySceneActivationRecovery() throws {
+        precondition(
+            CovePrivacyScene.locked.resolvingCapturePrivacy(
+                isCapturePrivacyActive: false
+            ) == .locked,
+            "ordinary state refreshes must not clear lock-screen privacy"
+        )
+        precondition(
+            CovePrivacyScene.locked.resolvingCapturePrivacy(
+                isCapturePrivacyActive: false,
+                allowLockedExit: true
+            ) == .normal,
+            "an active session must be able to leave the locked privacy scene"
+        )
+        precondition(
+            CovePrivacyScene.locked.resolvingCapturePrivacy(
+                isCapturePrivacyActive: true,
+                allowLockedExit: true
+            ) == .redacted,
+            "session activation must preserve active capture redaction"
+        )
+        precondition(
+            CovePrivacyScene.redacted.resolvingCapturePrivacy(
+                isCapturePrivacyActive: false
+            ) == .normal,
+            "capture privacy must clear when capture redaction is no longer active"
+        )
     }
 
     static func testThemeImportExportAndPermissions() throws {

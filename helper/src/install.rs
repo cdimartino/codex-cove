@@ -1025,6 +1025,16 @@ impl UninstallPreflight {
         self.removable_app.as_deref()
     }
 
+    pub fn validate_removable_app(&self) -> io::Result<()> {
+        let Some(app_path) = self.removable_app.as_deref() else {
+            return Ok(());
+        };
+        self.identity_for(app_path)?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "installed app disappeared"))?
+            .require_current(app_path, "installed app")?;
+        validate_staged_app(app_path, &self.manifest)
+    }
+
     fn identity_for(&self, path: &Path) -> io::Result<Option<PathIdentity>> {
         self.identities
             .iter()
@@ -1461,16 +1471,24 @@ fn validate_existing_directory_chain(root: &Path, path: &Path, field: &str) -> i
 }
 
 pub fn uninstall_plan() -> io::Result<MutationPlan> {
-    uninstall_plan_for_layout_with_settings(&InstallLayout::current()?, false)
+    uninstall_plan_for_layout_with_options(&InstallLayout::current()?, false, false)
 }
 
 pub fn uninstall_plan_for_layout(layout: &InstallLayout) -> io::Result<MutationPlan> {
-    uninstall_plan_for_layout_with_settings(layout, false)
+    uninstall_plan_for_layout_with_options(layout, false, false)
 }
 
 pub fn uninstall_plan_for_layout_with_settings(
     layout: &InstallLayout,
     keep_settings: bool,
+) -> io::Result<MutationPlan> {
+    uninstall_plan_for_layout_with_options(layout, keep_settings, false)
+}
+
+pub fn uninstall_plan_for_layout_with_options(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
 ) -> io::Result<MutationPlan> {
     let inspection = inspect_uninstall(layout);
     let mut actions = Vec::new();
@@ -1547,9 +1565,19 @@ pub fn uninstall_plan_for_layout_with_settings(
     }
     if let Some(app_path) = inspection.removable_app.as_ref() {
         actions.push(PlannedAction {
-            kind: "removeChecksumMatchingApp".to_owned(),
+            kind: if keep_app {
+                "preserveExternallyManagedApp"
+            } else {
+                "removeChecksumMatchingApp"
+            }
+            .to_owned(),
             path: app_path.clone(),
-            detail: "bundle identity and full-tree checksum match the install manifest".to_owned(),
+            detail: if keep_app {
+                "leave the verified bundle for the external package manager to remove or replace"
+                    .to_owned()
+            } else {
+                "bundle identity and full-tree checksum match the install manifest".to_owned()
+            },
         });
     }
     actions.push(PlannedAction {
@@ -1681,9 +1709,36 @@ fn capture_uninstall_identity(
 }
 
 pub fn apply_uninstall(layout: &InstallLayout, keep_settings: bool) -> io::Result<()> {
-    apply_uninstall_transactional(layout, keep_settings, || Ok(()))
+    apply_uninstall_with_options(layout, keep_settings, false)
 }
 
+pub fn apply_uninstall_with_options(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
+) -> io::Result<()> {
+    apply_uninstall_with_options_before_commit(layout, keep_settings, keep_app, |_| Ok(()))
+}
+
+pub fn apply_uninstall_with_options_before_commit<F>(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
+    before_commit: F,
+) -> io::Result<()>
+where
+    F: FnOnce(&UninstallPreflight) -> io::Result<()>,
+{
+    apply_uninstall_transactional_with_cleanup_options(
+        layout,
+        keep_settings,
+        keep_app,
+        before_commit,
+        remove_staged_path_identity_bound,
+    )
+}
+
+#[cfg(test)]
 fn apply_uninstall_transactional<F>(
     layout: &InstallLayout,
     keep_settings: bool,
@@ -1692,14 +1747,23 @@ fn apply_uninstall_transactional<F>(
 where
     F: FnOnce() -> io::Result<()>,
 {
-    apply_uninstall_transactional_with_cleanup(
-        layout,
-        keep_settings,
-        before_commit,
-        remove_staged_path_identity_bound,
-    )
+    apply_uninstall_transactional_with_options(layout, keep_settings, false, before_commit)
 }
 
+#[cfg(test)]
+fn apply_uninstall_transactional_with_options<F>(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
+    before_commit: F,
+) -> io::Result<()>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    apply_uninstall_with_options_before_commit(layout, keep_settings, keep_app, |_| before_commit())
+}
+
+#[cfg(test)]
 fn apply_uninstall_transactional_with_cleanup<F, C>(
     layout: &InstallLayout,
     keep_settings: bool,
@@ -1710,8 +1774,71 @@ where
     F: FnOnce() -> io::Result<()>,
     C: FnMut(&StagedPath) -> io::Result<()>,
 {
-    // This is intentionally repeated after command-level cleanup. It closes the
-    // window in which a shim, helper, hook file, or app could have changed.
+    apply_uninstall_transactional_with_cleanup_options(
+        layout,
+        keep_settings,
+        false,
+        |_| before_commit(),
+        cleanup,
+    )
+}
+
+fn apply_uninstall_transactional_with_cleanup_options<F, C>(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
+    before_commit: F,
+    cleanup: C,
+) -> io::Result<()>
+where
+    F: FnOnce(&UninstallPreflight) -> io::Result<()>,
+    C: FnMut(&StagedPath) -> io::Result<()>,
+{
+    apply_uninstall_transactional_with_cleanup_inner(
+        layout,
+        keep_settings,
+        keep_app,
+        before_commit,
+        cleanup,
+    )
+}
+
+fn apply_uninstall_transactional_with_cleanup_inner<F, C>(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
+    before_commit: F,
+    cleanup: C,
+) -> io::Result<()>
+where
+    F: FnOnce(&UninstallPreflight) -> io::Result<()>,
+    C: FnMut(&StagedPath) -> io::Result<()>,
+{
+    apply_uninstall_transactional_with_cleanup_at_validation_boundary(
+        layout,
+        keep_settings,
+        keep_app,
+        || Ok(()),
+        before_commit,
+        cleanup,
+    )
+}
+
+fn apply_uninstall_transactional_with_cleanup_at_validation_boundary<V, F, C>(
+    layout: &InstallLayout,
+    keep_settings: bool,
+    keep_app: bool,
+    before_retained_app_validation: V,
+    before_commit: F,
+    cleanup: C,
+) -> io::Result<()>
+where
+    V: FnOnce() -> io::Result<()>,
+    F: FnOnce(&UninstallPreflight) -> io::Result<()>,
+    C: FnMut(&StagedPath) -> io::Result<()>,
+{
+    // This preflight runs inside the transaction. Callers may perform an early
+    // read-only plan, but only this snapshot authorizes the staged mutations.
     let preflight = preflight_uninstall(layout)?;
     let manifest = preflight.manifest.clone();
     let mut transaction = UninstallTransaction::default();
@@ -1741,7 +1868,7 @@ where
             }
         }
 
-        if let Some(app_path) = preflight.removable_app.as_ref() {
+        if !keep_app && let Some(app_path) = preflight.removable_app.as_ref() {
             let staged = transaction
                 .stage(app_path, preflight.identity_for(app_path)?)?
                 .ok_or_else(|| {
@@ -1802,12 +1929,46 @@ where
             validate_staged_manifest(&staged_support.join(manifest_relative), &manifest)?;
         }
 
-        before_commit()?;
+        // In package-manager mode the app remains at its canonical path so
+        // Homebrew can remove or replace it. Revalidate both the directory
+        // identity and the complete bundle after every local uninstall
+        // mutation has been staged and before any external cleanup begins.
+        // Otherwise a concurrent app replacement could consume the integration
+        // manifest or leave editor/login-item cleanup partially applied.
+        before_retained_app_validation()?;
+        if keep_app {
+            preflight.validate_removable_app()?;
+        }
+
+        transaction.validate_commit().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("uninstall commit validation failed before external cleanup: {error}"),
+            )
+        })?;
+        before_commit(&preflight)?;
+
+        // The callback may involve bounded external processes. Revalidate the
+        // retained bundle and every staged local artifact before crossing the
+        // commit point. Callers that mutate external state are responsible for
+        // compensating it if this check rolls the local transaction back.
+        if keep_app {
+            preflight.validate_removable_app()?;
+        }
+        transaction.validate_commit().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("uninstall commit validation failed after external cleanup: {error}"),
+            )
+        })?;
         Ok(())
     })();
 
     match mutation {
-        Ok(()) => transaction.commit_with(cleanup),
+        // Validation is complete on both sides of the callback above. Local
+        // removal is the commit point; cleanup failures after it retain only
+        // private recovery artifacts and never reinstall integration.
+        Ok(()) => transaction.commit_prevalidated_with(cleanup),
         Err(error) => match transaction.rollback() {
             Ok(()) => Err(error),
             Err(rollback_error) => Err(io::Error::other(format!(
@@ -2346,38 +2507,40 @@ impl UninstallTransaction {
         }
     }
 
-    fn commit_with<F>(self, mut remove_staged: F) -> io::Result<()>
+    fn validate_commit(&self) -> io::Result<()> {
+        for entry in &self.paths {
+            entry
+                .staged_identity
+                .require_current(&entry.staged, "uninstall commit snapshot")?;
+            entry
+                .stage_directory_identity
+                .require_current(&entry.stage_directory, "uninstall commit stage directory")?;
+            match (entry.replacement, PathIdentity::capture(&entry.original)?) {
+                (Some(expected), Some(current)) if expected == current => {}
+                (None, None) => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!(
+                            "uninstall destination changed after staging: {}",
+                            entry.original.display()
+                        ),
+                    ));
+                }
+            }
+        }
+        for (directory, identity) in &self.empty_directories {
+            identity.require_current(directory, "uninstall empty-directory cleanup")?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn commit_with<F>(self, remove_staged: F) -> io::Result<()>
     where
         F: FnMut(&StagedPath) -> io::Result<()>,
     {
-        let validation = (|| -> io::Result<()> {
-            for entry in &self.paths {
-                entry
-                    .staged_identity
-                    .require_current(&entry.staged, "uninstall commit snapshot")?;
-                entry
-                    .stage_directory_identity
-                    .require_current(&entry.stage_directory, "uninstall commit stage directory")?;
-                match (entry.replacement, PathIdentity::capture(&entry.original)?) {
-                    (Some(expected), Some(current)) if expected == current => {}
-                    (None, None) => {}
-                    _ => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::AlreadyExists,
-                            format!(
-                                "uninstall destination changed after staging: {}",
-                                entry.original.display()
-                            ),
-                        ));
-                    }
-                }
-            }
-            for (directory, identity) in &self.empty_directories {
-                identity.require_current(directory, "uninstall empty-directory cleanup")?;
-            }
-            Ok(())
-        })();
-        if let Err(error) = validation {
+        if let Err(error) = self.validate_commit() {
             let recovery_paths = self
                 .paths
                 .iter()
@@ -2396,12 +2559,20 @@ impl UninstallTransaction {
                 ))),
             };
         }
-        // Everything above this line is reversible. Once the first verified
-        // snapshot is destructively cleaned, uninstall is logically committed:
-        // owned hooks have been removed, links/app/support are absent, and a
-        // later cleanup failure must never restore an already-partially-deleted
-        // tree. Preserve failed random-private stages, continue independent
-        // cleanup, and report the committed-but-incomplete state explicitly.
+        self.commit_prevalidated_with(remove_staged)
+    }
+
+    fn commit_prevalidated_with<F>(self, mut remove_staged: F) -> io::Result<()>
+    where
+        F: FnMut(&StagedPath) -> io::Result<()>,
+    {
+        // The local snapshots were validated before the caller's external
+        // cleanup callback. Once that callback succeeds, local uninstall is
+        // logically committed: owned hooks have been removed and the other
+        // integration artifacts are staged out of their canonical paths. A
+        // later cleanup failure must never restore integration behind the
+        // external stores. Preserve failed random-private stages, continue
+        // independent cleanup, and report committed-but-incomplete state.
         let mut cleanup_failures = Vec::new();
         let mut first_cleanup_kind = None;
         for entry in &self.paths {
@@ -3712,6 +3883,100 @@ mod tests {
         assert!(manifest.app_bundle_sha256.is_some());
         apply_uninstall(&layout, false).unwrap();
         assert!(!app.exists());
+    }
+
+    #[test]
+    fn externally_managed_uninstall_preserves_app_and_settings() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_app(temp.path());
+        executable(&source, b"helper");
+        executable(&real, b"codex");
+
+        apply_install(&source, Some(&app), &real, &layout, None).unwrap();
+        let settings = layout.support.join("settings.json");
+        fs::write(&settings, b"settings").unwrap();
+        let config_before = fs::read(&layout.config_path).unwrap();
+        let app_before = sha256_tree(&app).unwrap();
+
+        let plan = uninstall_plan_for_layout_with_options(&layout, true, true).unwrap();
+        assert!(!plan.blocked);
+        assert!(plan.actions.iter().any(|action| {
+            action.kind == "preserveExternallyManagedApp"
+                && action.path == app
+                && action.detail.contains("external package manager")
+        }));
+
+        apply_uninstall_with_options(&layout, true, true).unwrap();
+
+        assert_eq!(sha256_tree(&app).unwrap(), app_before);
+        assert_eq!(fs::read(&layout.config_path).unwrap(), config_before);
+        assert_eq!(fs::read(&settings).unwrap(), b"settings");
+        assert!(!layout.managed_binary.exists());
+        assert!(!layout.manifest_path.exists());
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
+        assert!(fs::symlink_metadata(&layout.management_link).is_err());
+    }
+
+    #[test]
+    fn externally_managed_uninstall_validates_app_before_external_cleanup() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let app = fake_app(temp.path());
+        executable(&source, b"helper");
+        executable(&real, b"codex");
+
+        apply_install(&source, Some(&app), &real, &layout, None).unwrap();
+        let hooks_before = fs::read(&layout.hooks_path).unwrap();
+        let helper_before = fs::read(&layout.managed_binary).unwrap();
+        let manifest_before = fs::read(&layout.manifest_path).unwrap();
+        let app_mutation = app.join("Contents/concurrent-change.txt");
+
+        let mut external_cleanup_called = false;
+        let error = apply_uninstall_transactional_with_cleanup_at_validation_boundary(
+            &layout,
+            true,
+            true,
+            || {
+                fs::write(&app_mutation, b"preserve concurrent app change")?;
+                Ok(())
+            },
+            |_| {
+                external_cleanup_called = true;
+                Ok(())
+            },
+            remove_staged_path_identity_bound,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("installed app changed after preflight")
+        );
+        assert!(
+            !external_cleanup_called,
+            "external cleanup must not begin until the retained app passes late validation"
+        );
+        assert_eq!(
+            fs::read(&app_mutation).unwrap(),
+            b"preserve concurrent app change"
+        );
+        assert_eq!(fs::read(&layout.hooks_path).unwrap(), hooks_before);
+        assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
+        assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
+        assert_eq!(
+            fs::read_link(&layout.codex_shim).unwrap(),
+            layout.managed_binary
+        );
+        assert_eq!(
+            fs::read_link(&layout.management_link).unwrap(),
+            layout.managed_binary
+        );
     }
 
     #[test]

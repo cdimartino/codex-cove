@@ -1,6 +1,7 @@
 # Codex Cove 0.2.0 owner and manual release pass
 
-Last updated: 2026-08-01, America/New_York.
+Last updated: 2026-08-04, America/New_York.
+Repository-state update: 2026-08-04, America/New_York.
 
 Candidate-freeze rule: this runbook and its receipt template are
 source-candidate inputs. Once `SOURCE_CANDIDATE.manifest` is written, do not edit
@@ -10,24 +11,25 @@ deliberately excluded from the source manifest.
 
 ## Status and purpose
 
-This is the canonical procedure for the 0.2.0 release gates that cannot be
-claimed from unit tests or XCUITest alone. It is intentionally not marked as
+This is the canonical optional follow-up procedure for observations that cannot
+be claimed from unit tests or XCUITest alone. It is intentionally not marked as
 completed. Run it with the macOS console unlocked and record only observed
-results.
+results. Unobserved rows remain `not-run` or `blocked`; they are not silently
+converted to passes and do not block the streamlined functional 0.2.0 release.
 
-Use Sections 2-4 as procedures, not as an early claim of owner success. The
-release order is: preflight; complete the accessibility, display, sleep, and
-selected-host matrices in Sections 5-7; restore the baseline; then perform the
-Section 8 owner script once, first attempt, using the procedures in Sections
-2-4. Missing hardware or authorization leaves the corresponding prerequisite
-blocked.
+Use Sections 2-4 as procedures, not as an early claim of owner success. For a
+follow-up owner pass, complete the accessibility, display, sleep, and
+selected-host matrices in Sections 5-7, restore the baseline, then perform the
+Section 8 owner script once using Sections 2-4. Missing hardware or
+authorization leaves only that optional follow-up row blocked.
 
-The deterministic UI-test host is appropriate for rehearsing Cove-owned
+The deterministic UI-test host is appropriate for validating Cove-owned
 questions, approvals, failure/retry, and Settings controls. It disables real
 external jumps, notification delivery, sound playback, persistence, brokers,
-relays, and other external effects. Production checks are therefore separate
-and mandatory for real `Open in Codex`, audible sound, persistence, terminal
-attribution, hook trust, and reconnect behavior.
+relays, and other external effects. Production checks remain useful follow-up
+evidence for real `Open in Codex`, audible sound, persistence, terminal
+attribution, hook trust, and reconnect behavior, but are not distribution
+blockers for this release profile.
 
 ## Safety and evidence rules
 
@@ -120,6 +122,15 @@ is needed: eight local CLI tasks, one Desktop task, and two remote tasks. If
 grant no permission. A partial batch authorizes only its stated count; any
 expired, closed, or unusable task that cannot satisfy its listed reuse makes
 the remaining observation `Blocked` or requires a newly approved replacement.
+
+## Automated release-gate provenance
+
+Record the dependency gate as passing only when `make deps` completes its
+locked clean installs and reports zero npm advisories. Record each Linux-musl
+all-target row only from the canonical remote-artifact builder, which invokes
+`cargo zigbuild --all-targets` for both architectures. Do not substitute a
+binary-only cross-build or an audit with a higher severity threshold; CI,
+packaging, and local release evidence must exercise the same Make targets.
 
 ## Result receipt
 
@@ -273,15 +284,14 @@ p0_p1_signoff=pass|fail|blocked|not-run
 notes=release_candidate_complete
 ```
 
-For a completed 0.2.0 receipt, the validator additionally enforces every
-automated gate and digest checkpoint, 23 passing UI tests with zero failures or
-skips, the exact authorized 7-task `L-A` placement (Terminal 1, iTerm2 0,
-VS Code 3, Cursor 3), one task each for `L-B`, `D-B`, `R-A`, and `R-B`, one
-Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
-current-candidate retests for the two carried editor-window P1 defects. The
+For a completed 0.2.0 receipt, the validator enforces every mandatory automated
+gate and digest checkpoint, 23 passing UI tests with zero failures or skips,
+candidate lineage, current-candidate automated regression evidence for the two
+carried editor-window P1 defects plus the session-activation privacy P1, final
+process/socket/Doctor health, and zero open P0/P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=ci_stability_packaging_immutability` and
+`source_change_reason=streamlined_functional_release_gate` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 
@@ -311,8 +321,8 @@ or relabeling the failed attempt:
 4. Create the new root receipt with the exact required header and new digest
    as lines 1-2. Record `supersedes_source_candidate_digest` and
    `superseded_candidate_receipt_sha256`, carry every old P0/P1 failure as
-   historical or `fixed-awaiting-retest`, and initialize all new authorization
-   and evidence fields without inheriting prior passes.
+   historical or unresolved, and initialize all new authorization and evidence
+   fields without inheriting prior passes.
 5. Run `make candidate-verify` before collecting new evidence and again after
    every applicable gate. A moved receipt must be restored if the replacement
    write does not complete.
@@ -323,15 +333,16 @@ Keep the release-current defect register in `SOURCE_CANDIDATE.receipt`, not in
 this candidate-covered runbook, the validation record, task transcripts, or
 screenshots. One row contains only a local sequential reference, severity
 (`P0` or `P1`), affected release-row name, first-observed timestamp, status
-(`open`, `fixed-awaiting-retest`, or `closed`), current-candidate retest receipt
+(`open`, `fixed-awaiting-retest`, `resolved-automated`, or `closed`), current-candidate retest receipt
 reference, and a short content-free symptom category. Never include prompts,
 responses, commands, diffs, paths outside this repository, terminal/task IDs,
 Desktop thread IDs, SSH aliases, or user preference values.
 
-A defect may move to `closed` only after the fix is in a newly frozen source
-candidate, that candidate's manifest digest verifies, all invalidated
-automated/package evidence is rerun, and the exact failed manual row passes on
-that candidate. At final review, record the review timestamp, exact P0 and P1
+A defect may move to `resolved-automated` after the fix is in a newly frozen
+source candidate, that candidate's manifest digest verifies, and the directly
+covering automated/package regression evidence is rerun. A defect may move to
+`closed` after the exact manual row also passes. At final review, record the
+review timestamp, exact P0 and P1
 open counts, whether every closed entry has a current-candidate retest receipt,
 and the wrong-scope-send count. `p0_p1_signoff=pass` requires all of these:
 
@@ -348,12 +359,12 @@ retest/signoff fields never closes the no-open-P0/P1 release row.
 
 1. Unlock the Mac and keep the console active. Confirm the production app is
    the installed 0.2.0 bundle at
-   `/Users/chris/Applications/Codex Cove.app`.
+   `$HOME/Applications/Codex Cove.app`.
 2. Confirm one production Cove process and a healthy doctor report:
 
    ```sh
    ps -axo pid,etime,command | rg '/Codex Cove\.app/Contents/MacOS/CodexCove'
-   /Users/chris/bin/codex-cove doctor --json
+   "$HOME/bin/codex-cove" doctor --json
    ```
 
 3. Confirm doctor reports strict/deep signature verification and a passing
@@ -379,13 +390,13 @@ retest/signoff fields never closes the no-open-P0/P1 release row.
 
 Use the already-built UI-test host, not the production app:
 
-`/Users/chris/Source/codex-cove/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app`
+`<repo-root>/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app`
 
 For each row, quit the prior fixture host, create a fresh private temporary
 directory, and launch the named fixture. This example launches `mixed-20`:
 
 ```sh
-COVE_FIXTURE_HOST='/Users/chris/Source/codex-cove/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app'
+COVE_FIXTURE_HOST="$PWD/DerivedData/Build/Products/Debug/Codex Cove UI Test Host.app"
 COVE_FIXTURE_STATE="$(mktemp -d "${TMPDIR%/}/CodexCoveUITests-manual.XXXXXX")"
 chmod 700 "$COVE_FIXTURE_STATE"
 open -n "$COVE_FIXTURE_HOST" --args \
@@ -485,7 +496,7 @@ For the first single-task check, use this exact prompt and no other content:
 `Reply with exactly CODEX_COVE_INTERACTIVE_OK. Do not use tools, inspect files, or modify anything.`
 
 This is the Terminal.app task already counted in batch `L-A`; it is not an
-extra task. Run it from `/Users/chris/Source/codex-cove` in an installed,
+extra task. Run it from the repository root in an installed,
 user-visible Terminal.app pane through the installed shim. Before starting the timed owner
 attempt, have the user review System Settings > Privacy & Security for Cove's
 Terminal Automation and Accessibility access. If a first real jump must prompt
@@ -496,7 +507,7 @@ cannot be reviewed or granted, mark exact origin blocked; do not include a
 permission dialog in the under-eight-second measurement.
 
 ```sh
-CODEX_COVE_TRACE_BROKER=1 /Users/chris/bin/codex \
+CODEX_COVE_TRACE_BROKER=1 "$HOME/bin/codex" \
   --sandbox read-only \
   --ask-for-approval never \
   'Reply with exactly CODEX_COVE_INTERACTIVE_OK. Do not use tools, inspect files, or modify anything.'
@@ -570,7 +581,7 @@ requires distinct terminal attribution, Task A completing, Task B remaining
 waiting for its native command approval, and the waiting card staying usable.
 
 ```sh
-CODEX_COVE_TRACE_BROKER=1 /Users/chris/bin/codex \
+CODEX_COVE_TRACE_BROKER=1 "$HOME/bin/codex" \
   --sandbox read-only \
   --ask-for-approval on-request \
   'Use the shell tool to request approval before running /usr/bin/true, with sandbox_permissions set to require_escalated and justification "Codex Cove owner-pass routing check". Do not run it before approval. Do not use any other tool, inspect files, or modify anything.'
@@ -589,7 +600,7 @@ and native-fallback result independently. A successful Task A response does
 not compensate for a failed or blocked Task B/native-fallback row.
 
 For Codex Desktop, obtain separate batch `D-B` authorization for exactly one
-additional task in `/Users/chris/Source/codex-cove` using the exact Task B prompt above.
+additional task from the repository root using the exact Task B prompt above.
 Have the user create it in the visible Codex Desktop app. Do not reuse the CLI
 authorization or silently increase its task count. Pass requires all of the
 following:
@@ -717,7 +728,9 @@ automatically, or contact any other host.
 
 Before adding the alias, confirm the installed helper includes tested local-only
 `remote remove ALIAS --forget` behavior and host-list instance-lock exclusion.
-Quit Cove, record the zero-host baseline, and preview add/deploy/remove plans.
+Quit Cove and record the zero-host baseline. `remote add` has no plan mode, so
+add only the exact user-supplied alias after explicit approval; then preview
+the deploy and remove plans before either remote mutation.
 The helper must refuse before SSH or config mutation if Cove is still running.
 Verify the user-selected host's OS and
 architecture, deploy only its matching packaged helper, and verify helper

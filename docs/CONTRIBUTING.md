@@ -19,8 +19,9 @@ make test
 
 The minimum supported toolchain is documented in
 [Installation](INSTALLATION.md#requirements). `make deps` uses checked-in
-dependency locks; `make bootstrap` reports missing tools without installing
-machine-level packages.
+dependency locks, performs a clean extension install, and fails if the current
+npm audit reports any advisory. `make bootstrap` reports missing tools without
+installing machine-level packages.
 
 Use `make run` for an uninstalled development app. It intentionally does not
 modify hooks, shell links, editor extensions, login items, or remote hosts.
@@ -37,6 +38,7 @@ integrations and you are prepared to restore your local machine afterward.
 | VS Code/Cursor adapter | `extension` | `make extension-test` and editor live check when focus changes |
 | Wire/schema contract | `schemas`, `extension/schemas`, fixtures | All Swift, Rust, and extension tests |
 | Packaging/install scripts | `Packaging`, `scripts`, `Makefile` | Shell syntax, package, signature, Doctor, install/rollback rehearsal |
+| Homebrew distribution | Cask template/renderer, `Casks`, release workflow | Rendered checksum match, `brew style`, strict Cask audit, install/upgrade/uninstall smoke |
 | UI-test project membership | `XcodeProject.yml` | Regenerate project and run `make ui-test` |
 
 Keep pure policy and data transformations in `CoveCore` where possible. Keep
@@ -70,14 +72,21 @@ relevant to your change:
 
 ```sh
 cargo fmt --manifest-path helper/Cargo.toml --all -- --check
-cargo clippy --manifest-path helper/Cargo.toml --all-targets --all-features -- -D warnings
+cargo clippy --locked --manifest-path helper/Cargo.toml --all-targets --all-features -- -D warnings
 npm --prefix extension run build
 sh -n scripts/*.sh Tests/*.sh
 ```
 
 The UI test target requires full Xcode 26.6+ and an unlocked console. The Make
 target keeps the Mac awake during the run and refuses to start when it cannot
-prove the console is unlocked.
+prove the console is unlocked. Timing assertions that describe an in-app action
+must start after `XCUIApplication.launch()` returns so cold XCTest and
+Accessibility bootstrap time is not attributed to the product.
+
+`make remote-artifacts` builds both macOS helper binaries and invokes
+`cargo zigbuild --all-targets` for each Linux-musl architecture before copying
+the release executable. This keeps CI, packaging, and the release receipt's two
+Linux all-target rows on one implementation path.
 
 ## Generated and authoritative files
 
@@ -93,10 +102,52 @@ prove the console is unlocked.
 - Built themes, sounds, the app bundle, editor output/VSIX, Rust target files,
   Swift build products, Derived Data, coverage profiles, and remote binaries are
   generated and ignored.
+- The released `codex-cove.rb` is rendered only after the final app ZIP exists,
+  because its literal SHA-256 is a build-derived value. The exact verified
+  release file is then landed at `Casks/codex-cove.rb` through a normal pull
+  request. Review it, but do not hand-edit its generated version, URL, or
+  checksum or amend the already published release tag.
 - `SOURCE_CANDIDATE.manifest`, `SOURCE_CANDIDATE.sha256`, and
   `SOURCE_CANDIDATE.receipt` are release evidence, not ordinary generated-file
   clutter. Do not hand-edit or casually regenerate them. A release owner must
   supersede the candidate after any source or documentation change.
+
+## Homebrew packaging changes
+
+Codex Cove uses its own public repository as an explicit custom tap. Keep the
+documented two-step install stable:
+
+```sh
+brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew install --cask cdimartino/codex-cove/codex-cove
+```
+
+The Cask is a binary distribution definition, not a source build. It must:
+
+- name the immutable `vMAJOR.MINOR.PATCH` GitHub release and matching
+  `Codex-Cove-<version>-macos-arm64.zip`;
+- use the exact app ZIP SHA-256 from the release's aggregate `SHA256SUMS`, never
+  `sha256 :no_check` or `version :latest`;
+- install the app at `~/Applications/Codex Cove.app`, which is the path enforced
+  by Doctor and the current-user installation contract;
+- invoke only bundle-local code in postflight: the app's maintenance entry
+  point restores the persisted Launch at Login preference before the embedded
+  helper transaction applies integration, without `sudo`, PATH-file edits, hook
+  self-trust, TCC changes, or quarantine removal;
+- let Homebrew quit and own removal of the app while the helper removes only
+  Cove integration with `uninstall --keep-app --keep-settings`; and
+- preserve Homebrew's upgrade rollback: old integration cleanup, app
+  replacement, new postflight setup, and restoration of the prior version if a
+  later phase fails.
+
+Before release publication, run Ruby syntax, fail-clean lifecycle, `brew style`,
+and strict offline Cask audit checks against the rendered file, plus isolated
+helper coverage for `--keep-app --keep-settings`. After the immutable release
+exists, the Cask follow-up must run the online audit (`brew audit --new` for the
+first Cask), then use a clean current-user environment for fresh install,
+signature/notarization checks, Doctor, an upgrade or reinstall, and
+`brew uninstall --cask`. Those post-publication checks gate the Cask PR rather
+than rewriting source-candidate evidence or the published tag.
 
 ## Protocol changes
 
@@ -128,6 +179,8 @@ installation, exact focus, or remote transport should answer these questions:
 - Are file and socket type, owner, mode, size, and identity validated before use?
 - Are reads, writes, handshakes, child processes, and retries bounded?
 - Can install or uninstall touch an artifact not proved to be Cove-owned?
+- Does a package-manager path preserve the boundary between Cove-owned
+  integration and the app artifact owned by that package manager?
 - Are diagnostics appropriately redacted, and do test receipts remain
   content-free and safe to share?
 
@@ -170,10 +223,15 @@ commits, fixtures, screenshots, logs, or pull-request descriptions.
 Maintainers should require a clean CI run and proportionate manual evidence
 before merge. A green unit test suite alone is not sufficient for changes to
 Accessibility, Automation, exact-origin focus, code signing, install/rollback,
-or remote SSH behavior.
+Homebrew lifecycle behavior, or remote SSH behavior.
 
 ## Release work
 
 Do not create a version tag from a feature pull request. Version alignment,
 candidate identity, owner/manual gates, signing, checksums, and GitHub release
 publication are coordinated through [Release Process](RELEASES.md).
+
+The Homebrew Cask is the one intentional post-publication handoff: render and
+publish it inside the verified release, then land that exact file through a
+separate protected pull request. A valid GitHub release remains available for
+manual installation if the Cask handoff fails.

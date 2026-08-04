@@ -24,8 +24,10 @@ env:
   CARGO_ZIGBUILD_VERSION: 0.23.0
   COVE_RUSTUP_TOOLCHAIN: 1.97.1
   DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+  NODE_VERSION: 22.23.2
   RUST_BACKTRACE: "1"
   RUST_TOOLCHAIN: 1.97.1
+  ZIG_VERSION: 0.16.0
 
 jobs:
   preflight:
@@ -37,6 +39,7 @@ jobs:
     outputs:
       release-tag: ${{ steps.tag.outputs.tag }}
       release-version: ${{ steps.tag.outputs.version }}
+      release-notes-path: ${{ steps.release-notes.outputs.path }}
       source-sha: ${{ steps.tag.outputs.source-sha }}
 
     steps:
@@ -72,8 +75,8 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           source_sha="$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")"
           git cat-file -e "$source_sha^{commit}"
-          if ! git merge-base --is-ancestor "$source_sha" "$GITHUB_SHA"; then
-            echo "$RELEASE_TAG is not on the dispatched $DEFAULT_BRANCH commit." >&2
+          if [[ "$source_sha" != "$GITHUB_SHA" ]]; then
+            echo "$RELEASE_TAG must resolve to the exact dispatched $DEFAULT_BRANCH commit." >&2
             exit 1
           fi
 
@@ -99,10 +102,49 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$EXPECTED_SHA"
 
+      - name: Verify candidate-bound release notes
+        id: release-notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release_notes_path="docs/releases/$RELEASE_TAG.md"
+          rendered_release_notes="$RUNNER_TEMP/codex-cove-release-notes.md"
+
+          test -x scripts/render-release-notes.sh
+          test ! -L scripts/render-release-notes.sh
+          ./scripts/render-release-notes.sh "$RELEASE_TAG" > "$rendered_release_notes"
+          for required_heading in \
+            '## Highlights' \
+            '## Installation and compatibility' \
+            '## Security and privacy' \
+            '## Release assets' \
+            '## Known boundaries'; do
+            grep -Fx "$required_heading" "$rendered_release_notes" >/dev/null || {
+              echo "Release notes are missing required section: $required_heading" >&2
+              exit 1
+            }
+          done
+          if grep -F '{{SOURCE_CANDIDATE_DIGEST}}' "$rendered_release_notes" >/dev/null; then
+            echo "Rendered release notes retain the source-candidate digest token." >&2
+            exit 1
+          fi
+          if grep -Eiq '(^|[^A-Za-z])(TODO|TBD|PLACEHOLDER)([^A-Za-z]|$)' "$rendered_release_notes"; then
+            echo "Release notes contain an unresolved placeholder." >&2
+            exit 1
+          fi
+          if [[ "$(wc -c < "$rendered_release_notes")" -lt 800 ]]; then
+            echo "Release notes are too short to describe a distribution release." >&2
+            exit 1
+          fi
+
+          echo "path=$release_notes_path" >> "$GITHUB_OUTPUT"
+
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: extension/package-lock.json
 
@@ -161,6 +203,10 @@ jobs:
           set -euo pipefail
           if ! command -v zig >/dev/null 2>&1; then
             brew install zig
+          fi
+          if [[ "$(zig version)" != "$ZIG_VERSION" ]]; then
+            echo "Release requires Zig $ZIG_VERSION exactly." >&2
+            exit 1
           fi
           cargo install cargo-zigbuild \
             --locked \
@@ -221,7 +267,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: extension/package-lock.json
 
@@ -265,6 +311,10 @@ jobs:
           set -euo pipefail
           if ! command -v zig >/dev/null 2>&1; then
             brew install zig
+          fi
+          if [[ "$(zig version)" != "$ZIG_VERSION" ]]; then
+            echo "Release requires Zig $ZIG_VERSION exactly." >&2
+            exit 1
           fi
           cargo install cargo-zigbuild \
             --locked \
@@ -429,34 +479,74 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_PATH: ${{ needs.preflight.outputs.release-notes-path }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
+          test "$RELEASE_NOTES_PATH" = "docs/releases/$RELEASE_TAG.md"
+          ./scripts/render-release-notes.sh "$RELEASE_TAG" \
+            > "$RUNNER_TEMP/codex-cove-release-notes.md"
+          ! grep -F '{{SOURCE_CANDIDATE_DIGEST}}' \
+            "$RUNNER_TEMP/codex-cove-release-notes.md" >/dev/null
 
       - name: Stage, verify, and publish GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_NOTES_PATH: ${{ needs.preflight.outputs.release-notes-path }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
         run: |
           set -euo pipefail
+          rendered_release_notes="$RUNNER_TEMP/codex-cove-release-notes.md"
+          test "$RELEASE_NOTES_PATH" = "docs/releases/$RELEASE_TAG.md"
+          ./scripts/render-release-notes.sh "$RELEASE_TAG" > "$rendered_release_notes"
+          ! grep -F '{{SOURCE_CANDIDATE_DIGEST}}' "$rendered_release_notes" >/dev/null
+
+          verify_release_notes() {
+            local expected_notes published_notes
+            expected_notes="$(cat "$rendered_release_notes")"
+            published_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+            if [[ "$published_notes" != "$expected_notes" ]]; then
+              echo "Release notes do not match the candidate-bound notes file." >&2
+              exit 1
+            fi
+          }
+
+          release_created=false
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "GitHub release $RELEASE_TAG already exists; refusing to replace published assets." >&2
-            exit 1
+            if [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true ]]; then
+              echo "Draft release $RELEASE_TAG already exists; inspect and remove only that draft before retrying." >&2
+              exit 1
+            fi
+            if [[ "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" != true ]]; then
+              echo "Published release $RELEASE_TAG is not immutable and cannot be repaired in place; restore the repository setting and cut a new patch release." >&2
+              exit 1
+            fi
+            if [[ "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" != false ]]; then
+              echo "Published release $RELEASE_TAG is a prerelease; refusing to stage it as a stable Homebrew version." >&2
+              exit 1
+            fi
+            echo "Published immutable release $RELEASE_TAG already exists; verifying its exact assets for idempotent recovery."
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --draft \
+              --verify-tag \
+              --notes-file "$rendered_release_notes" \
+              --title "Codex Cove $RELEASE_TAG"
+            release_created=true
           fi
 
-          gh release create "$RELEASE_TAG" dist/* \
-            --draft \
-            --verify-tag \
-            --generate-notes \
-            --title "Codex Cove $RELEASE_TAG"
-
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          if [[ "$release_created" = true ]]; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          fi
+          verify_release_notes
           mkdir -p release-verification
           gh release download "$RELEASE_TAG" --dir release-verification
           (
@@ -480,6 +570,405 @@ jobs:
           )
 
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
-          gh release edit "$RELEASE_TAG" --draft=false
+          if [[ "$release_created" = true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
           test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" = true
+          verify_release_notes
           test "$(./scripts/resolve-github-tag.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG")" = "$SOURCE_SHA"
+
+  verify-homebrew-cask:
+    name: Verify and audit released Homebrew cask
+    if: github.event.repository.visibility == 'public'
+    needs:
+      - preflight
+      - publish
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the current default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download assembled release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Extract release controls from the immutable source
+        shell: bash
+        env:
+          RELEASE_NOTES_PATH: ${{ needs.preflight.outputs.release-notes-path }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          control_root="$RUNNER_TEMP/release-control"
+          mkdir -p "$control_root/scripts"
+          for script in \
+            scripts/resolve-github-tag.sh \
+            scripts/read-homebrew-cask-version.sh \
+            scripts/render-release-notes.sh \
+            scripts/verify-homebrew-cask-release.sh \
+            scripts/verify-homebrew-cask-update.sh
+          do
+            target="$control_root/$script"
+            git show "$SOURCE_SHA:$script" > "$target"
+            test "$(git hash-object "$target")" = "$(git rev-parse "$SOURCE_SHA:$script")"
+            sh -n "$target"
+            chmod 0555 "$target"
+          done
+          test "$RELEASE_NOTES_PATH" = "docs/releases/$RELEASE_TAG.md"
+          mkdir -p "$control_root/docs/releases"
+          for source_file in SOURCE_CANDIDATE.manifest SOURCE_CANDIDATE.sha256 "$RELEASE_NOTES_PATH"; do
+            target="$control_root/$source_file"
+            git show "$SOURCE_SHA:$source_file" > "$target"
+            test "$(git hash-object "$target")" = \
+              "$(git rev-parse "$SOURCE_SHA:$source_file")"
+          done
+          "$control_root/scripts/render-release-notes.sh" \
+            "$RELEASE_TAG" \
+            "$control_root" \
+            > "$control_root/release-notes.md"
+          ! grep -F '{{SOURCE_CANDIDATE_DIGEST}}' \
+            "$control_root/release-notes.md" >/dev/null
+
+      - name: Verify the public immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq .visibility)" = PUBLIC
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" = true
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          resolved_tag_sha="$(
+            "$RUNNER_TEMP/release-control/scripts/resolve-github-tag.sh" \
+              "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          )"
+          test "$resolved_tag_sha" = "$SOURCE_SHA"
+          expected_notes="$(cat "$RUNNER_TEMP/release-control/release-notes.md")"
+          published_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+          test "$published_notes" = "$expected_notes"
+
+          mkdir published-release
+          gh release download "$RELEASE_TAG" --dir published-release
+          (
+            cd published-release
+            shasum -a 256 -c SHA256SUMS
+          )
+          cmp -s dist/codex-cove.rb published-release/codex-cove.rb
+          "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-release.sh" \
+            dist/codex-cove.rb \
+            published-release
+
+      - name: Audit the exact released cask artifact
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          candidate_version="$(
+            "$RUNNER_TEMP/release-control/scripts/read-homebrew-cask-version.sh" \
+              published-release/codex-cove.rb
+          )"
+          if [[ "v$candidate_version" != "$RELEASE_TAG" ]]; then
+            echo "Released cask version $candidate_version does not match $RELEASE_TAG." >&2
+            exit 1
+          fi
+
+          cask_already_existed=false
+          if [[ -e Casks/codex-cove.rb || -L Casks/codex-cove.rb ]]; then
+            "$RUNNER_TEMP/release-control/scripts/read-homebrew-cask-version.sh" \
+              Casks/codex-cove.rb >/dev/null
+            cask_already_existed=true
+            if ! cmp -s Casks/codex-cove.rb published-release/codex-cove.rb; then
+              "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-update.sh" \
+                Casks/codex-cove.rb \
+                published-release/codex-cove.rb
+            fi
+          else
+            "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-update.sh" \
+              Casks/codex-cove.rb \
+              published-release/codex-cove.rb
+          fi
+
+          mkdir validated-homebrew-cask
+          install -m 0644 \
+            published-release/codex-cove.rb \
+            validated-homebrew-cask/codex-cove.rb
+          cmp -s \
+            published-release/codex-cove.rb \
+            validated-homebrew-cask/codex-cove.rb
+
+          audit_repository="$RUNNER_TEMP/homebrew-cask-audit"
+          mkdir -p "$audit_repository/Casks"
+          install -m 0644 published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"
+          cmp -s published-release/codex-cove.rb "$audit_repository/Casks/codex-cove.rb"
+          git -C "$audit_repository" init -q
+          git -C "$audit_repository" add Casks/codex-cove.rb
+          test "$(git -C "$audit_repository" ls-files --stage -- Casks/codex-cove.rb | awk '{ print $1 }')" = 100644
+          test "$(git -C "$audit_repository" cat-file -t :Casks/codex-cove.rb)" = blob
+          git -C "$audit_repository" \
+            -c user.name='Codex Cove Release Audit' \
+            -c user.email='audit@example.invalid' \
+            -c commit.gpgsign=false \
+            commit -qm 'audit exact released cask'
+
+          audit_tap='codexcoveaudit/codex-cove'
+          cleanup_audit_tap() {
+            HOMEBREW_NO_AUTO_UPDATE=1 brew untap "$audit_tap" >/dev/null 2>&1 || true
+          }
+          trap cleanup_audit_tap EXIT
+          HOMEBREW_NO_AUTO_UPDATE=1 brew tap "$audit_tap" "$audit_repository"
+          tapped_cask="$(brew --repository)/Library/Taps/codexcoveaudit/homebrew-codex-cove/Casks/codex-cove.rb"
+          cmp -s published-release/codex-cove.rb "$tapped_cask"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew style --cask "$audit_tap/codex-cove"
+          if [[ "$cask_already_existed" == false ]]; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --new "$audit_tap/codex-cove"
+          else
+            HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --strict --online "$audit_tap/codex-cove"
+          fi
+          cleanup_audit_tap
+          trap - EXIT
+
+      - name: Upload the validated Homebrew cask
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: validated-homebrew-cask
+          path: validated-homebrew-cask/codex-cove.rb
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  update-homebrew-cask:
+    name: Stage verified Homebrew cask update
+    if: github.event.repository.visibility == 'public'
+    needs:
+      - preflight
+      - publish
+      - verify-homebrew-cask
+    runs-on: macos-26
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the current default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download assembled release
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Download validated Homebrew cask
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: validated-homebrew-cask
+          path: validated-homebrew-cask
+
+      - name: Extract release controls from the immutable source
+        shell: bash
+        env:
+          RELEASE_NOTES_PATH: ${{ needs.preflight.outputs.release-notes-path }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          control_root="$RUNNER_TEMP/release-control"
+          mkdir -p "$control_root/scripts"
+          for script in \
+            scripts/resolve-github-tag.sh \
+            scripts/read-homebrew-cask-version.sh \
+            scripts/render-release-notes.sh \
+            scripts/verify-homebrew-cask-release.sh \
+            scripts/verify-homebrew-cask-update.sh
+          do
+            target="$control_root/$script"
+            git show "$SOURCE_SHA:$script" > "$target"
+            test "$(git hash-object "$target")" = "$(git rev-parse "$SOURCE_SHA:$script")"
+            sh -n "$target"
+            chmod 0555 "$target"
+          done
+          test "$RELEASE_NOTES_PATH" = "docs/releases/$RELEASE_TAG.md"
+          mkdir -p "$control_root/docs/releases"
+          for source_file in SOURCE_CANDIDATE.manifest SOURCE_CANDIDATE.sha256 "$RELEASE_NOTES_PATH"; do
+            target="$control_root/$source_file"
+            git show "$SOURCE_SHA:$source_file" > "$target"
+            test "$(git hash-object "$target")" = \
+              "$(git rev-parse "$SOURCE_SHA:$source_file")"
+          done
+          "$control_root/scripts/render-release-notes.sh" \
+            "$RELEASE_TAG" \
+            "$control_root" \
+            > "$control_root/release-notes.md"
+          ! grep -F '{{SOURCE_CANDIDATE_DIGEST}}' \
+            "$control_root/release-notes.md" >/dev/null
+
+      - name: Reverify immutable release inputs and artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+          SOURCE_SHA: ${{ needs.preflight.outputs.source-sha }}
+        run: |
+          set -euo pipefail
+          test "$(gh repo view "$GITHUB_REPOSITORY" --json visibility --jq .visibility)" = PUBLIC
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease)" = false
+          test "$(gh release view "$RELEASE_TAG" --json isImmutable --jq .isImmutable)" = true
+          git merge-base --is-ancestor "$SOURCE_SHA" HEAD
+          resolved_tag_sha="$(
+            "$RUNNER_TEMP/release-control/scripts/resolve-github-tag.sh" \
+              "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          )"
+          test "$resolved_tag_sha" = "$SOURCE_SHA"
+
+          expected_notes="$(cat "$RUNNER_TEMP/release-control/release-notes.md")"
+          published_notes="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+          test "$published_notes" = "$expected_notes"
+
+          mkdir published-release
+          gh release download "$RELEASE_TAG" --dir published-release
+          (
+            cd published-release
+            shasum -a 256 -c SHA256SUMS
+          )
+          cmp -s dist/codex-cove.rb published-release/codex-cove.rb
+          cmp -s validated-homebrew-cask/codex-cove.rb published-release/codex-cove.rb
+          "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-release.sh" \
+            validated-homebrew-cask/codex-cove.rb \
+            published-release
+
+      - name: Stage the exact validated cask branch
+        id: cask-update
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          update_branch="automation/homebrew-$RELEASE_TAG"
+          validated_cask=validated-homebrew-cask/codex-cove.rb
+          candidate_version="$(
+            "$RUNNER_TEMP/release-control/scripts/read-homebrew-cask-version.sh" \
+              "$validated_cask"
+          )"
+          if [[ "v$candidate_version" != "$RELEASE_TAG" ]]; then
+            echo "Validated cask version $candidate_version does not match $RELEASE_TAG." >&2
+            exit 1
+          fi
+
+          if [[ -e Casks/codex-cove.rb || -L Casks/codex-cove.rb ]]; then
+            "$RUNNER_TEMP/release-control/scripts/read-homebrew-cask-version.sh" \
+              Casks/codex-cove.rb >/dev/null
+            if ! cmp -s Casks/codex-cove.rb "$validated_cask"; then
+              "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-update.sh" \
+                Casks/codex-cove.rb \
+                "$validated_cask"
+            fi
+          else
+            "$RUNNER_TEMP/release-control/scripts/verify-homebrew-cask-update.sh" \
+              Casks/codex-cove.rb \
+              "$validated_cask"
+          fi
+          mkdir -p Casks
+          install -m 0644 "$validated_cask" Casks/codex-cove.rb
+          cmp -s "$validated_cask" Casks/codex-cove.rb
+          git add Casks/codex-cove.rb
+          test "$(git ls-files --stage -- Casks/codex-cove.rb | awk '{ print $1 }')" = 100644
+          test "$(git cat-file -t :Casks/codex-cove.rb)" = blob
+          git diff --cached --check
+
+          if git diff --cached --quiet; then
+            local_sha=$(git rev-parse HEAD)
+            echo "status=already-landed" >> "$GITHUB_OUTPUT"
+            echo "branch=$DEFAULT_BRANCH" >> "$GITHUB_OUTPUT"
+            echo "compare-url=https://github.com/$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+            echo "head-sha=$local_sha" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$update_branch" >/dev/null 2>&1; then
+            remote_ref="refs/remotes/origin/$update_branch"
+            git fetch --no-tags origin "refs/heads/$update_branch:$remote_ref"
+            git show "$remote_ref:Casks/codex-cove.rb" > "$RUNNER_TEMP/remote-codex-cove.rb"
+            cmp -s "$validated_cask" "$RUNNER_TEMP/remote-codex-cove.rb"
+            test "$(git ls-tree "$remote_ref" -- Casks/codex-cove.rb | awk '{ print $1 " " $2 }')" = "100644 blob"
+            test "$(git diff --name-only "$DEFAULT_BRANCH...$remote_ref")" = Casks/codex-cove.rb
+            remote_sha=$(git rev-parse "$remote_ref")
+            compare_url="https://github.com/$GITHUB_REPOSITORY/compare/$DEFAULT_BRANCH...$update_branch?expand=1"
+            echo "status=existing-branch" >> "$GITHUB_OUTPUT"
+            echo "branch=$update_branch" >> "$GITHUB_OUTPUT"
+            echo "compare-url=$compare_url" >> "$GITHUB_OUTPUT"
+            echo "head-sha=$remote_sha" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git switch --create "$update_branch"
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "chore(homebrew): update cask for $RELEASE_TAG"
+          git push origin "HEAD:refs/heads/$update_branch"
+
+          local_sha=$(git rev-parse HEAD)
+          remote_sha=$(git ls-remote --exit-code origin "refs/heads/$update_branch" | awk '{ print $1 }')
+          test "$remote_sha" = "$local_sha"
+
+          compare_url="https://github.com/$GITHUB_REPOSITORY/compare/$DEFAULT_BRANCH...$update_branch?expand=1"
+          echo "status=new-branch" >> "$GITHUB_OUTPUT"
+          echo "branch=$update_branch" >> "$GITHUB_OUTPUT"
+          echo "compare-url=$compare_url" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$local_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Summarize the manual merge handoff
+        shell: bash
+        env:
+          COMPARE_URL: ${{ steps.cask-update.outputs.compare-url }}
+          HEAD_SHA: ${{ steps.cask-update.outputs.head-sha }}
+          HANDOFF_STATUS: ${{ steps.cask-update.outputs.status }}
+          UPDATE_BRANCH: ${{ steps.cask-update.outputs.branch }}
+        run: |
+          case "$HANDOFF_STATUS" in
+            already-landed)
+              {
+                echo '### Homebrew cask already landed'
+                echo
+                echo "The default branch already contains the exact released Cask at \`$HEAD_SHA\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            existing-branch | new-branch)
+              {
+                echo '### Homebrew cask update ready'
+                echo
+                echo "- Branch: \`$UPDATE_BRANCH\`"
+                echo "- Commit: \`$HEAD_SHA\`"
+                echo "- Review and open a pull request: [$COMPARE_URL]($COMPARE_URL)"
+                echo
+                echo 'This workflow does not open or merge the pull request automatically.'
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "Unknown Homebrew handoff status: $HANDOFF_STATUS" >&2
+              exit 1
+              ;;
+          esac

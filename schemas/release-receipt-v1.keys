@@ -210,6 +210,13 @@ defect_002_first_observed_at
 defect_002_status
 defect_002_current_candidate_retest_receipt
 defect_002_symptom_category
+defect_003_ref
+defect_003_severity
+defect_003_release_row
+defect_003_first_observed_at
+defect_003_status
+defect_003_current_candidate_retest_receipt
+defect_003_symptom_category
 defect_register_reviewed_at
 p0_open_count
 p1_open_count

@@ -18,9 +18,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         "com.openai.codex",
     ]
 
-    // Declared first and acquired before the initializer constructs storage or
-    // CoveStore. Retaining the descriptor here owns the lock for app lifetime.
+    // Declared first so maintenance launches can be isolated before any normal
+    // UI or deferred service is started. The instance lock is still acquired
+    // before the initializer constructs storage or CoveStore; retaining its
+    // descriptor here owns the lock for app lifetime.
     private let uiTestConfiguration: CoveUITestConfiguration?
+    private let maintenanceLaunchMode: CoveMaintenanceLaunchMode?
     private let instanceLock: CoveInstanceLock
     let store: CoveStore
     private let overlayController: CoveOverlayController
@@ -51,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private let launchedAt = Date()
     private var deferredServicesStarted = false
 
+    var isMaintenanceLaunch: Bool {
+        maintenanceLaunchMode != nil
+    }
+
     override init() {
         let bundleIdentifier = Bundle.main.bundleIdentifier
         let uiTestConfiguration = CoveUITestConfiguration.detect(
@@ -64,6 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             Darwin.exit(EXIT_FAILURE)
         }
         self.uiTestConfiguration = uiTestConfiguration
+        let maintenanceLaunchMode = uiTestConfiguration == nil
+            ? CoveMaintenanceLaunchMode(
+                arguments: ProcessInfo.processInfo.arguments
+            )
+            : nil
+        self.maintenanceLaunchMode = maintenanceLaunchMode
         do {
             if let uiTestConfiguration {
                 instanceLock = try CoveInstanceLock.acquire(
@@ -76,10 +89,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             switch error {
             case let .alreadyRunning(ownerPID):
                 CoveInstanceLock.revealExistingInstance(ownerPID: ownerPID)
-                let isMaintenanceLaunch = ProcessInfo.processInfo.arguments.contains(
-                    "--unregister-login-item-and-quit"
+                Darwin.exit(
+                    maintenanceLaunchMode == nil
+                        ? EXIT_SUCCESS
+                        : EXIT_FAILURE
                 )
-                Darwin.exit(isMaintenanceLaunch ? EXIT_FAILURE : EXIT_SUCCESS)
             default:
                 NSLog("Codex Cove refused unsafe startup: \(error.localizedDescription)")
                 Darwin.exit(EXIT_FAILURE)
@@ -144,6 +158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        guard maintenanceLaunchMode == nil else { return }
+
         let distributedCenter = DistributedNotificationCenter.default()
         instanceRevealObserver = distributedCenter.addObserver(
             forName: CoveInstanceLock.revealNotification,
@@ -163,15 +179,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if uiTestConfiguration == nil,
-           ProcessInfo.processInfo.arguments.contains(
-            "--unregister-login-item-and-quit"
-        ) {
-            guard launchAtLoginService.unregisterIfRegistered() else {
+        if let maintenanceLaunchMode {
+            let succeeded: Bool
+            switch maintenanceLaunchMode {
+            case .unregisterLoginItem:
+                succeeded = launchAtLoginService.unregisterIfRegistered()
+            case .syncLoginItem:
+                guard store.persistenceWarning == nil else {
+                    NSLog(
+                        "Codex Cove could not sync Launch at Login because "
+                            + "persisted settings could not be loaded."
+                    )
+                    Darwin.exit(EXIT_FAILURE)
+                }
+                succeeded = launchAtLoginService.sync(
+                    enabled: store.state.settings.launchAtLogin
+                )
+            case .invalid:
+                NSLog("Codex Cove received conflicting maintenance launch arguments.")
+                succeeded = false
+            }
+
+            guard succeeded else {
                 Darwin.exit(EXIT_FAILURE)
             }
-            NSApp.terminate(nil)
-            return
+            Darwin.exit(EXIT_SUCCESS)
         }
 
         NSApp.setActivationPolicy(.accessory)
@@ -1209,7 +1241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 Task { @MainActor in
                     self?.usageHydrator?.refreshNow()
                     self?.store.dispatch(.setVisible(true))
-                    self?.updateCapturePrivacy(using: self?.store.state ?? CoveState())
+                    self?.updateCapturePrivacy(
+                        using: self?.store.state ?? CoveState(),
+                        allowLockedExit: true
+                    )
                 }
             }
         )
@@ -1262,8 +1297,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         )
     }
 
-    private func updateCapturePrivacy(using state: CoveState) {
-        guard state.privacyScene != .locked else { return }
+    private func updateCapturePrivacy(
+        using state: CoveState,
+        allowLockedExit: Bool = false
+    ) {
         let shouldRedact: Bool
         if state.settings.privacyMode == .auto,
            state.settings.conservativeCapturePrivacy {
@@ -1274,7 +1311,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } else {
             shouldRedact = false
         }
-        let desired: CovePrivacyScene = shouldRedact ? .redacted : .normal
+        let desired = state.privacyScene.resolvingCapturePrivacy(
+            isCapturePrivacyActive: shouldRedact,
+            allowLockedExit: allowLockedExit
+        )
         if state.privacyScene != desired {
             store.dispatch(.setPrivacyScene(desired))
         }
