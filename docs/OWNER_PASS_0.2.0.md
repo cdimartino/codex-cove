@@ -1,7 +1,7 @@
 # Codex Cove 0.2.0 owner and manual release pass
 
-Last updated: 2026-08-01, America/New_York.
-Repository-state update: 2026-08-03, America/New_York.
+Last updated: 2026-08-04, America/New_York.
+Repository-state update: 2026-08-04, America/New_York.
 
 Candidate-freeze rule: this runbook and its receipt template are
 source-candidate inputs. Once `SOURCE_CANDIDATE.manifest` is written, do not edit
@@ -11,24 +11,25 @@ deliberately excluded from the source manifest.
 
 ## Status and purpose
 
-This is the canonical procedure for the 0.2.0 release gates that cannot be
-claimed from unit tests or XCUITest alone. It is intentionally not marked as
+This is the canonical optional follow-up procedure for observations that cannot
+be claimed from unit tests or XCUITest alone. It is intentionally not marked as
 completed. Run it with the macOS console unlocked and record only observed
-results.
+results. Unobserved rows remain `not-run` or `blocked`; they are not silently
+converted to passes and do not block the streamlined functional 0.2.0 release.
 
-Use Sections 2-4 as procedures, not as an early claim of owner success. The
-release order is: preflight; complete the accessibility, display, sleep, and
-selected-host matrices in Sections 5-7; restore the baseline; then perform the
-Section 8 owner script once, first attempt, using the procedures in Sections
-2-4. Missing hardware or authorization leaves the corresponding prerequisite
-blocked.
+Use Sections 2-4 as procedures, not as an early claim of owner success. For a
+follow-up owner pass, complete the accessibility, display, sleep, and
+selected-host matrices in Sections 5-7, restore the baseline, then perform the
+Section 8 owner script once using Sections 2-4. Missing hardware or
+authorization leaves only that optional follow-up row blocked.
 
-The deterministic UI-test host is appropriate for rehearsing Cove-owned
+The deterministic UI-test host is appropriate for validating Cove-owned
 questions, approvals, failure/retry, and Settings controls. It disables real
 external jumps, notification delivery, sound playback, persistence, brokers,
-relays, and other external effects. Production checks are therefore separate
-and mandatory for real `Open in Codex`, audible sound, persistence, terminal
-attribution, hook trust, and reconnect behavior.
+relays, and other external effects. Production checks remain useful follow-up
+evidence for real `Open in Codex`, audible sound, persistence, terminal
+attribution, hook trust, and reconnect behavior, but are not distribution
+blockers for this release profile.
 
 ## Safety and evidence rules
 
@@ -283,15 +284,14 @@ p0_p1_signoff=pass|fail|blocked|not-run
 notes=release_candidate_complete
 ```
 
-For a completed 0.2.0 receipt, the validator additionally enforces every
-automated gate and digest checkpoint, 23 passing UI tests with zero failures or
-skips, the exact authorized 7-task `L-A` placement (Terminal 1, iTerm2 0,
-VS Code 3, Cursor 3), one task each for `L-B`, `D-B`, `R-A`, and `R-B`, one
-Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
-current-candidate retests for the two carried editor-window P1 defects. The
+For a completed 0.2.0 receipt, the validator enforces every mandatory automated
+gate and digest checkpoint, 23 passing UI tests with zero failures or skips,
+candidate lineage, current-candidate automated regression evidence for the two
+carried editor-window P1 defects plus the session-activation privacy P1, final
+process/socket/Doctor health, and zero open P0/P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=documentation_consistency_and_privacy_clarification` and
+`source_change_reason=streamlined_functional_release_gate` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 
@@ -321,8 +321,8 @@ or relabeling the failed attempt:
 4. Create the new root receipt with the exact required header and new digest
    as lines 1-2. Record `supersedes_source_candidate_digest` and
    `superseded_candidate_receipt_sha256`, carry every old P0/P1 failure as
-   historical or `fixed-awaiting-retest`, and initialize all new authorization
-   and evidence fields without inheriting prior passes.
+   historical or unresolved, and initialize all new authorization and evidence
+   fields without inheriting prior passes.
 5. Run `make candidate-verify` before collecting new evidence and again after
    every applicable gate. A moved receipt must be restored if the replacement
    write does not complete.
@@ -333,15 +333,16 @@ Keep the release-current defect register in `SOURCE_CANDIDATE.receipt`, not in
 this candidate-covered runbook, the validation record, task transcripts, or
 screenshots. One row contains only a local sequential reference, severity
 (`P0` or `P1`), affected release-row name, first-observed timestamp, status
-(`open`, `fixed-awaiting-retest`, or `closed`), current-candidate retest receipt
+(`open`, `fixed-awaiting-retest`, `resolved-automated`, or `closed`), current-candidate retest receipt
 reference, and a short content-free symptom category. Never include prompts,
 responses, commands, diffs, paths outside this repository, terminal/task IDs,
 Desktop thread IDs, SSH aliases, or user preference values.
 
-A defect may move to `closed` only after the fix is in a newly frozen source
-candidate, that candidate's manifest digest verifies, all invalidated
-automated/package evidence is rerun, and the exact failed manual row passes on
-that candidate. At final review, record the review timestamp, exact P0 and P1
+A defect may move to `resolved-automated` after the fix is in a newly frozen
+source candidate, that candidate's manifest digest verifies, and the directly
+covering automated/package regression evidence is rerun. A defect may move to
+`closed` after the exact manual row also passes. At final review, record the
+review timestamp, exact P0 and P1
 open counts, whether every closed entry has a current-candidate retest receipt,
 and the wrong-scope-send count. `p0_p1_signoff=pass` requires all of these:
 

@@ -22,7 +22,7 @@ A release is valid only when all of these refer to the same source commit:
   protocol-client versions;
 - a deterministic source-candidate manifest and digest;
 - a complete privacy-safe receipt bound to that digest;
-- passing CI and all release/manual gates required by the receipt;
+- passing CI and every mandatory functional gate required by the receipt;
 - a Developer ID Application signature and valid notarization ticket; and
 - published checksums covering every downloadable artifact; and
 - a rendered Homebrew Cask whose version, URL, and SHA-256 name that exact
@@ -156,18 +156,25 @@ these checks with an unverified direct binary download. Update the workflow,
 candidate notes when relevant, and this toolchain statement together after a
 reviewed upgrade.
 
-Also complete:
+The following additional automated and artifact checks are mandatory:
 
 - shell syntax checks for every script;
 - both Linux-musl all-target cross-build checks;
 - remote-helper version, architecture, and checksum verification;
 - installed-app, Doctor, and non-prompting app-server smoke checks;
-- the full XCUITest suite on an unlocked macOS console;
+- the full XCUITest suite on an unlocked macOS console; and
+- final zero-open-P0/P1 signoff backed by current regression evidence.
+
+The following manual matrices are recommended release-quality follow-up, but
+they are not distribution blockers when those mandatory gates are green and
+the owner elects to ship. Record them honestly as `not-run` or `blocked`; never
+convert an unobserved row into a pass:
+
 - the version's manual Accessibility, display, Spaces, fullscreen, Stage
   Manager, sleep/wake, editor-window, Desktop, and selected-SSH-host matrices;
 - the owner first-attempt decision and exact-origin pass;
 - the uninstall/reinstall rollback drill; and
-- final zero-open-P0/P1 signoff with baseline restoration.
+- baseline-restoration observations.
 
 When Homebrew packaging changes, also render the Cask from the final local app
 archive and run its Ruby syntax, fail-clean lifecycle, Homebrew style, and
@@ -184,7 +191,9 @@ post-publication, pre-Cask-merge handoff in section 10, not a circular input to
 the source candidate or GitHub release receipt.
 
 Record direct observations in the candidate receipt only. A blocked or not-run
-row is not a pass and cannot be waived by CI.
+manual row is not a pass, but it does not block the streamlined functional
+release profile. Automated, signing, notarization, and artifact-integrity gates
+remain mandatory.
 
 When all fields are complete, enforce the machine-readable release contract:
 

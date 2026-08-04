@@ -1,16 +1,19 @@
 # Codex Cove handoff
 
 Baseline last verified: 2026-08-01, America/New_York.
-Repository-state update: 2026-08-03, America/New_York.
+Repository-state update: 2026-08-04, America/New_York.
 
 Candidate-freeze rule: this file is a source-candidate input. Its exact evidence
 and open-gate list describe the pre-freeze 2026-08-01 baseline only. The
-2026-08-03 documentation consistency, remote-plan accuracy, privacy retention,
-and candidate-lineage hardening supersedes source candidate
-`1ecbea6bbe3cc80141a4e5689ef8f7056eeab8717a9c19991450a6061bcf5a39`;
+2026-08-04 streamlined functional release profile supersedes source candidate
+`862a3a3ff000716a46a76edb8c7b822053be04405c39a186ab7b550c0feb1617`;
 none of that candidate's dependency, bootstrap, product-build,
-component/static, UI-bundle, package/install, runtime, or smoke evidence
-transfers. That candidate had already superseded candidates
+component/static, UI-bundle, package/install, runtime, smoke, or manual
+evidence transfers. That candidate contained the session-activation privacy
+recovery and had superseded candidate
+`f5e8acd1d4b2bf99ae88a58a822d03d0b6d609bc544fda877f0a9f3f5649ea7b`.
+The older candidate had already
+superseded candidates
 `bf44614f4877b98b10969e43633f0c82ac671740d078cfd729b680d5762daa4a` and
 `840d2e2ae07ebfa7ce5484f89998690c6ade384420476269c84665fb2f631bfb`,
 which superseded the focused UI timing failure and earlier editor
@@ -38,13 +41,13 @@ provenance checks. The subsequent documentation consistency, remote-plan
 accuracy, privacy-retention, and candidate-lineage corrections supersede
 candidate `1ecbea6bbe3cc80141a4e5689ef8f7056eeab8717a9c19991450a6061bcf5a39`,
 reset every candidate-bound result, and require a fresh candidate freeze and
-gate binding. Prompted CLI
-authorization and hook trust, alternate macOS accessibility states,
-display/hardware coverage, the selected-host pass, rollback drill, and the
-human owner pass remain open. A fresh source-candidate manifest/digest
-binding is also open; the observed results below are not candidate-bound
-release-current evidence until that digest verifies across the applicable
-gates.
+gate binding. Prompted CLI authorization and hook trust, alternate macOS
+accessibility states, display/hardware coverage, the selected-host pass,
+rollback drill, and the human owner pass remain deliberately unclaimed
+follow-up evidence rather than distribution blockers. A fresh source-candidate
+manifest/digest binding is also open; the observed mandatory results below are
+not candidate-bound release-current evidence until that digest verifies across
+the applicable functional gates.
 
 ## Paths and source state
 
@@ -70,8 +73,8 @@ remains a separate gated action under `docs/RELEASES.md`.
 - Semantic typography and contrast enforcement across all built-in themes.
 - Select-then-confirm approval scopes, single-flight delivery, failure/retry,
   dirty-draft protection, keyboard-path coverage, stable AX identifiers and
-  labels, and explicit status copy. Full Keyboard Access and VoiceOver
-  completion remain manual release checks.
+  labels, and explicit status copy. Full Keyboard Access and VoiceOver remain
+  recommended manual follow-up checks.
 - Three-state overlay: collapsed, attention-first queue, and focused action.
 - One queue scroll owner, grouped/deduplicated attention work, anchored sizing,
   visible row actions, and focused Escape behavior.
@@ -114,6 +117,9 @@ remains a separate gated action under `docs/RELEASES.md`.
   settings. Notification opens resolve the exact persisted source/host plus
   session and launch, and ambiguity fails closed without a current-task
   fallback.
+- Session activation can leave the locked privacy scene while preserving
+  conservative capture redaction. Ordinary service refreshes still cannot
+  clear lock-screen privacy.
 - The collapsed island is a real accessible Button named `Open task queue`
   with a stable AX identifier, value, and hint. Privacy controls expose stable
   AX identifiers, and live project/task suggestions disappear from both the

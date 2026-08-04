@@ -1241,7 +1241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 Task { @MainActor in
                     self?.usageHydrator?.refreshNow()
                     self?.store.dispatch(.setVisible(true))
-                    self?.updateCapturePrivacy(using: self?.store.state ?? CoveState())
+                    self?.updateCapturePrivacy(
+                        using: self?.store.state ?? CoveState(),
+                        allowLockedExit: true
+                    )
                 }
             }
         )
@@ -1294,8 +1297,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         )
     }
 
-    private func updateCapturePrivacy(using state: CoveState) {
-        guard state.privacyScene != .locked else { return }
+    private func updateCapturePrivacy(
+        using state: CoveState,
+        allowLockedExit: Bool = false
+    ) {
         let shouldRedact: Bool
         if state.settings.privacyMode == .auto,
            state.settings.conservativeCapturePrivacy {
@@ -1306,7 +1311,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } else {
             shouldRedact = false
         }
-        let desired: CovePrivacyScene = shouldRedact ? .redacted : .normal
+        let desired = state.privacyScene.resolvingCapturePrivacy(
+            isCapturePrivacyActive: shouldRedact,
+            allowLockedExit: allowLockedExit
+        )
         if state.privacyScene != desired {
             store.dispatch(.setPrivacyScene(desired))
         }

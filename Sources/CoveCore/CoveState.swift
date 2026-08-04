@@ -20,6 +20,16 @@ public enum CovePrivacyScene: String, Codable, CaseIterable, Sendable {
     case normal
     case redacted
     case locked
+
+    public func resolvingCapturePrivacy(
+        isCapturePrivacyActive: Bool,
+        allowLockedExit: Bool = false
+    ) -> CovePrivacyScene {
+        if self == .locked && !allowLockedExit {
+            return .locked
+        }
+        return isCapturePrivacyActive ? .redacted : .normal
+    }
 }
 
 public struct CoveQuietHours: Codable, Equatable, Sendable {

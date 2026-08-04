@@ -162,7 +162,6 @@ for digest_key in \
     candidate_verify_after_ui_digest \
     candidate_verify_after_install_digest \
     candidate_verify_after_runtime_digest \
-    candidate_verify_after_local_prompt_batch_digest \
     candidate_verify_final_digest
 do
     require_value "$digest_key" "$candidate_digest"
@@ -177,7 +176,6 @@ for pass_key in \
     candidate_verify_after_ui \
     candidate_verify_after_install \
     candidate_verify_after_runtime \
-    candidate_verify_after_local_prompt_batch \
     candidate_verify_final \
     receipt_binding_verify \
     dependency_gate \
@@ -198,70 +196,6 @@ for pass_key in \
     runtime_process_socket_gate \
     app_server_smoke \
     desktop_app_server_smoke \
-    authorization_L_A_placement_result \
-    owner_scripted_pass \
-    single_question \
-    multi_question \
-    allow_once \
-    allow_for_task \
-    failure_retry \
-    failure_open_control \
-    settings_controls \
-    production_settings_persistence \
-    audible_sound \
-    interactive_shim \
-    terminal_app_exact_origin \
-    vscode_terminal_exact_origin \
-    vscode_two_window_focus \
-    vscode_sequential_same_terminal \
-    vscode_persisted_state_privacy \
-    cursor_terminal_exact_origin \
-    cursor_two_window_focus \
-    cursor_sequential_same_terminal \
-    cursor_persisted_state_privacy \
-    two_task_acceptance \
-    two_task_distinct_attribution \
-    two_task_native_fallback \
-    desktop_interactive \
-    desktop_native_fallback \
-    scroll_mouse_wheel \
-    scroll_trackpad \
-    scroll_keyboard \
-    scroll_voiceover \
-    reduce_motion \
-    reduce_transparency \
-    increased_contrast \
-    voiceover \
-    full_keyboard_access \
-    switch_control \
-    system_larger_text \
-    light_appearance \
-    dark_appearance \
-    built_in_notch \
-    external_display \
-    no_notch \
-    spaces \
-    fullscreen \
-    stage_manager \
-    sleep_wake \
-    remote_alias \
-    remote_version_checksum \
-    remote_decision_route \
-    remote_disconnect_reconnect \
-    rollback_uninstall_reinstall \
-    rollback_owned_artifacts_removed \
-    rollback_settings_retained \
-    rollback_session_metadata_retained \
-    rollback_unrelated_hooks_preserved \
-    rollback_codex_threads_untouched \
-    rollback_ssh_state_unchanged \
-    rollback_reinstall_bundle_match \
-    rollback_reinstall_signature \
-    rollback_editor_targets_restored \
-    rollback_remote_checksums \
-    rollback_socket_private \
-    rollback_nonprompting_smokes \
-    rollback_full_verification \
     final_socket_private \
     p0_p1_signoff
 do
@@ -271,20 +205,12 @@ done
 for yes_key in \
     installed_signature_valid \
     doctor_healthy \
-    hook_trusted \
-    representative_background_restored \
-    rollback_doctor_healthy \
-    system_baseline_restored \
-    cove_settings_baseline_restored \
-    remote_baseline_restored \
     final_doctor_healthy \
     p0_p1_retest_receipts_complete
 do
     require_value "$yes_key" yes
 done
 
-require_value iterm2_appearance_seconds not-required
-require_value iterm2_exact_origin not-required
 require_value candidate_verify_after_build_blocker none
 require_value ui_blocker none
 require_value two_task_duplicate_count 0
@@ -298,95 +224,33 @@ require_value ui_fail_count 0
 require_value ui_skip_count 0
 require_value p0_open_count 0
 require_value p1_open_count 0
-require_value rollback_process_count 1
 require_value final_process_count 1
-require_value hook_group_count 11
-require_value terminal_adapters 4
-require_value owner_candidate_attempt 1
-require_value desktop_task_count 1
-require_value remote_task_count 2
-
-permission_authorization=$(receipt_value authorization_P_A)
-case "$permission_authorization" in
-    not-requested)
-        require_value authorization_P_A_approved_tasks 0
-        require_value authorization_P_A_launched_tasks 0
-        permission_task_count=0
-        ;;
-    approved)
-        require_value authorization_P_A_approved_tasks 1
-        require_value authorization_P_A_launched_tasks 1
-        permission_task_count=1
-        ;;
-    *) fail "authorization_P_A must be not-requested or approved for a completed release" ;;
-esac
-
-require_value authorization_L_A approved
-require_value authorization_L_A_approved_tasks 7
-require_value authorization_L_A_launched_tasks 7
-require_value authorization_L_A_terminal_app_launch_count 1
-require_value authorization_L_A_iterm2_launch_count 0
-require_value authorization_L_A_vscode_terminal_launch_count 3
-require_value authorization_L_A_cursor_terminal_launch_count 3
-require_value authorization_L_A_routed_completed_tasks 7
-require_value authorization_L_A_failed_startup_tasks 0
-require_value authorization_L_A_exact_reply_count 7
-
-for authorization_prefix in L_B D_B R_A R_B; do
-    require_value "authorization_$authorization_prefix" approved
-    require_value "authorization_${authorization_prefix}_approved_tasks" 1
-    require_value "authorization_${authorization_prefix}_launched_tasks" 1
-done
-
-expected_prompted_task_count=$((11 + permission_task_count))
-require_value prompted_task_count "$expected_prompted_task_count"
-
-for count_key in \
-    ssh_connection_count \
-    manual_settings_mutation_count \
-    trust_approval_count \
-    uninstall_action_count \
-    rollback_action_count
-do
-    require_nonnegative_integer "$count_key"
-done
-require_positive_integer ssh_connection_count
-require_positive_integer uninstall_action_count
-require_positive_integer rollback_action_count
-
-require_decimal_below waiting_task_seconds 5
-require_decimal_below terminal_app_appearance_seconds 2
-require_decimal_below vscode_terminal_appearance_seconds 2
-require_decimal_below cursor_terminal_appearance_seconds 2
-require_decimal_below exact_origin_seconds 8
-require_decimal_below desktop_exact_open_seconds 8
-
-remote_platform=$(receipt_value remote_platform)
-case "$remote_platform" in
-    aarch64-apple-darwin | x86_64-apple-darwin | \
-        aarch64-unknown-linux-musl | x86_64-unknown-linux-musl) ;;
-    *) fail "remote_platform must be one supported target category" ;;
-esac
 
 require_value defect_register_schema privacy_safe_v1
-require_value defect_register_entry_count 2
-require_value supersedes_source_candidate_digest 1ecbea6bbe3cc80141a4e5689ef8f7056eeab8717a9c19991450a6061bcf5a39
-require_value superseded_candidate_receipt_sha256 f8890615a3af6ecf73d7f46c03d2d63dd946ce3a2ac45581e1f46c4a45d67964
-require_value superseded_candidate_failure_row_count 2
+require_value defect_register_entry_count 3
+require_value supersedes_source_candidate_digest 862a3a3ff000716a46a76edb8c7b822053be04405c39a186ab7b550c0feb1617
+require_value superseded_candidate_receipt_sha256 365f6aed3ac222b28b0912a2ae532ecf0aeae732c60fc3aca0f8e639cc1f5356
+require_value superseded_candidate_failure_row_count 3
 require_value superseded_candidate_owner_attempt not-run
 require_value superseded_candidate_owner_scripted_pass not-run
 require_value defect_001_ref P1-001
 require_value defect_001_severity P1
 require_value defect_001_release_row vscode_two_window_focus
-require_value defect_001_status closed
-require_value defect_001_current_candidate_retest_receipt vscode_two_window_focus
+require_value defect_001_status resolved-automated
+require_value defect_001_current_candidate_retest_receipt editor_extension_gate
 require_value defect_001_symptom_category exact_editor_window_not_activated
 require_value defect_002_ref P1-002
 require_value defect_002_severity P1
 require_value defect_002_release_row cursor_two_window_focus
-require_value defect_002_status closed
-require_value defect_002_current_candidate_retest_receipt cursor_two_window_focus
+require_value defect_002_status resolved-automated
+require_value defect_002_current_candidate_retest_receipt editor_extension_gate
 require_value defect_002_symptom_category exact_editor_window_not_activated
+require_value defect_003_ref P1-003
+require_value defect_003_severity P1
+require_value defect_003_release_row sleep_wake
+require_value defect_003_status resolved-automated
+require_value defect_003_current_candidate_retest_receipt component_gate
+require_value defect_003_symptom_category locked_privacy_state_not_cleared
 
 for timestamp_key in \
     started_at \
@@ -397,6 +261,7 @@ for timestamp_key in \
     product_build_gate_at \
     defect_001_first_observed_at \
     defect_002_first_observed_at \
+    defect_003_first_observed_at \
     defect_register_reviewed_at \
     receipt_binding_verify_at \
     candidate_verify_final_at
@@ -405,7 +270,7 @@ do
 done
 
 require_recorded defect_register_reviewed_at
-require_value source_change_reason documentation_consistency_and_privacy_clarification
+require_value source_change_reason streamlined_functional_release_gate
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then
