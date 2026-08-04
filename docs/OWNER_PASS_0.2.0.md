@@ -291,7 +291,7 @@ Desktop task, two remote tasks, timing thresholds, candidate lineage, and closed
 current-candidate retests for the two carried editor-window P1 defects. The
 schema allowlist is exhaustive; a missing key is not implicitly `pass`.
 The final 0.2.0 validator accepts only
-`source_change_reason=release_gate_reproducibility_and_ui_timing_hardening` and
+`source_change_reason=documentation_consistency_and_privacy_clarification` and
 `notes=release_candidate_complete`; use `not-run` while those fields remain
 open rather than recording free-form text.
 
@@ -727,7 +727,9 @@ automatically, or contact any other host.
 
 Before adding the alias, confirm the installed helper includes tested local-only
 `remote remove ALIAS --forget` behavior and host-list instance-lock exclusion.
-Quit Cove, record the zero-host baseline, and preview add/deploy/remove plans.
+Quit Cove and record the zero-host baseline. `remote add` has no plan mode, so
+add only the exact user-supplied alias after explicit approval; then preview
+the deploy and remove plans before either remote mutation.
 The helper must refuse before SSH or config mutation if Cove is still running.
 Verify the user-selected host's OS and
 architecture, deploy only its matching packaged helper, and verify helper

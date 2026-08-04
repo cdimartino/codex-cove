@@ -7,10 +7,13 @@ do not edit this source-candidate input to record release results. The
 repository-root `SOURCE_CANDIDATE.receipt` is the sole release-current evidence
 record and is deliberately excluded from the source manifest.
 
-The 2026-08-03 release-gate reproducibility and UI timing hardening supersedes
-source candidate
-`89556d520ae23eb829fe9793747cdf2d40a161503ae5a86d51b5dd363eb53997`;
-every candidate-bound result is reset. The replacement candidate covers the
+The 2026-08-03 documentation-consistency, remote-plan accuracy, privacy
+retention, and candidate-lineage hardening supersedes source candidate
+`1ecbea6bbe3cc80141a4e5689ef8f7056eeab8717a9c19991450a6061bcf5a39`;
+every candidate-bound result is reset. That candidate already superseded
+candidate `bf44614f4877b98b10969e43633f0c82ac671740d078cfd729b680d5762daa4a`,
+candidate `840d2e2ae07ebfa7ce5484f89998690c6ade384420476269c84665fb2f631bfb`,
+and the earlier focused UI timing failure. The replacement candidate covers the
 deterministic editor process tests, zero-advisory dependency gate, Linux-musl
 all-target cross-builds, cold-launch-safe UI timing, patched extension packaging
 dependency, Cask template, renderer, offline audit, rollback fixtures,
@@ -87,6 +90,27 @@ observing its state in the panel demonstrates the result.
   `89556d520ae23eb829fe9793747cdf2d40a161503ae5a86d51b5dd363eb53997`
   and its focused UI timing failure were preserved after dependency, bootstrap,
   build, component, and static passes; no evidence transfers.
+- [x] (2026-08-03) Hardened release-gate reproducibility and UI timing, then
+  preserved candidate
+  `840d2e2ae07ebfa7ce5484f89998690c6ade384420476269c84665fb2f631bfb`
+  after automated, package/install, runtime, and smoke passes but before manual
+  release gates; no evidence transfers.
+- [x] (2026-08-03) Added exact candidate-bound release notes, pinned workflow
+  toolchains, actionlint validation, dependency updates, exact-tag dispatch,
+  and split read-only audit/minimal-write Homebrew jobs. Candidate
+  `bf44614f4877b98b10969e43633f0c82ac671740d078cfd729b680d5762daa4a`
+  was preserved after dependency, bootstrap, product-build, component/static,
+  and package passes, then superseded before UI, install/runtime, and manual
+  gates for evergreen release wording, manifest-bound rendering, regression
+  coverage, and corrected lineage; no evidence transfers.
+- [x] (2026-08-03) Corrected documentation availability wording, narrowed
+  remote plan-mode claims to supported commands, and documented macOS
+  Notification Center retention. Candidate
+  `1ecbea6bbe3cc80141a4e5689ef8f7056eeab8717a9c19991450a6061bcf5a39`
+  was preserved after dependency, bootstrap, product-build, component/static,
+  UI-bundle compilation, package/install, runtime, and smoke passes, then
+  superseded before the UI execution, notarization, and manual gates; no
+  evidence transfers.
 - [x] (2026-07-30 23:05Z) Implemented versioned event, decision, interactive
   request, and theme schemas with cross-language fixtures and bounded framing.
 - [x] (2026-07-30 23:05Z) Implemented the Rust shim, direct/durable app-server

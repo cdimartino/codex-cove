@@ -72,7 +72,7 @@ relevant to your change:
 
 ```sh
 cargo fmt --manifest-path helper/Cargo.toml --all -- --check
-cargo clippy --manifest-path helper/Cargo.toml --all-targets --all-features -- -D warnings
+cargo clippy --locked --manifest-path helper/Cargo.toml --all-targets --all-features -- -D warnings
 npm --prefix extension run build
 sh -n scripts/*.sh Tests/*.sh
 ```

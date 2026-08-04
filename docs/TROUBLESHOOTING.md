@@ -280,16 +280,30 @@ the local selection without claiming to clean the remote machine.
 Run the read-only environment check first:
 
 ```sh
+make bootstrap
+```
+
+If it reports missing or inconsistent dependencies, install the locked graphs
+and repeat the read-only check:
+
+```sh
 make deps
 make bootstrap
 ```
+
+`make deps` is not read-only: it resolves and fetches Swift and Rust packages,
+replaces the extension's local dependency tree with `npm ci`, and runs the
+zero-advisory npm audit.
 
 Frequent causes:
 
 - `xcodebuild` points at Command Line Tools: select full Xcode with
   `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`.
-- extension dependencies are inconsistent: rerun `make deps`, which uses the
-  checked-in lockfile and `npm ci`.
+- extension dependencies are missing or inconsistent: rerun `make deps`, which
+  uses the checked-in lockfile and `npm ci`. If the npm audit then reports an
+  advisory, inspect it and intentionally update the affected dependency and
+  checked-in lockfile. Do not raise the audit threshold or use a forced audit
+  fix merely to bypass the gate; rerun `make deps` and the relevant tests.
 - remote targets fail: install rustup, Zig, and `cargo-zigbuild`, and ensure the
   same rustup toolchain supplies both Cargo and rustc.
 - `make ui-test` refuses to start: unlock the macOS console and use full Xcode

@@ -155,8 +155,10 @@ reported explicitly; it is not claimed as an atomic rollback. Rerunning the
 Cask operation safely rechecks the recorded cleanup obligations.
 
 Use `codex-cove install --app-path PATH --plan`,
-`codex-cove uninstall --plan`, and `codex-cove remote ... --plan` to inspect
-planned mutations before applying them.
+`codex-cove uninstall --plan`, `codex-cove remote deploy ALIAS --plan`, and
+`codex-cove remote remove ALIAS --plan` to inspect supported planned mutations
+before applying them. `remote add` updates local configuration directly and has
+no plan mode.
 
 ## macOS permissions
 

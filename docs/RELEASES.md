@@ -15,7 +15,9 @@ be presented as a notarized GitHub release.
 
 A release is valid only when all of these refer to the same source commit:
 
-- a `vMAJOR.MINOR.PATCH` tag reachable from `main`;
+- a `vMAJOR.MINOR.PATCH` tag naming the exact protected `main` commit used to
+  dispatch the workflow;
+- reviewed candidate-bound notes at `docs/releases/vMAJOR.MINOR.PATCH.md`;
 - synchronized app, helper, extension, generated-project, lockfile, and Swift
   protocol-client versions;
 - a deterministic source-candidate manifest and digest;
@@ -44,7 +46,11 @@ Use a numeric semantic version. Update every product version source:
   regenerated `CodexCoveUITests.xcodeproj`;
 - the fallback client-version strings in `AppDelegate.swift`,
   `CoveAccountUsageHydration.swift`, and `CoveDesktopThreadHydration.swift`; and
-- version-specific release records and receipt fields.
+- version-specific release records and receipt fields;
+- `docs/releases/vMAJOR.MINOR.PATCH.md`, whose first heading, embedded tag
+  binding, visible `Source tag` line, required sections, and single
+  `{{SOURCE_CANDIDATE_DIGEST}}` token are checked by the secret-free release
+  preflight.
 
 Regenerate the UI-test project after updating `XcodeProject.yml`:
 
@@ -58,12 +64,36 @@ Verify the complete alignment:
 ./scripts/verify-release-version.sh v0.3.0
 ```
 
-Do not update unrelated dependency versions during the release-only change.
+Write the release notes as user-facing descriptions of the candidate's actual
+contents. Before the release exists, use forward-looking language for signing,
+notarization, publication, and Homebrew availability; never claim an unrun gate
+or unpublished artifact has passed. Do not update unrelated dependency
+versions during the release-only change.
+
+The notes template must contain exactly one
+`{{SOURCE_CANDIDATE_DIGEST}}` token where the published source-candidate digest
+belongs. Do not paste the digest into its own candidate input: that would create
+a self-reference because the manifest hashes the template. The deterministic
+renderer resolves the token only after the candidate has been frozen. Verify
+the complete current tree first so a stale manifest cannot be mistaken for the
+source under review:
+
+```sh
+make candidate-verify
+./scripts/render-release-notes.sh v0.3.0
+```
+
+The renderer validates the manifest header, proves the digest hashes that
+manifest, proves the release-notes template has the exact mode and checksum
+recorded in the manifest, validates the tag marker and visible source tag,
+requires one token, and writes the rendered notes to standard output without
+changing the candidate template. The full `candidate-verify` remains necessary
+because it checks every source input, not only the release-notes record.
 
 ## 2. Finish source and freeze the candidate
 
-All code, tests, workflows, README, and documentation are candidate inputs.
-Finish and review them before writing release evidence.
+All code, tests, workflows, README, documentation, and versioned release notes
+are candidate inputs. Finish and review them before writing release evidence.
 
 For a first candidate:
 
@@ -117,6 +147,14 @@ install is followed by `npm audit --audit-level=info`, and any advisory blocks
 the release. `make package-with-remote` reaches the canonical remote builder,
 which runs `cargo zigbuild --all-targets` for both Linux-musl architectures
 before it copies and checksums their release executables.
+
+The protected release workflow pins Node.js `22.23.2`, Rust `1.97.1`,
+`cargo-zigbuild` `0.23.0`, Zig `0.16.0`, and Xcode `26.6`. A Homebrew install of
+Zig is only a provisioning fallback on the hosted runner; the workflow reads
+`zig version` afterward and fails unless it is exactly `0.16.0`. Do not replace
+these checks with an unverified direct binary download. Update the workflow,
+candidate notes when relevant, and this toolchain statement together after a
+reviewed upgrade.
 
 Also complete:
 
@@ -197,7 +235,11 @@ readiness.
 ## 5. Create and push the tag
 
 Update local `main`, confirm a clean tree, and identify the reviewed release
-commit. Prefer a signed annotated tag when maintainer signing is configured:
+commit. The tag must name the exact `main` head used for the later workflow
+dispatch; if `main` advances after tagging, dispatching that older tag is
+rejected and the release owner must decide whether to prepare a new candidate
+on the newer head. Prefer a signed annotated tag when maintainer signing is
+configured:
 
 ```sh
 git switch main
@@ -253,10 +295,49 @@ distribution workflow. It sets `CODEX_COVE_DISTRIBUTION_BUILD=1`, so the
 packager itself also refuses ad-hoc signing; there is no “skip notarization”
 release mode.
 
+### Release credential lifecycle
+
+The named release credential owner is `cdimartino`, acting as the repository
+owner and Apple Developer release owner. That owner reviews the Developer ID
+certificate expiration, notary authentication, release-environment policy, and
+the six expected GitHub secret names before every release and at least once per
+month while releases are active.
+
+Rotate the Developer ID Application certificate and encrypted PKCS#12 export at
+least 30 days before the certificate's `Not After` date. Apple app-specific
+passwords do not present a dependable certificate-style expiry date, so use an
+annual internal rotation deadline and rotate sooner after an Apple Account
+password reset, team or role change, authentication failure, suspected
+disclosure, or unexpected notarization activity. After any planned rotation,
+update the `release` environment secrets and verify only each secret's name and
+GitHub `updated_at` timestamp; never print, echo, compare, or capture the secret
+value in logs.
+
+For an emergency, stop release dispatches, revoke the affected app-specific
+password in the Apple Account portal, and revoke the affected Developer ID
+certificate in the Apple Developer portal when its private key may be
+compromised. Create replacements through the owner-controlled Apple account,
+export the replacement certificate and private key as a password-protected
+PKCS#12, update all dependent GitHub environment secrets as one set, verify
+their names and timestamps without values, and resume only after the protected
+workflow validates the new identity and notarization credentials. Never leave
+an app-specific password, PKCS#12 password, private key, decoded certificate
+archive, or temporary keychain in a plaintext local file. Keep the encrypted
+recovery material only in the approved password manager and let the workflow
+delete its ephemeral PKCS#12 and keychain after use.
+
+The current workflow intentionally uses the Apple ID plus app-specific-password
+form of `notarytool` authentication. A future credential hardening change should
+prefer a narrowly scoped App Store Connect API key, store its issuer, key ID,
+and private key as protected environment secrets, and update the workflow,
+documentation, owner rotation runbook, and candidate evidence together.
+
 The automatic GitHub token remains read-only during build jobs. The publisher
 job receives `contents: write` only to create the release and upload assets;
-the later Homebrew staging job receives `contents: write` only to push the
-generated Cask update branch. Neither job can bypass protected `main`.
+the Homebrew verifier and third-party audit remain read-only with no persisted
+checkout credential; and only the later minimal staging job receives
+`contents: write` to reverify and push the generated Cask update branch. None
+of these jobs can bypass protected `main`.
 
 ## 7. Run the release workflow
 
@@ -273,8 +354,13 @@ gh workflow run release.yml --ref main \
 The secret-free **Verify release candidate** job first verifies that:
 
 - the input is a valid `vMAJOR.MINOR.PATCH` tag;
-- the tag already exists, resolves to the checked-out commit, and is contained
-  in `main`;
+- the tag already exists and resolves to the exact protected `main` commit from
+  which the workflow was dispatched;
+- `docs/releases/<tag>.md` is a real candidate-bound file with the exact
+  version heading and tag marker, all required user-facing sections, exactly
+  one source-candidate digest token, no other unresolved placeholder, and
+  substantive content; the deterministic rendering must contain the frozen
+  digest and no remaining token;
 - version metadata matches the tag;
 - the candidate manifest, digest, receipt binding, and readiness fields pass;
 - all tests and static checks succeed; and
@@ -290,15 +376,29 @@ notarize, and assemble** job access credentials. It verifies that:
   the app; and
 - the final aggregate checksum file matches the exact publish set.
 
-The protected **Publish GitHub release** job creates a draft, downloads and
-byte-verifies every handoff asset plus `SHA256SUMS`, and publishes only after
-that comparison succeeds. It never replaces an existing asset. For recovery it
-accepts an existing release only when GitHub reports it as published,
-non-prerelease, and immutable and its complete asset set is byte-identical to
-the newly assembled handoff. It never creates, moves, or pushes the input tag.
+The protected **Publish GitHub release** job deterministically renders the
+candidate-bound template with the frozen source-candidate digest, creates a
+draft using that rendered file as `--notes-file`, downloads and byte-verifies
+every handoff asset plus `SHA256SUMS`, and compares GitHub's stored release body
+with the same rendering. It publishes only after those comparisons succeed and
+never replaces an existing asset. For recovery it accepts an existing release
+only when GitHub reports it as published, non-prerelease, and immutable, its
+release body equals a fresh rendering from the tagged template and digest, and
+its complete asset set is byte-identical to the newly assembled handoff. It
+never creates, moves, or pushes the input tag.
 Public repositories
 also receive GitHub artifact attestations; private repositories skip that
 optional public-verification step.
+
+After publication, **Verify and audit released Homebrew cask** runs with
+`contents: read` and a checkout that does not persist credentials. It
+re-downloads the immutable release, verifies its aggregate checksums and exact
+Cask bytes, and runs Homebrew style plus the new-Cask or strict-online audit in
+a disposable local tap. Only its validated Cask artifact crosses into the
+dependent **Stage verified Homebrew cask update** job. That minimal
+`contents: write` job re-resolves the tag, release state, candidate notes,
+checksums, and exact Cask bytes before it creates or reuses the staging branch;
+it does not execute Homebrew evaluation while push credentials are present.
 
 The canonical asset assembler computes the final
 `Codex-Cove-<version>-macos-arm64.zip` SHA-256 before rendering
@@ -313,9 +413,14 @@ the failure, remove only that draft through the GitHub Releases UI, and rerun
 the same immutable tag; never delete or move the tag to recover the workflow.
 
 When reviewer protection is available, approve the protected `release`
-environment only after checking the tag, CI result, completed receipt, signing
-identity, release notes, and **Settings > General > Releases > Immutable
-releases**. The normal workflow token cannot read that administration-only
+environment only after checking the exact tag and commit, CI result, completed
+receipt, signing identity, and the full candidate-bound
+`docs/releases/<tag>.md` template plus its deterministic rendering containing
+the exact candidate digest that will become the GitHub release body. Also
+confirm **Settings > General > Releases > Immutable releases**. Approval must
+not precede review of the rendered release notes, and post-approval generated
+notes are not allowed. The normal workflow token cannot read that
+administration-only
 repository setting before publication. The publisher therefore checks the
 release's `isImmutable` result immediately after publication; this detects
 drift and stops the Homebrew handoff, but it is not pre-publication prevention.
@@ -344,6 +449,11 @@ For version `0.3.0`, the workflow publishes:
 | `Codex-Cove-0.3.0-release.receipt` | Privacy-safe completed release evidence |
 | `codex-cove.rb` | Homebrew Cask rendered from the final app ZIP version and SHA-256 |
 | `SHA256SUMS` | SHA-256 for every other published asset |
+
+The GitHub release body is the deterministic rendering of the candidate-bound
+`docs/releases/v0.3.0.md` template and the tagged commit's
+`SOURCE_CANDIDATE.sha256`. It includes the exact candidate digest, retains the
+exact tag marker, and is not reconstructed by GitHub's generated-notes service.
 
 No `.p12`, private key, temporary keychain, notarization password, raw workflow
 handoff, absolute build path, or unredacted test log belongs in the release.
@@ -409,12 +519,14 @@ After immutable release publication:
 2. verify the aggregate manifest and independently verify that the Cask's
    version, URL, and SHA-256 match the ZIP, and require GitHub to report the
    published release as immutable;
-3. let the release workflow copy the verified Cask byte-for-byte to
-   `Casks/codex-cove.rb` on its `automation/homebrew-vMAJOR.MINOR.PATCH` branch,
-   then use the emitted compare URL to open a normal pull request; do not
-   hand-edit the generated version or checksum;
-4. run `brew style`, `brew audit --new` for the first Cask (strict online audit
-   thereafter), and a real fresh install/Doctor check;
+3. let the read-only Homebrew job run `brew style` and `brew audit --new` for
+   the first Cask (strict online audit thereafter) against the exact released
+   file in a disposable tap;
+4. let the dependent minimal write job reverify that validated artifact and
+   copy it byte-for-byte to `Casks/codex-cove.rb` on its
+   `automation/homebrew-vMAJOR.MINOR.PATCH` branch, then use the emitted compare
+   URL to open a normal pull request; do not hand-edit the generated version or
+   checksum, and complete a real fresh install/Doctor check;
 5. exercise an upgrade from the prior Cask when one exists, then verify
    `brew uninstall --cask` removes integration and the app while retaining
    settings; and
@@ -949,7 +1061,7 @@ instructions available, fix the Cask through a new pull request, and rerun its
 tests. Never move the release tag or replace published binaries to make a Cask
 checksum pass. If the binary itself is wrong, cut a new patch release.
 
-If only **Stage Homebrew cask update** fails after the release is public because
+If only **Stage verified Homebrew cask update** fails after the release is public because
 of a transient service failure or corrected external state, use GitHub Actions'
 **Re-run failed jobs** operation on that same workflow run while its
 `release-assets` artifact is still retained (14 days). GitHub reruns the

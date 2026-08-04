@@ -200,15 +200,17 @@ engineering evidence; they are not a substitute for the user guides above.
 
 ## Privacy in one paragraph
 
-Prompts, responses, commands, diffs, token metrics, and request details stay in
-memory. Cove persists settings plus bounded task metadata such as opaque task
-and launch identifiers, status, unread and reminder state, timestamps, source,
-and opaque terminal-location identifiers. Local runtime directories and files
-are current-user only. Event diagnostics redact sensitive payload fields;
-Doctor may show the local paths it inspected, so review its output before
-sharing. Cove contacts no service of its own; remote transport is opened only
-to SSH aliases you explicitly add, while Codex continues to use its own network
-services.
+Prompts, responses, commands, diffs, token metrics, and request details are not
+written to Cove's durable store. When notifications are enabled, macOS
+Notification Center may retain delivered banner content according to system
+settings. Cove otherwise persists settings plus bounded task metadata such as
+opaque task and launch identifiers, status, unread and reminder state,
+timestamps, source, and opaque terminal-location identifiers. Local runtime
+directories and files are current-user only. Event diagnostics redact sensitive
+payload fields; Doctor may show the local paths it inspected, so review its
+output before sharing. Cove contacts no service of its own; remote transport is
+opened only to SSH aliases you explicitly add, while Codex continues to use its
+own network services.
 
 ## License
 

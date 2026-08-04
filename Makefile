@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 XCODE_DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
-.PHONY: deps bootstrap build test ui-test swift-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test run icon sounds themes remote-artifacts package package-with-remote install install-with-remote signing-identity doctor candidate-write candidate-verify verify-release-version verify-release-readiness release-assets clean
+.PHONY: deps bootstrap build test ui-test swift-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test release-notes-test release-workflow-test run icon sounds themes remote-artifacts package package-with-remote install install-with-remote signing-identity doctor candidate-write candidate-verify verify-release-version verify-release-readiness release-assets clean
 
 deps:
 	swift package resolve --disable-sandbox
@@ -40,7 +40,13 @@ extension-test:
 homebrew-test:
 	./Tests/test-homebrew-cask.sh
 
-test: swift-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test
+release-notes-test:
+	./Tests/test-release-notes.sh
+
+release-workflow-test:
+	./Tests/test-release-workflow.sh
+
+test: swift-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test release-notes-test release-workflow-test
 
 ui-test:
 	@locked=$$(ioreg -n Root -d1 -a 2>/dev/null | plutil -extract IOConsoleLocked raw -o - - 2>/dev/null) || { \

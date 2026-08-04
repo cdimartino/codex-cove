@@ -23,6 +23,8 @@ Start with the guide that matches what you are trying to do.
   discipline, and review expectations.
 - [Release Process](RELEASES.md) — versioning, candidate freeze, CI, packaging,
   signing, GitHub releases, Homebrew Cask handoff, and rollback.
+- [Codex Cove 0.2.0 release notes](releases/v0.2.0.md) — immutable user-facing
+  contents and compatibility notes for the `v0.2.0` release contract.
 
 ## Version-specific engineering records
 
@@ -37,5 +39,6 @@ matrices, and release evidence for a specific development cycle:
 - `HANDOFF.md`
 
 These records may describe incomplete gates or historical observations. Use the
-guides above for current product behavior, and the release notes for the status
-of a published artifact.
+guides above for current product behavior, the release notes for immutable
+contents and compatibility, and GitHub Releases plus the Homebrew Cask for
+artifact availability.
