@@ -196,18 +196,25 @@ local preferences; do not delete the session database when only settings fail.
 The repository used as the documented tap is public now, but a version becomes
 installable only after its binary release and matching `Casks/codex-cove.rb`
 land. A missing Cask before then does not mean Homebrew should be pointed at a
-private or unverified artifact; use the source or manual release path instead.
+private or unverified artifact. Do not install Homebrew's similarly named
+deprecated `codex-app` Cask: it is a different product, not a Cove dependency.
+Use the source or manual release path instead.
 
 Once the Cask is live, refresh and inspect the resolved package before retrying:
 
 ```sh
 brew update
+brew trust --cask cdimartino/codex-cove/codex-cove
 brew info --cask cdimartino/codex-cove/codex-cove
 brew fetch --cask cdimartino/codex-cove/codex-cove
 ```
 
 For common failures:
 
+- **Homebrew says the Cask is unavailable or untrusted.** Review the tap with
+  `brew tap-info cdimartino/codex-cove`, run the item-specific `brew trust`
+  command above, and retry the fully qualified Cove token. Do not install
+  `codex-app` or another fuzzy-search suggestion.
 - **An app already exists in `~/Applications`.** If it is a source or manual
   Cove installation, quit it and run
   `"$HOME/bin/codex-cove" uninstall --keep-settings` before the Homebrew

@@ -22,16 +22,17 @@ notarized Apple Silicon app from the explicit public tap:
 
 ```sh
 brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew trust --cask cdimartino/codex-cove/codex-cove
 brew install --cask cdimartino/codex-cove/codex-cove
 ```
 
 The Cask installs `Codex Cove.app` in `~/Applications` and runs its bundled
 helper to apply the same current-user Codex hooks, shim, and editor integration
 as the manual installer. It does not approve hook trust or macOS permissions.
-If Homebrew reports that the Cask is unavailable, that version's release-to-tap
-handoff has not landed; use the source quick start below or the verified manual
-release path. See [Installation](docs/INSTALLATION.md#install-with-homebrew) for
-verification, migration, upgrades, and removal.
+Codex Cove does not depend on the deprecated `codex-app` Homebrew Cask. If
+Homebrew reports that `codex-cove` is unavailable, do not install a similarly
+named suggestion; update the tap or use the source or verified manual path. See
+[Installation](docs/INSTALLATION.md#install-with-homebrew) for details.
 
 ## Highlights
 

@@ -738,7 +738,10 @@ jobs:
           cmp -s published-release/codex-cove.rb "$tapped_cask"
           HOMEBREW_NO_AUTO_UPDATE=1 brew style --cask "$audit_tap/codex-cove"
           if [[ "$cask_already_existed" == false ]]; then
-            HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --new "$audit_tap/codex-cove"
+            # This repository is the supported custom tap. Homebrew's
+            # github_repository audit enforces homebrew-cask notability for new
+            # submissions, which does not apply to a project-owned tap.
+            HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --new --except github_repository "$audit_tap/codex-cove"
           else
             HOMEBREW_NO_AUTO_UPDATE=1 brew audit --cask --strict --online "$audit_tap/codex-cove"
           fi
