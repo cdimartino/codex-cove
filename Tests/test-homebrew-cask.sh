@@ -74,6 +74,51 @@ if "$repository_root/scripts/render-homebrew-cask.sh" \
     fail "renderer accepted an archive with a noncanonical filename"
 fi
 
+historical_version=0.2.0
+if [ "$historical_version" = "$version" ]; then
+    historical_version=0.1.0
+fi
+historical_release_directory="$temporary_root/historical-release"
+historical_archive="$historical_release_directory/Codex-Cove-$historical_version-macos-arm64.zip"
+historical_cask="$historical_release_directory/codex-cove.rb"
+mkdir "$historical_release_directory"
+printf 'immutable historical Codex Cove archive\n' >"$historical_archive"
+historical_archive_sha=$(shasum -a 256 "$historical_archive" | awk '{ print $1 }')
+sed -E \
+    -e "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"$/  version \"$historical_version\"/" \
+    -e "s/^  sha256 \"[0-9a-f]+\"$/  sha256 \"$historical_archive_sha\"/" \
+    "$cask_path" >"$historical_cask"
+
+if "$repository_root/scripts/render-homebrew-cask.sh" \
+    "v$historical_version" "$historical_archive" "$historical_cask" \
+    >/dev/null 2>&1; then
+    fail "ordinary renderer accepted a release version that does not match source"
+fi
+historical_rendered_cask="$temporary_root/historical-rendered.rb"
+"$repository_root/scripts/render-homebrew-cask.sh" \
+    --historical-release \
+    "$historical_cask" "$historical_archive" "$historical_rendered_cask" >/dev/null
+cmp -s "$historical_cask" "$historical_rendered_cask" ||
+    fail "historical renderer did not reproduce the immutable release Cask"
+historical_cask_sha=$(shasum -a 256 "$historical_cask" | awk '{ print $1 }')
+printf '%s  ./%s\n%s  ./%s\n' \
+    "$historical_archive_sha" "Codex-Cove-$historical_version-macos-arm64.zip" \
+    "$historical_cask_sha" codex-cove.rb \
+    >"$historical_release_directory/SHA256SUMS"
+"$repository_root/scripts/verify-homebrew-cask-tap.sh" \
+    "$historical_cask" "$historical_release_directory" >/dev/null
+
+leading_zero_historical_cask="$temporary_root/leading-zero-historical.rb"
+sed -E \
+    "s/^  version \"[0-9]+\.[0-9]+\.[0-9]+\"$/  version \"00.2.0\"/" \
+    "$historical_cask" >"$leading_zero_historical_cask"
+if "$repository_root/scripts/render-homebrew-cask.sh" \
+    --historical-release \
+    "$leading_zero_historical_cask" "$historical_archive" \
+    "$temporary_root/rejected-historical.rb" >/dev/null 2>&1; then
+    fail "historical renderer accepted a leading-zero release version"
+fi
+
 write_cask_version() {
     replacement_version=$1
     replacement_path=$2

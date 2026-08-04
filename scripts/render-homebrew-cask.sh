@@ -6,14 +6,38 @@ fail() {
     exit 1
 }
 
-[ "$#" -eq 3 ] ||
-    fail "usage: scripts/render-homebrew-cask.sh <version-or-v-tag> <app-archive> <output-cask>"
+historical_release=0
+historical_release_cask=
+if [ "${1-}" = "--historical-release" ]; then
+    [ "$#" -eq 4 ] ||
+        fail "usage: scripts/render-homebrew-cask.sh --historical-release <verified-release-cask> <app-archive> <output-cask>"
+    historical_release=1
+    historical_release_cask=$2
+    archive_path=$3
+    output_path=$4
+else
+    [ "$#" -eq 3 ] ||
+        fail "usage: scripts/render-homebrew-cask.sh <version-or-v-tag> <app-archive> <output-cask>"
+    requested_version=$1
+    archive_path=$2
+    output_path=$3
+fi
 
 repository_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
-version=$("$repository_root/scripts/verify-release-version.sh" "$1")
-archive_path=$2
-output_path=$3
 template_path="$repository_root/Packaging/Homebrew/codex-cove.rb.template"
+
+if [ "$historical_release" -eq 1 ]; then
+    # The tap verifier uses this mode only after independently verifying the
+    # immutable release Cask, archive, and checksum manifest. Source version
+    # synchronization would make it impossible to re-render an older Cask
+    # after the repository advances to the next release.
+    version=$(
+        "$repository_root/scripts/read-homebrew-cask-version.sh" \
+            "$historical_release_cask"
+    )
+else
+    version=$("$repository_root/scripts/verify-release-version.sh" "$requested_version")
+fi
 
 [ -f "$template_path" ] && [ ! -L "$template_path" ] ||
     fail "cask template is missing or unsafe"

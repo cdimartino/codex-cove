@@ -227,9 +227,9 @@ require_value p1_open_count 0
 require_value final_process_count 1
 
 require_value defect_register_schema privacy_safe_v1
-require_value defect_register_entry_count 4
-require_value supersedes_source_candidate_digest 8f35b77277f31519694fcf5cf778e5f42f27edb832f942f1574dcd28e9b05442
-require_value superseded_candidate_receipt_sha256 390c26421ac811e55a3dcabee787f4f584b44b3a094b0be376129880d5c275f1
+require_value defect_register_entry_count 5
+require_value supersedes_source_candidate_digest 21df6824868d0a295162efc97fa31fbf1dea9a63add8fc46718ec1278f5e9045
+require_value superseded_candidate_receipt_sha256 a98428bb9ab4f977979aa5950af6d512f2eaee3f1b8ce76a915c275c0c614c88
 require_value superseded_candidate_failure_row_count 1
 require_value superseded_candidate_owner_attempt not-run
 require_value superseded_candidate_owner_scripted_pass not-run
@@ -257,6 +257,12 @@ require_value defect_004_release_row interactive_shim
 require_value defect_004_status resolved-automated
 require_value defect_004_current_candidate_retest_receipt component_gate
 require_value defect_004_symptom_category websocket_app_list_frame_limit_disconnect
+require_value defect_005_ref P1-005
+require_value defect_005_severity P1
+require_value defect_005_release_row component_gate
+require_value defect_005_status resolved-automated
+require_value defect_005_current_candidate_retest_receipt component_gate
+require_value defect_005_symptom_category historical_cask_source_version_mismatch
 
 for timestamp_key in \
     started_at \
@@ -269,6 +275,7 @@ for timestamp_key in \
     defect_002_first_observed_at \
     defect_003_first_observed_at \
     defect_004_first_observed_at \
+    defect_005_first_observed_at \
     defect_register_reviewed_at \
     receipt_binding_verify_at \
     candidate_verify_final_at
@@ -277,7 +284,7 @@ do
 done
 
 require_recorded defect_register_reviewed_at
-require_value source_change_reason broker_app_catalog_frame_fix
+require_value source_change_reason historical_cask_verification_fix
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then
