@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 
 const codex = process.env.CODEX_COVE_REAL_CODEX || "/opt/homebrew/bin/codex";
-const timeoutMs = Number(process.env.CODEX_COVE_SMOKE_TIMEOUT_MS || "8000");
+const timeoutMs = Number(process.env.CODEX_COVE_SMOKE_TIMEOUT_MS || "20000");
 const child = spawn(codex, ["app-server", "--stdio"], {
   env: {
     ...process.env,
@@ -17,6 +17,11 @@ const child = spawn(codex, ["app-server", "--stdio"], {
 let completed = false;
 let ignoredLines = 0;
 let stderr = "";
+let rateLimitsRead = false;
+let appListBytes = 0;
+let rateLimits = null;
+let resetCreditsPresent = false;
+const maximumLineBytes = 8 * 1024 * 1024;
 
 const fail = (message) => {
   if (completed) return;
@@ -35,7 +40,7 @@ const send = (message) => {
 };
 
 const timer = setTimeout(() => {
-  fail(`Timed out after ${timeoutMs} ms waiting for app-server usage response`);
+  fail(`Timed out after ${timeoutMs} ms waiting for app-server responses`);
 }, timeoutMs);
 
 child.stderr.setEncoding("utf8");
@@ -73,20 +78,45 @@ lines.on("line", (line) => {
       method: "account/rateLimits/read",
       params: null,
     });
+    send({
+      jsonrpc: "2.0",
+      id: "cove-smoke-app-list",
+      method: "app/list",
+      params: {},
+    });
     return;
   }
 
-  if (message.id !== "cove-smoke-usage") return;
-  if (message.error) {
-    fail(`Rate-limit read failed: ${JSON.stringify(message.error)}`);
-    return;
+  if (message.id === "cove-smoke-app-list") {
+    if (message.error || !Array.isArray(message.result?.data)) {
+      fail("App list failed or did not contain result.data");
+      return;
+    }
+    appListBytes = Buffer.byteLength(line, "utf8");
+    if (appListBytes > maximumLineBytes) {
+      fail("App list response exceeded the broker frame limit");
+      return;
+    }
+    if (!rateLimitsRead) return;
   }
 
-  const snapshot = message.result?.rateLimits;
-  if (!snapshot || typeof snapshot !== "object") {
-    fail("Rate-limit response did not contain result.rateLimits");
-    return;
+  if (message.id === "cove-smoke-usage") {
+    if (message.error) {
+      fail(`Rate-limit read failed: ${JSON.stringify(message.error)}`);
+      return;
+    }
+
+    rateLimits = message.result?.rateLimits;
+    if (!rateLimits || typeof rateLimits !== "object") {
+      fail("Rate-limit response did not contain result.rateLimits");
+      return;
+    }
+    resetCreditsPresent = message.result?.rateLimitResetCredits != null;
+    rateLimitsRead = true;
+    if (appListBytes === 0) return;
   }
+
+  if (!rateLimitsRead || appListBytes === 0) return;
 
   completed = true;
   clearTimeout(timer);
@@ -96,9 +126,11 @@ lines.on("line", (line) => {
     `${JSON.stringify({
       initialized: true,
       rateLimitsRead: true,
-      primaryPresent: snapshot.primary != null,
-      secondaryPresent: snapshot.secondary != null,
-      resetCreditsPresent: message.result?.rateLimitResetCredits != null,
+      appListRead: true,
+      appListBytes,
+      primaryPresent: rateLimits.primary != null,
+      secondaryPresent: rateLimits.secondary != null,
+      resetCreditsPresent,
       ignoredNonProtocolLines: ignoredLines,
     })}\n`,
   );

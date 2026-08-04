@@ -1938,12 +1938,37 @@ struct CoveCoreSmokeTests {
         CoveReducer.reduce(&state, .setCollapsedWidth(210))
         CoveReducer.reduce(&state, .setTextScale(1.5))
         CoveReducer.reduce(&state, .setSquareTopCorners(false))
+        CoveReducer.reduce(
+            &state,
+            .setQueueSectionOrder([
+                .active,
+                .recentlyFinished,
+                .active,
+            ])
+        )
+        CoveReducer.reduce(
+            &state,
+            .setQueueSectionCollapsed(.recentlyFinished, true)
+        )
         precondition(!state.settings.showUsage)
         precondition(state.settings.showProfileTokenUsage)
         precondition(state.settings.showTokenMetrics)
         precondition(state.settings.collapsedWidth == 210)
         precondition(state.settings.textScale == 1.5)
         precondition(!state.settings.squareTopCorners)
+        precondition(
+            state.settings.queueSectionOrder
+                == [.active, .recentlyFinished, .needsAttention, .more]
+        )
+        precondition(
+            state.settings.collapsedQueueSections
+                == [.recentlyFinished, .more]
+        )
+        CoveReducer.reduce(
+            &state,
+            .setQueueSectionCollapsed(.recentlyFinished, false)
+        )
+        precondition(state.settings.collapsedQueueSections == [.more])
         CoveReducer.reduce(&state, .setCollapsedWidth(90))
         precondition(state.settings.collapsedWidth == 210)
         CoveReducer.reduce(&state, .setCollapsedWidth(900))

@@ -219,7 +219,7 @@ require_value remote_duplicate_count 0
 require_value wrong_scope_send_count 0
 require_value dependency_npm_vulnerability_count 0
 require_value ui_started yes
-require_value ui_pass_count 23
+require_value ui_pass_count 25
 require_value ui_fail_count 0
 require_value ui_skip_count 0
 require_value p0_open_count 0
@@ -227,10 +227,10 @@ require_value p1_open_count 0
 require_value final_process_count 1
 
 require_value defect_register_schema privacy_safe_v1
-require_value defect_register_entry_count 3
-require_value supersedes_source_candidate_digest 862a3a3ff000716a46a76edb8c7b822053be04405c39a186ab7b550c0feb1617
-require_value superseded_candidate_receipt_sha256 365f6aed3ac222b28b0912a2ae532ecf0aeae732c60fc3aca0f8e639cc1f5356
-require_value superseded_candidate_failure_row_count 3
+require_value defect_register_entry_count 4
+require_value supersedes_source_candidate_digest 8f35b77277f31519694fcf5cf778e5f42f27edb832f942f1574dcd28e9b05442
+require_value superseded_candidate_receipt_sha256 390c26421ac811e55a3dcabee787f4f584b44b3a094b0be376129880d5c275f1
+require_value superseded_candidate_failure_row_count 1
 require_value superseded_candidate_owner_attempt not-run
 require_value superseded_candidate_owner_scripted_pass not-run
 require_value defect_001_ref P1-001
@@ -251,6 +251,12 @@ require_value defect_003_release_row sleep_wake
 require_value defect_003_status resolved-automated
 require_value defect_003_current_candidate_retest_receipt component_gate
 require_value defect_003_symptom_category locked_privacy_state_not_cleared
+require_value defect_004_ref P1-004
+require_value defect_004_severity P1
+require_value defect_004_release_row interactive_shim
+require_value defect_004_status resolved-automated
+require_value defect_004_current_candidate_retest_receipt component_gate
+require_value defect_004_symptom_category websocket_app_list_frame_limit_disconnect
 
 for timestamp_key in \
     started_at \
@@ -262,6 +268,7 @@ for timestamp_key in \
     defect_001_first_observed_at \
     defect_002_first_observed_at \
     defect_003_first_observed_at \
+    defect_004_first_observed_at \
     defect_register_reviewed_at \
     receipt_binding_verify_at \
     candidate_verify_final_at
@@ -270,7 +277,7 @@ do
 done
 
 require_recorded defect_register_reviewed_at
-require_value source_change_reason streamlined_functional_release_gate
+require_value source_change_reason broker_app_catalog_frame_fix
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then

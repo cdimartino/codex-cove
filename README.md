@@ -9,7 +9,7 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.2.0`. Check
+> **Release status:** the source tree is currently version `0.3.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
@@ -38,8 +38,9 @@ named suggestion; update the tap or use the source or verified manual path. See
 
 - A compact collapsed island with animated task residents and semantic cues
   for active, waiting, completed, failed, blocked, and interrupted work.
-- An expandable queue ordered by attention, with search, pinning, unread state,
-  recoverable local archives, reminders, plans, approval scopes, and questions.
+- An expandable queue with collapsible, reorderable sections; search; row-level
+  context actions; pinning; reminders; unread state; and recoverable local or
+  bulk completed-task archives.
 - Exact-origin navigation for Terminal, iTerm2, tmux, WezTerm, VS Code, Cursor,
   remote CLI sessions, and Codex Desktop tasks.
 - Native Glass, Retro Terminal, and Minimal OLED styles, five built-in palettes,

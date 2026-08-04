@@ -7,8 +7,10 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -242,15 +244,20 @@ fn broker_client_claim_timeout(config: &Config) -> Duration {
 }
 
 fn spawn_app_server(real_codex: &Path, mode: AppServerMode) -> io::Result<Child> {
-    let child = Command::new(real_codex)
+    let mut command = Command::new(real_codex);
+    command
         .args(mode.command_args())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
         .env("CODEX_COVE_BYPASS", "1")
-        .env("RUST_LOG", "off")
-        .env_remove("CODEX_COVE_TRACE_BROKER")
-        .spawn();
+        .env_remove("CODEX_COVE_TRACE_BROKER");
+    if trace_broker_enabled() {
+        command.stderr(Stdio::inherit());
+    } else {
+        command.env("RUST_LOG", "off").stderr(Stdio::null());
+    }
+    command.process_group(0);
+    let child = command.spawn();
     match &child {
         Ok(child) => trace_broker(&format!(
             "child_spawn mode={} pid={}",
@@ -272,15 +279,17 @@ pub fn probe_app_server_rpc(
     timeout: Duration,
     max_bytes: usize,
 ) -> AppServerProbe {
-    let child = Command::new(real_codex)
+    let mut command = Command::new(real_codex);
+    command
         .args(mode.command_args())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("CODEX_COVE_BYPASS", "1")
         .env("RUST_LOG", "off")
-        .env_remove("CODEX_COVE_TRACE_BROKER")
-        .spawn();
+        .env_remove("CODEX_COVE_TRACE_BROKER");
+    command.process_group(0);
+    let child = command.spawn();
     let Ok(mut child) = child else {
         return AppServerProbe {
             available: false,
@@ -477,8 +486,41 @@ fn verify_child_started(child: &mut Child) -> io::Result<()> {
 }
 
 fn stop_child(child: &mut Child) {
-    let _ = child.kill();
+    let pid = child.id();
+    if let Err(error) = terminate_process_group(pid)
+        && error.raw_os_error() != Some(libc::ESRCH)
+    {
+        let _ = child.kill();
+    }
     let _ = child.wait();
+}
+
+fn terminate_process_group(pid: u32) -> io::Result<()> {
+    let process_group = libc::pid_t::try_from(pid).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("child PID {pid} cannot identify a process group"),
+        )
+    })?;
+    if process_group <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("child PID {pid} cannot identify a process group"),
+        ));
+    }
+    if unsafe { libc::kill(-process_group, libc::SIGKILL) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn terminate_remaining_process_group(pid: u32) -> io::Result<()> {
+    match terminate_process_group(pid) {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn run_broker_inner(
@@ -587,26 +629,28 @@ fn run_raw_broker_inner(
         stop_child(&mut child);
         return Err(error);
     }
-    let mut proxy_input = child
-        .stdin
-        .take()
-        .ok_or_else(|| io::Error::other("proxy stdin unavailable"))?;
-    let proxy_output = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("proxy stdout unavailable"))?;
+    let Some(mut proxy_input) = child.stdin.take() else {
+        stop_child(&mut child);
+        return Err(io::Error::other("proxy stdin unavailable"));
+    };
+    let Some(proxy_output) = child.stdout.take() else {
+        stop_child(&mut child);
+        return Err(io::Error::other("proxy stdout unavailable"));
+    };
     let mut client_input = client.try_clone()?;
     client_input.set_read_timeout(Some(Duration::from_millis(25)))?;
     let mut client_output = client.try_clone()?;
     let (decision_sender, decision_receiver) = mpsc::channel::<Vec<u8>>();
-    let (input_result_sender, input_result_receiver) = mpsc::channel::<io::Result<()>>();
+    let (worker_sender, worker_receiver) = mpsc::channel::<RawBrokerWorkerResult>();
     let pending = Arc::new(Mutex::new(HashSet::<String>::new()));
     let input_pending = Arc::clone(&pending);
     let max_bytes = config.max_frame_bytes;
+    let input_result_sender = worker_sender.clone();
     let input_thread = thread::spawn(move || {
         let result = (|| -> io::Result<()> {
             let mut buffer = [0_u8; 16_384];
             let mut client_frame_buffer = Vec::new();
+            let mut traced_inbound_frame = false;
             loop {
                 while let Ok(frame) = decision_receiver.try_recv() {
                     proxy_input.write_all(&frame)?;
@@ -616,6 +660,10 @@ fn run_raw_broker_inner(
                 match client_input.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(read) => {
+                        if !traced_inbound_frame {
+                            trace_broker(&format!("first_inbound_frame source=raw bytes={read}"));
+                            traced_inbound_frame = true;
+                        }
                         forward_raw_client_bytes(
                             &mut client_frame_buffer,
                             &buffer[..read],
@@ -629,7 +677,12 @@ fn run_raw_broker_inner(
                             error.kind(),
                             io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
                         ) => {}
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        return Err(io::Error::new(
+                            error.kind(),
+                            format!("broker client input read failed: {error}"),
+                        ));
+                    }
                 }
             }
             while let Ok(frame) = decision_receiver.try_recv() {
@@ -646,7 +699,7 @@ fn run_raw_broker_inner(
             }
             Ok(())
         })();
-        let _ = input_result_sender.send(result);
+        let _ = input_result_sender.send(RawBrokerWorkerResult::Input(result));
     });
 
     let socket = config.event_socket.clone();
@@ -663,83 +716,163 @@ fn run_raw_broker_inner(
         max_bytes,
     )?;
     let output_pending = Arc::clone(&pending);
-    let output_thread = thread::spawn(move || -> io::Result<()> {
-        let mut reader = BufReader::new(proxy_output);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
-            }
-            if line.len() > max_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "app-server message exceeds maximum frame size",
-                ));
-            }
-            let parsed = serde_json::from_slice::<Value>(&line).ok();
-            if let Some(value) = parsed.as_ref() {
-                if let Some(key) = server_request_key(value) {
-                    output_pending.lock().unwrap().insert(key);
+    let output_thread = thread::spawn(move || {
+        let result = (|| -> io::Result<()> {
+            let mut reader = BufReader::new(proxy_output);
+            let mut line = Vec::new();
+            let mut traced_outbound_frame = false;
+            loop {
+                line.clear();
+                let read = reader.read_until(b'\n', &mut line)?;
+                if read == 0 {
+                    break;
                 }
-                if let Some(key) = resolved_request_key(value) {
-                    output_pending.lock().unwrap().remove(&key);
+                if line.len() > max_bytes {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "app-server message exceeds maximum frame size",
+                    ));
                 }
-            }
-            client_output.write_all(&line)?;
-            client_output.flush()?;
+                let parsed = serde_json::from_slice::<Value>(&line).ok();
+                if !traced_outbound_frame {
+                    trace_broker(&format!(
+                        "first_outbound_frame source=raw bytes={} method={}",
+                        line.len(),
+                        frame_method(&line)
+                    ));
+                    traced_outbound_frame = true;
+                }
+                if let Some(value) = parsed.as_ref() {
+                    if let Some(key) = server_request_key(value) {
+                        output_pending.lock().unwrap().insert(key);
+                    }
+                    if let Some(key) = resolved_request_key(value) {
+                        output_pending.lock().unwrap().remove(&key);
+                    }
+                }
+                client_output.write_all(&line).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("broker client output write failed: {error}"),
+                    )
+                })?;
+                client_output.flush().map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("broker client output flush failed: {error}"),
+                    )
+                })?;
 
-            if let Some(value) = parsed {
-                let session_id = extract_session_id(&value).unwrap_or_else(|| "unknown".to_owned());
-                let kind = classify_message(&value);
-                let event = CoveEvent::new(
-                    kind,
-                    EventSource::LocalCli,
-                    session_id,
-                    Some(launch_id.clone()),
-                    json!({
-                        "message": value,
-                        "decisionSocket": decision_path_text,
-                    }),
-                );
-                let _ = send_event_one_way(&socket, &event, timeout, max_bytes);
+                if let Some(value) = parsed {
+                    let session_id =
+                        extract_session_id(&value).unwrap_or_else(|| "unknown".to_owned());
+                    let kind = classify_message(&value);
+                    let event = CoveEvent::new(
+                        kind,
+                        EventSource::LocalCli,
+                        session_id,
+                        Some(launch_id.clone()),
+                        json!({
+                            "message": value,
+                            "decisionSocket": decision_path_text,
+                        }),
+                    );
+                    let _ = send_event_one_way(&socket, &event, timeout, max_bytes);
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+        let _ = worker_sender.send(RawBrokerWorkerResult::Output(result));
     });
 
-    let mut input_finished = false;
-    let status = loop {
+    let outcome = loop {
         if let Some(status) = child.try_wait()? {
-            break status;
+            trace_broker(&format!("child_exit status={status}"));
+            break RawBrokerOutcome::Child(status);
         }
-        if !input_finished {
-            match input_result_receiver.try_recv() {
-                Ok(Ok(())) => input_finished = true,
-                Ok(Err(error)) => {
-                    stop_child(&mut child);
-                    let _ = input_thread.join();
-                    running.store(false, Ordering::Relaxed);
-                    let _ = decision_thread.join();
-                    output_thread
-                        .join()
-                        .map_err(|_| io::Error::other("broker output thread panicked"))??;
-                    return Err(error);
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => input_finished = true,
+        match worker_receiver.try_recv() {
+            Ok(result) => {
+                trace_broker(&format!("raw_worker_exit kind={}", result.kind()));
+                break RawBrokerOutcome::Worker(result);
             }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => break RawBrokerOutcome::WorkerChannelClosed,
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let _ = input_thread.join();
+
     running.store(false, Ordering::Relaxed);
-    let _ = decision_thread.join();
+    match &outcome {
+        RawBrokerOutcome::Child(_) => {
+            terminate_remaining_process_group(child.id()).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("app-server descendant cleanup failed: {error}"),
+                )
+            })?;
+            let _ = client.shutdown(Shutdown::Read);
+        }
+        RawBrokerOutcome::Worker(_) | RawBrokerOutcome::WorkerChannelClosed => {
+            let _ = client.shutdown(Shutdown::Both);
+            stop_child(&mut child);
+        }
+    }
+    input_thread
+        .join()
+        .map_err(|_| io::Error::other("broker input thread panicked"))?;
     output_thread
         .join()
-        .map_err(|_| io::Error::other("broker output thread panicked"))??;
-    Ok(status.code().unwrap_or(1))
+        .map_err(|_| io::Error::other("broker output thread panicked"))?;
+    let _ = decision_thread.join();
+
+    match outcome {
+        RawBrokerOutcome::Child(status) => Ok(status.code().unwrap_or(1)),
+        RawBrokerOutcome::Worker(RawBrokerWorkerResult::Input(Ok(())))
+        | RawBrokerOutcome::Worker(RawBrokerWorkerResult::Output(Ok(()))) => Ok(0),
+        RawBrokerOutcome::Worker(RawBrokerWorkerResult::Input(Err(error)))
+        | RawBrokerOutcome::Worker(RawBrokerWorkerResult::Output(Err(error)))
+            if raw_client_disconnect(&error) =>
+        {
+            Ok(0)
+        }
+        RawBrokerOutcome::Worker(RawBrokerWorkerResult::Input(Err(error)))
+        | RawBrokerOutcome::Worker(RawBrokerWorkerResult::Output(Err(error))) => Err(error),
+        RawBrokerOutcome::WorkerChannelClosed => Err(io::Error::other(
+            "broker proxy workers exited without reporting status",
+        )),
+    }
+}
+
+enum RawBrokerWorkerResult {
+    Input(io::Result<()>),
+    Output(io::Result<()>),
+}
+
+impl RawBrokerWorkerResult {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Input(Ok(())) => "input-eof",
+            Self::Input(Err(_)) => "input-error",
+            Self::Output(Ok(())) => "output-eof",
+            Self::Output(Err(_)) => "output-error",
+        }
+    }
+}
+
+enum RawBrokerOutcome {
+    Child(std::process::ExitStatus),
+    Worker(RawBrokerWorkerResult),
+    WorkerChannelClosed,
+}
+
+fn raw_client_disconnect(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotConnected
+    )
 }
 
 fn run_websocket_broker_inner(
@@ -786,33 +919,79 @@ fn run_websocket_broker_inner(
     let mut runtime: Option<WebsocketRuntime> = None;
 
     let mut saw_protocol_activity = false;
-    let mut traced_inbound_frame = false;
-    let mut traced_outbound_frame = false;
+    let mut inbound_frame_count = 0_u64;
+    let mut outbound_frame_count = 0_u64;
     loop {
         while let Ok(frame) = decision_receiver.try_recv() {
-            if !traced_inbound_frame {
+            inbound_frame_count += 1;
+            if inbound_frame_count <= 256 {
                 trace_broker(&format!(
-                    "first_inbound_frame source=decision bytes={} method={}",
+                    "inbound_frame sequence={inbound_frame_count} source=decision bytes={} method={}",
                     frame.len(),
                     frame_method(&frame)
                 ));
-                traced_inbound_frame = true;
             }
             let runtime = websocket_runtime(&mut runtime, app_server, output_context.clone())?;
             write_jsonl_to_app_server(&mut runtime.proxy_input, &frame)?;
             saw_protocol_activity = true;
         }
         while let Ok(line) = output_receiver.try_recv() {
-            if !traced_outbound_frame {
+            outbound_frame_count += 1;
+            if outbound_frame_count <= 256 {
                 trace_broker(&format!(
-                    "first_outbound_frame bytes={} method={}",
+                    "outbound_frame sequence={outbound_frame_count} bytes={} method={}",
                     line.len(),
                     frame_method(&line)
                 ));
-                traced_outbound_frame = true;
             }
             websocket_send_jsonl(&mut websocket, line, max_bytes)?;
             saw_protocol_activity = true;
+        }
+
+        if runtime
+            .as_ref()
+            .is_some_and(|active| active.output_thread.is_finished())
+        {
+            let mut finished = runtime.take().expect("runtime is present");
+            let output_result = join_websocket_output_thread(finished.output_thread);
+            if output_result.is_ok() {
+                while let Ok(line) = output_receiver.try_recv() {
+                    if let Err(error) = websocket_send_jsonl(&mut websocket, line, max_bytes) {
+                        stop_child(&mut finished.child);
+                        running.store(false, Ordering::Relaxed);
+                        let _ = decision_thread.join();
+                        return Err(error);
+                    }
+                }
+
+                let started = std::time::Instant::now();
+                let grace = Duration::from_millis(250);
+                loop {
+                    if let Some(status) = finished.child.try_wait()? {
+                        terminate_remaining_process_group(finished.child.id())?;
+                        running.store(false, Ordering::Relaxed);
+                        let _ = decision_thread.join();
+                        let _ = close_websocket_ignoring_closed(&mut websocket, None);
+                        return Ok(status.code().unwrap_or(1));
+                    }
+                    if started.elapsed() >= grace {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+
+            stop_child(&mut finished.child);
+            running.store(false, Ordering::Relaxed);
+            let _ = decision_thread.join();
+            let _ = close_websocket_ignoring_closed(&mut websocket, None);
+            return match output_result {
+                Ok(()) => Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "app-server output closed while the client was connected",
+                )),
+                Err(error) => Err(error),
+            };
         }
 
         if let Some(active) = runtime.as_mut() {
@@ -824,6 +1003,7 @@ fn run_websocket_broker_inner(
                     !saw_protocol_activity
                 ));
                 let finished = runtime.take().expect("runtime is present");
+                terminate_remaining_process_group(finished.child.id())?;
                 join_websocket_output_thread(finished.output_thread)?;
                 while let Ok(line) = output_receiver.try_recv() {
                     websocket_send_jsonl(&mut websocket, line, max_bytes)?;
@@ -839,13 +1019,13 @@ fn run_websocket_broker_inner(
             Ok(message) => match message {
                 Message::Text(text) => {
                     let bytes = text.as_bytes();
-                    if !traced_inbound_frame {
+                    inbound_frame_count += 1;
+                    if inbound_frame_count <= 256 {
                         trace_broker(&format!(
-                            "first_inbound_frame source=websocket bytes={} method={}",
+                            "inbound_frame sequence={inbound_frame_count} source=websocket bytes={} method={}",
                             bytes.len(),
                             frame_method(bytes)
                         ));
-                        traced_inbound_frame = true;
                     }
                     let runtime =
                         websocket_runtime(&mut runtime, app_server, output_context.clone())?;
@@ -858,13 +1038,13 @@ fn run_websocket_broker_inner(
                     saw_protocol_activity = true;
                 }
                 Message::Binary(bytes) => {
-                    if !traced_inbound_frame {
+                    inbound_frame_count += 1;
+                    if inbound_frame_count <= 256 {
                         trace_broker(&format!(
-                            "first_inbound_frame source=websocket bytes={} method={}",
+                            "inbound_frame sequence={inbound_frame_count} source=websocket bytes={} method={}",
                             bytes.len(),
                             frame_method(&bytes)
                         ));
-                        traced_inbound_frame = true;
                     }
                     let runtime =
                         websocket_runtime(&mut runtime, app_server, output_context.clone())?;
@@ -939,14 +1119,14 @@ fn websocket_runtime<'a>(
             stop_child(&mut child);
             return Err(error);
         }
-        let proxy_input = child
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other("proxy stdin unavailable"))?;
-        let proxy_output = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("proxy stdout unavailable"))?;
+        let Some(proxy_input) = child.stdin.take() else {
+            stop_child(&mut child);
+            return Err(io::Error::other("proxy stdin unavailable"));
+        };
+        let Some(proxy_output) = child.stdout.take() else {
+            stop_child(&mut child);
+            return Err(io::Error::other("proxy stdout unavailable"));
+        };
         let output_thread = spawn_websocket_output_thread(proxy_output, output_context);
         *runtime = Some(WebsocketRuntime {
             child,
@@ -1553,6 +1733,18 @@ mod tests {
         flags & libc::O_NONBLOCK != 0
     }
 
+    fn assert_process_is_gone(pid: libc::pid_t) {
+        for _ in 0..100 {
+            if unsafe { libc::kill(pid, 0) } == -1
+                && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("process {pid} remained after broker cleanup");
+    }
+
     #[test]
     fn extracts_known_session_id_locations() {
         assert_eq!(
@@ -2035,6 +2227,52 @@ mod tests {
     }
 
     #[test]
+    fn websocket_proxy_reports_oversized_app_server_output_and_cleans_up() {
+        let temp = short_tempdir();
+        let fake_codex = temp.path().join("fake-codex");
+        fs::write(
+            &fake_codex,
+            b"#!/bin/sh\nIFS= read -r request || exit 20\nprintf '%0128d\\n' 0\nexec sleep 30\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake_codex, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut config = Config::for_home(temp.path());
+        config.event_socket = temp.path().join("missing-events.sock");
+        config.runtime_directory = temp.path().join("run");
+        config.max_frame_bytes = 96;
+        let listen = broker_socket(&config.runtime_directory, "launch-ws-output-large");
+        let decision = decision_socket(&config.runtime_directory, "launch-ws-output-large");
+        let broker_config = config.clone();
+        let broker_listen = listen.clone();
+        let broker = thread::spawn(move || {
+            run_broker(
+                &broker_listen,
+                "launch-ws-output-large",
+                &fake_codex,
+                &broker_config,
+                AppServerMode::DirectStdio,
+            )
+        });
+
+        assert!(wait_for_socket(&listen, Duration::from_secs(1)));
+        assert!(wait_for_socket(&decision, Duration::from_secs(1)));
+        let stream = UnixStream::connect(&listen).unwrap();
+        let (mut websocket, _) = tungstenite::client("ws://localhost/rpc", stream).unwrap();
+        websocket
+            .send(Message::Text(
+                r#"{"jsonrpc":"2.0","id":"bootstrap","method":"initialize","params":{}}"#
+                    .to_owned(),
+            ))
+            .unwrap();
+
+        let error = broker.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!listen.exists());
+        assert!(!decision.exists());
+    }
+
+    #[test]
     fn raw_proxy_rejects_oversized_client_line_before_forwarding_and_cleans_up() {
         let temp = short_tempdir();
         let fake_codex = temp.path().join("fake-codex");
@@ -2132,6 +2370,60 @@ mod tests {
         let mut child = spawn_app_server(&fake_codex, AppServerMode::DirectStdio).unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(fs::read_to_string(rust_log).unwrap(), "off");
+    }
+
+    #[test]
+    fn raw_client_disconnect_terminates_app_server_descendants() {
+        let temp = short_tempdir();
+        let fake_codex = temp.path().join("fake-codex");
+        let descendant_pid_path = temp.path().join("descendant.pid");
+        fs::write(
+            &fake_codex,
+            format!(
+                "#!/bin/sh\nsleep 30 &\ndescendant=$!\nprintf '%s' \"$descendant\" > '{}'\nIFS= read -r request || exit 0\nwhile :; do printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"tick\"}}'; done\n",
+                descendant_pid_path.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_codex, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut config = Config::for_home(temp.path());
+        config.event_socket = temp.path().join("missing-events.sock");
+        config.runtime_directory = temp.path().join("run");
+        let listen = broker_socket(&config.runtime_directory, "launch-disconnect");
+        let broker_listen = listen.clone();
+        let broker_config = config.clone();
+        let broker = thread::spawn(move || {
+            run_broker(
+                &broker_listen,
+                "launch-disconnect",
+                &fake_codex,
+                &broker_config,
+                AppServerMode::DirectStdio,
+            )
+        });
+
+        assert!(wait_for_socket(&listen, Duration::from_secs(1)));
+        let mut client = UnixStream::connect(&listen).unwrap();
+        client
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
+            .unwrap();
+        for _ in 0..100 {
+            if descendant_pid_path.exists() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let descendant_pid = fs::read_to_string(&descendant_pid_path)
+            .unwrap()
+            .parse::<libc::pid_t>()
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(350));
+        drop(client);
+        assert!(broker.join().unwrap().is_ok());
+        assert_process_is_gone(descendant_pid);
+        assert!(!listen.exists());
     }
 
     #[test]

@@ -141,7 +141,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         self.shortcuts = CoveKeyboardShortcutBroker()
         self.terminalJumpService = uiTestConfiguration == nil
             ? CoveSystemTerminalJumpService()
-            : CoveUITestTerminalJumpService()
+            : CoveUITestTerminalJumpService { [weak store] in
+                store?.recordFixtureJump()
+            }
         self.metadataBridge = CoveMetadataBridge()
         self.dismissedSessionStore = CoveDismissedSessionStore(
             url: uiTestConfiguration?.dismissedSessionsURL
@@ -224,6 +226,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             store.onDismissSession = { [weak self] sessionID in
                 self?.archiveSession(sessionID) ?? false
             }
+            store.onDismissSessions = { [weak self] sessionIDs in
+                self?.archiveSessions(sessionIDs) ?? false
+            }
             store.onSetPinned = { [weak self] sessionID, pinned in
                 self?.metadataBridge.setPinned(
                     sessionID: sessionID,
@@ -244,6 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // the user's Codex metadata or Application Support state.
             store.onMarkRead = { _ in }
             store.onDismissSession = { _ in true }
+            store.onDismissSessions = { _ in true }
             store.onSetPinned = { _, _ in true }
             store.onScheduleFollowUp = { _, _ in true }
             store.onCancelFollowUp = { _ in true }
@@ -494,9 +500,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func archiveSession(_ sessionID: String) -> Bool {
+        archiveSessions([sessionID])
+    }
+
+    private func archiveSessions(_ sessionIDs: [String]) -> Bool {
         do {
             var dismissed = try dismissedSessionStore.load()
-            dismissed.insert(sessionID)
+            dismissed.formUnion(sessionIDs)
             try dismissedSessionStore.save(dismissed)
             return true
         } catch {
@@ -1068,7 +1078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.2.0"
+                as? String ?? "0.3.0"
         ) else {
             return
         }
@@ -1090,7 +1100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         )
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.2.0"
+                as? String ?? "0.3.0"
         ) else {
             return
         }

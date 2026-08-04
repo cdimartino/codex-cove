@@ -80,9 +80,12 @@ terminates that local WebSocket and translates each text or binary JSON message
 to one newline-delimited JSON-RPC object on the official app-server process's
 standard input. App-server output is translated back to WebSocket text
 messages. Ping, pong, and close frames are handled explicitly. Frames and
-translated lines are capped at the configured maximum size. The HTTP upgrade
-is also bounded; a client that claims the socket and sends only a partial
-handshake cannot retain the broker or its child app-server indefinitely.
+translated lines are capped at the configured maximum size. The default is
+8 MiB, which accommodates the approximately 3.5 MiB `app/list` response seen
+with Codex 0.146; reinstalling migrates the former 1 MiB default while keeping
+other customized settings. The HTTP upgrade is also bounded; a client that
+claims the socket and sends only a partial handshake cannot retain the broker
+or its child app-server indefinitely.
 
 The helper retains a raw JSON Lines path for protocol fixtures and compatibility
 tests; that path applies the same inbound line cap before forwarding.
@@ -90,6 +93,14 @@ Production shim-routed Codex uses WebSocket-over-Unix. A published
 broker that is never claimed expires after a bounded five-minute window, while
 the shim itself uses its much shorter configured startup deadline before
 falling back to native Codex.
+
+Each spawned app-server owns a new process group. Client input EOF, output
+worker failure, WebSocket closure, and broker errors terminate that complete
+group and reap the app-server, including when an MCP child still holds a pipe
+open. A normal app-server exit also triggers best-effort cleanup of remaining
+group members. This keeps an oversized or otherwise failed Cove transport from
+leaving the Codex TUI in a permanent startup state or reparenting MCP
+descendants to the system process.
 
 ## Broker decisions
 

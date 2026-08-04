@@ -385,6 +385,14 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         return min(textScaleRange.upperBound, max(textScaleRange.lowerBound, value))
     }
 
+    public static func validatedQueueSectionOrder(
+        _ value: [CoveQueueSection]
+    ) -> [CoveQueueSection] {
+        var seen = Set<CoveQueueSection>()
+        let unique = value.filter { seen.insert($0).inserted }
+        return unique + CoveQueueSection.allCases.filter { !seen.contains($0) }
+    }
+
     public var themeFamily: CoveThemeFamily
     public var palette: CovePaletteKind
     public var opacityStyle: CoveOpacityStyle
@@ -418,6 +426,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
     public var showUsage: Bool
     public var showProfileTokenUsage: Bool
     public var showTokenMetrics: Bool
+    public var queueSectionOrder: [CoveQueueSection]
+    public var collapsedQueueSections: Set<CoveQueueSection>
 
     public init(
         themeFamily: CoveThemeFamily = .nativeGlass,
@@ -452,7 +462,9 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         minimalIslandMode: Bool = false,
         showUsage: Bool = true,
         showProfileTokenUsage: Bool = false,
-        showTokenMetrics: Bool = false
+        showTokenMetrics: Bool = false,
+        queueSectionOrder: [CoveQueueSection] = CoveQueueSection.allCases,
+        collapsedQueueSections: Set<CoveQueueSection> = [.more]
     ) {
         self.themeFamily = themeFamily
         self.palette = palette
@@ -492,6 +504,10 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         self.showUsage = showUsage
         self.showProfileTokenUsage = showProfileTokenUsage
         self.showTokenMetrics = showTokenMetrics
+        self.queueSectionOrder = Self.validatedQueueSectionOrder(
+            queueSectionOrder
+        )
+        self.collapsedQueueSections = collapsedQueueSections
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -506,6 +522,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         case followUpReminderSeconds
         case minimalIslandMode
         case showUsage, showProfileTokenUsage, showTokenMetrics
+        case queueSectionOrder, collapsedQueueSections
     }
 
     public init(from decoder: Decoder) throws {
@@ -563,7 +580,15 @@ public struct CoveSettings: Codable, Equatable, Sendable {
             showTokenMetrics: try values.decodeIfPresent(
                 Bool.self,
                 forKey: .showTokenMetrics
-            ) ?? false
+            ) ?? false,
+            queueSectionOrder: try values.decodeIfPresent(
+                [CoveQueueSection].self,
+                forKey: .queueSectionOrder
+            ) ?? CoveQueueSection.allCases,
+            collapsedQueueSections: try values.decodeIfPresent(
+                Set<CoveQueueSection>.self,
+                forKey: .collapsedQueueSections
+            ) ?? [.more]
         )
     }
 }
@@ -709,6 +734,8 @@ public enum CoveAction: Equatable, Sendable {
     case setShowUsage(Bool)
     case setShowProfileTokenUsage(Bool)
     case setShowTokenMetrics(Bool)
+    case setQueueSectionOrder([CoveQueueSection])
+    case setQueueSectionCollapsed(CoveQueueSection, Bool)
     case restoreDismissedSessionIDs([String])
     case restoreDismissedSession(String?)
     case evaluateQuiet(Date, focusedBundleIdentifier: String?)
@@ -735,6 +762,7 @@ public enum CoveAction: Equatable, Sendable {
     )
     case markRead(String)
     case dismissSnapshot(String)
+    case dismissSnapshots([String])
     case clearRecentEvents
 }
 
@@ -865,6 +893,15 @@ public enum CoveReducer {
             state.settings.showProfileTokenUsage = value
         case let .setShowTokenMetrics(value):
             state.settings.showTokenMetrics = value
+        case let .setQueueSectionOrder(order):
+            state.settings.queueSectionOrder =
+                CoveSettings.validatedQueueSectionOrder(order)
+        case let .setQueueSectionCollapsed(section, collapsed):
+            if collapsed {
+                state.settings.collapsedQueueSections.insert(section)
+            } else {
+                state.settings.collapsedQueueSections.remove(section)
+            }
         case let .restoreDismissedSessionIDs(sessionIDs):
             state.dismissedSessionIDs = Array(Set(sessionIDs)).sorted()
             state.session.snapshots.removeAll { snapshot in
@@ -1178,21 +1215,38 @@ public enum CoveReducer {
                 refreshActiveSnapshot(in: &state)
             }
         case let .dismissSnapshot(snapshotID):
-            let sessionID = state.session.snapshots.first {
-                $0.snapshotId == snapshotID
-            }?.sessionId ?? snapshotID
-            state.session.snapshots.removeAll { $0.snapshotId == snapshotID }
-            if !state.dismissedSessionIDs.contains(sessionID) {
-                state.dismissedSessionIDs.append(sessionID)
-                state.dismissedSessionIDs.sort()
-            }
-            state.pinnedSessionIDs.removeAll { $0 == sessionID }
-            sortSnapshots(in: &state)
-            refreshActiveSnapshot(in: &state)
+            dismissSnapshots(in: &state, snapshotIDs: [snapshotID])
+        case let .dismissSnapshots(snapshotIDs):
+            dismissSnapshots(in: &state, snapshotIDs: snapshotIDs)
         case .clearRecentEvents:
             state.recentEvents.removeAll()
             state.lastEvent = nil
         }
+    }
+
+    private static func dismissSnapshots(
+        in state: inout CoveState,
+        snapshotIDs: [String]
+    ) {
+        let requestedIDs = Set(snapshotIDs.filter { !$0.isEmpty })
+        guard !requestedIDs.isEmpty else { return }
+        let sessionIDs = Set<String>(
+            state.session.snapshots.compactMap { snapshot in
+                guard requestedIDs.contains(snapshot.snapshotId) else {
+                    return nil
+                }
+                return snapshot.sessionId ?? snapshot.snapshotId
+            }
+        )
+        state.session.snapshots.removeAll {
+            requestedIDs.contains($0.snapshotId)
+        }
+        state.dismissedSessionIDs = Array(
+            Set(state.dismissedSessionIDs).union(sessionIDs)
+        ).sorted()
+        state.pinnedSessionIDs.removeAll { sessionIDs.contains($0) }
+        sortSnapshots(in: &state)
+        refreshActiveSnapshot(in: &state)
     }
 
     @discardableResult

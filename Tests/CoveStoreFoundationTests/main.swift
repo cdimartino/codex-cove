@@ -107,6 +107,99 @@ private struct CoveStoreFoundationTests {
         return await condition()
     }
 
+    static func testArchiveAllCompletedSafety() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        func snapshot(
+            _ id: String,
+            sessionID: String? = nil,
+            status: CoveSessionStatus
+        ) -> CoveSessionSnapshot {
+            CoveSessionSnapshot(
+                snapshotId: id,
+                status: status,
+                priority: status == .completed ? 8 : 40,
+                title: id,
+                timestamp: now,
+                sessionId: sessionID ?? id,
+                unread: true
+            )
+        }
+
+        let pinnedCompleted = snapshot("completed-pinned", status: .completed)
+        let remindedCompleted = snapshot("completed-reminded", status: .completed)
+        let failed = snapshot("failed", status: .failed)
+        let active = snapshot("active", status: .working)
+        let sharedCompleted = snapshot(
+            "shared-completed",
+            sessionID: "shared-session",
+            status: .completed
+        )
+        let sharedActive = snapshot(
+            "shared-active",
+            sessionID: "shared-session",
+            status: .active
+        )
+        let store = CoveStore(
+            storage: MemoryStorage(),
+            decisionSender: ProbeSender(),
+            initialState: CoveState(
+                session: CoveSessionState(
+                    snapshots: [
+                        pinnedCompleted,
+                        remindedCompleted,
+                        failed,
+                        active,
+                        sharedCompleted,
+                        sharedActive,
+                    ]
+                ),
+                pinnedSessionIDs: ["completed-pinned", "active"]
+            ),
+            persistenceWritesEnabledOverride: false,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+
+        var archivedBatches: [[String]] = []
+        var unpinned: [String] = []
+        var canceledReminders: [String] = []
+        store.onDismissSessions = {
+            archivedBatches.append($0)
+            return true
+        }
+        store.onSetPinned = { sessionID, pinned in
+            if !pinned { unpinned.append(sessionID) }
+            return true
+        }
+        store.onScheduleFollowUp = { _, _ in true }
+        store.onCancelFollowUp = {
+            canceledReminders.append($0)
+            return true
+        }
+        store.scheduleFollowUp(remindedCompleted)
+
+        precondition(store.archivableCompletedCount == 2)
+        store.archiveAllCompleted()
+
+        precondition(
+            archivedBatches == [["completed-pinned", "completed-reminded"]]
+        )
+        precondition(unpinned == ["completed-pinned"])
+        precondition(canceledReminders == ["completed-reminded"])
+        precondition(store.archivableCompletedCount == 0)
+        precondition(
+            Set(store.state.dismissedSessionIDs)
+                == ["completed-pinned", "completed-reminded"]
+        )
+        precondition(store.state.pinnedSessionIDs == ["active"])
+        precondition(store.reminders["completed-reminded"] == nil)
+        precondition(
+            Set(store.state.session.snapshots.map(\.snapshotId))
+                == ["failed", "active", "shared-completed", "shared-active"]
+        )
+    }
+
     static func main() async {
         do {
             try testUITestTemporaryDirectoryPolicy()
@@ -125,6 +218,7 @@ private struct CoveStoreFoundationTests {
         } catch {
             fatalError("Metadata origin collision test failed: \(error)")
         }
+        testArchiveAllCompletedSafety()
 
         let fixture = approvalFixture()
         let requestKey = CoveDirectRequest.approval(fixture.request).key

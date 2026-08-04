@@ -1310,6 +1310,9 @@ fn prepare_install_config(layout: &InstallLayout, real_codex: &Path) -> io::Resu
         Err(error) if error.kind() == io::ErrorKind::NotFound => Config::for_home(&layout.home),
         Err(error) => return Err(error),
     };
+    if config.max_frame_bytes == 1_048_576 {
+        config.max_frame_bytes = crate::DEFAULT_MAX_FRAME_BYTES;
+    }
     config.real_codex = Some(real_codex.to_path_buf());
     config.validate()?;
     validate_config_paths_for_layout(&config, layout)?;
@@ -3633,6 +3636,34 @@ mod tests {
 
         assert_eq!(Config::load_from(&layout.config_path).unwrap(), expected);
         assert_eq!(fs::read(&layout.managed_binary).unwrap(), b"helper-v2");
+    }
+
+    #[test]
+    fn reinstall_migrates_the_legacy_default_frame_limit() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source_v1 = temp.path().join("source-helper-v1");
+        let source_v2 = temp.path().join("source-helper-v2");
+        let real_v1 = temp.path().join("real-codex-v1");
+        let real_v2 = temp.path().join("real-codex-v2");
+        executable(&source_v1, b"helper-v1");
+        executable(&source_v2, b"helper-v2");
+        executable(&real_v1, b"codex-v1");
+        executable(&real_v2, b"codex-v2");
+        apply_install(&source_v1, None, &real_v1, &layout, None).unwrap();
+
+        let mut legacy = Config::load_from(&layout.config_path).unwrap();
+        legacy.max_frame_bytes = 1_048_576;
+        legacy.save_to(&layout.config_path).unwrap();
+
+        apply_install(&source_v2, None, &real_v2, &layout, None).unwrap();
+
+        assert_eq!(
+            Config::load_from(&layout.config_path)
+                .unwrap()
+                .max_frame_bytes,
+            crate::DEFAULT_MAX_FRAME_BYTES
+        );
     }
 
     #[test]

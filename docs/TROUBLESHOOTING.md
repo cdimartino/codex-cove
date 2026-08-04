@@ -66,6 +66,28 @@ To show content-free broker readiness diagnostics:
 CODEX_COVE_TRACE_BROKER=1 codex
 ```
 
+## Codex stays on “Starting MCP servers”
+
+First bypass Cove without changing MCP definitions:
+
+```sh
+CODEX_COVE_BYPASS=1 codex --no-alt-screen
+```
+
+If native Codex reaches its prompt but the routed launch does not, rerun the
+current Cove installer or upgrade the Cask, then run `codex-cove doctor`.
+Version 0.3.0 and newer prefer the current non-Cove Codex binary on `PATH` over
+an older versioned `realCodex` path. They also migrate the legacy 1 MiB broker
+frame limit to 8 MiB: Codex 0.146 can return an `app/list` response around
+3.5 MiB after MCP startup. If a broker worker still fails or the client
+disconnects, Cove terminates and reaps the complete app-server process group
+instead of leaving the TUI waiting indefinitely.
+
+MCP initialization messages followed by app-server `Broken pipe` output point
+to a broker/client lifecycle failure, not automatically to an individual MCP
+package. Do not change ownership of `~/.npm`, delete its cache, or modify MCP
+configuration unless a separate native launch reproduces an npm failure.
+
 ## No CLI tasks appear
 
 Work through these in order:

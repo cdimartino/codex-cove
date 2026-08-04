@@ -25,6 +25,8 @@ Start with the guide that matches what you are trying to do.
   signing, GitHub releases, Homebrew Cask handoff, and rollback.
 - [Codex Cove 0.2.0 release notes](releases/v0.2.0.md) — immutable user-facing
   contents and compatibility notes for the `v0.2.0` release contract.
+- [Codex Cove 0.3.0 release notes](releases/v0.3.0.md) — queue organization,
+  bulk archiving, direct task opening, and installed theme rendering fixes.
 
 ## Version-specific engineering records
 

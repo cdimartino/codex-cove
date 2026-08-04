@@ -367,6 +367,12 @@ final class CoveUITestDecisionRecorder: CoveDecisionSending, @unchecked Sendable
 
 @MainActor
 final class CoveUITestTerminalJumpService: CoveTerminalJumping {
+    private let recordJump: () -> Void
+
+    init(recordJump: @escaping () -> Void = {}) {
+        self.recordJump = recordJump
+    }
+
     func observe(_ envelope: CoveWireEnvelope) {}
     func restore(metadata: [CoveSessionMetadata]) {}
 
@@ -377,14 +383,16 @@ final class CoveUITestTerminalJumpService: CoveTerminalJumping {
     }
 
     func jump(to snapshot: CoveSessionSnapshot) -> CoveJumpResult {
-        CoveJumpResult(
+        recordJump()
+        return CoveJumpResult(
             focusedExactLocation: true,
             message: "Recorded fixture jump"
         )
     }
 
     func jumpToCurrent() -> CoveJumpResult {
-        CoveJumpResult(
+        recordJump()
+        return CoveJumpResult(
             focusedExactLocation: true,
             message: "Recorded fixture jump"
         )
