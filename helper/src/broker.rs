@@ -2070,7 +2070,10 @@ mod tests {
         assert_eq!(first_response["result"]["answers"]["q"], "native");
         assert_eq!(second_response["id"], 7);
         assert_eq!(second_response["result"]["answers"]["q"], "cove");
-        websocket.close(None).unwrap();
+        // The fake app-server exits after echoing both responses, so its broker
+        // may complete the close first. Dropping the client still exercises the
+        // cleanup path without treating that valid close race as a test failure.
+        drop(websocket);
         assert_eq!(broker.join().unwrap(), 0);
     }
 

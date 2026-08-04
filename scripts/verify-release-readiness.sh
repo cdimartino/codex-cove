@@ -227,9 +227,9 @@ require_value p1_open_count 0
 require_value final_process_count 1
 
 require_value defect_register_schema privacy_safe_v1
-require_value defect_register_entry_count 5
-require_value supersedes_source_candidate_digest 21df6824868d0a295162efc97fa31fbf1dea9a63add8fc46718ec1278f5e9045
-require_value superseded_candidate_receipt_sha256 a98428bb9ab4f977979aa5950af6d512f2eaee3f1b8ce76a915c275c0c614c88
+require_value defect_register_entry_count 6
+require_value supersedes_source_candidate_digest 5b84d88feb8cb25ed1bbdc7f76e90b70636d73ce5c43eb82f00b983536583337
+require_value superseded_candidate_receipt_sha256 527ca369b5a5425c5c8bdc9cfd263d76c57513b976dd57961e54dfdcd4a531b6
 require_value superseded_candidate_failure_row_count 1
 require_value superseded_candidate_owner_attempt not-run
 require_value superseded_candidate_owner_scripted_pass not-run
@@ -263,6 +263,12 @@ require_value defect_005_release_row component_gate
 require_value defect_005_status resolved-automated
 require_value defect_005_current_candidate_retest_receipt component_gate
 require_value defect_005_symptom_category historical_cask_source_version_mismatch
+require_value defect_006_ref P1-006
+require_value defect_006_severity P1
+require_value defect_006_release_row component_gate
+require_value defect_006_status resolved-automated
+require_value defect_006_current_candidate_retest_receipt component_gate
+require_value defect_006_symptom_category websocket_peer_close_test_race
 
 for timestamp_key in \
     started_at \
@@ -276,6 +282,7 @@ for timestamp_key in \
     defect_003_first_observed_at \
     defect_004_first_observed_at \
     defect_005_first_observed_at \
+    defect_006_first_observed_at \
     defect_register_reviewed_at \
     receipt_binding_verify_at \
     candidate_verify_final_at
@@ -284,7 +291,7 @@ do
 done
 
 require_recorded defect_register_reviewed_at
-require_value source_change_reason historical_cask_verification_fix
+require_value source_change_reason websocket_test_close_race_fix
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then
