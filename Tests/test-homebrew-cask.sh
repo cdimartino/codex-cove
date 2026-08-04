@@ -193,9 +193,13 @@ audit_tap_line=$(grep -nF 'brew tap "$audit_tap" "$audit_repository"' \
 grep -F 'cmp -s published-release/codex-cove.rb "$tapped_cask"' \
     "$release_workflow" >/dev/null ||
     fail "release workflow does not byte-verify the disposable tapped cask"
-grep -F 'brew audit --cask --new "$audit_tap/codex-cove"' \
+grep -F 'brew audit --cask --new --except github_repository "$audit_tap/codex-cove"' \
     "$release_workflow" >/dev/null ||
-    fail "first-release workflow does not audit the disposable candidate as a new cask"
+    fail "first-release workflow does not run every applicable new-cask audit for the custom tap"
+if grep -F 'brew audit --cask --new --except ' "$release_workflow" |
+    grep -vF -- '--except github_repository ' >/dev/null; then
+    fail "first-release workflow excludes more than the inapplicable central-repository audit"
+fi
 grep -F 'Published immutable release $RELEASE_TAG already exists; verifying its exact assets for idempotent recovery.' \
     "$release_workflow" >/dev/null ||
     fail "release workflow does not explicitly support immutable-release recovery"

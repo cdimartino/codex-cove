@@ -35,13 +35,15 @@ whose matching rendered Cask has landed:
 
 ```sh
 brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew trust --cask cdimartino/codex-cove/codex-cove
 brew install --cask cdimartino/codex-cove/codex-cove
 ```
 
 This is an explicit custom tap: the first command binds the tap name to the
 public Codex Cove repository instead of relying on Homebrew's
 `homebrew-<name>` repository convention. Review that URL before accepting the
-tap. The install command downloads the exact release archive named by the Cask,
+tap. The item-specific trust command permits this Cask's install helper without
+trusting every package in the tap. The install command downloads the exact release archive named by the Cask,
 verifies its pinned SHA-256, places `Codex Cove.app` at
 `~/Applications/Codex Cove.app`, and runs the bundled helper without `sudo` to:
 
@@ -60,10 +62,11 @@ export PATH="$HOME/bin:$PATH"
 "$HOME/bin/codex-cove" doctor
 ```
 
-If Homebrew reports that the Cask is unavailable, the matching release-to-tap
-handoff has not landed. Build from source, or use the manual verified-release
-procedure when the GitHub release exists but its Cask follow-up is still under
-review.
+Codex Cove does not depend on Homebrew's deprecated `codex-app` Cask; Codex CLI
+must instead be independently available on `PATH`. If Homebrew reports that
+`codex-cove` is unavailable, do not install a similarly named suggestion. Run
+`brew update`, retry the fully qualified token, or use the source or manual
+verified-release procedure.
 
 ### Move an existing installation to Homebrew
 
@@ -74,6 +77,7 @@ settings, then install the Cask:
 ```sh
 "$HOME/bin/codex-cove" uninstall --keep-settings
 brew tap cdimartino/codex-cove https://github.com/cdimartino/codex-cove.git
+brew trust --cask cdimartino/codex-cove/codex-cove
 brew install --cask cdimartino/codex-cove/codex-cove
 ```
 
