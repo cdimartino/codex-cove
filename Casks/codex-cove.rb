@@ -1,6 +1,6 @@
 cask "codex-cove" do
-  version "0.2.0"
-  sha256 "c3a709be5e90eb823b4b5975a5872b573679dd2ba88450161724ec5e17e1e640"
+  version "0.3.0"
+  sha256 "2759d28cb8095d5b9528534c38de02230c45af9135bb8fd7ed1737cce09f4054"
 
   url "https://github.com/cdimartino/codex-cove/releases/download/v#{version}/Codex-Cove-#{version}-macos-arm64.zip",
       verified: "github.com/cdimartino/codex-cove/"
