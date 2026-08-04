@@ -93,30 +93,19 @@ cask_path = ARGV.fetch(0)
 commands, command_options, error = run_scenario(cask_path, nil)
 expect(error.nil?, "successful postflight raised an error")
 expect(
-  commands == ["--sync-login-item-and-quit", "install"],
-  "successful postflight did not sync before installing integration",
+  commands == ["install"],
+  "successful postflight did not install integration exactly once",
 )
 expect(
-  command_options[1].fetch(:env).fetch("PATH") == ENV.fetch("HOMEBREW_PATH", ENV.fetch("PATH")),
+  command_options[0].fetch(:env).fetch("PATH") == ENV.fetch("HOMEBREW_PATH", ENV.fetch("PATH")),
   "helper install did not receive Homebrew's caller PATH",
-)
-
-commands, _command_options, error = run_scenario(cask_path, "--sync-login-item-and-quit")
-expect(error&.message == "forced --sync-login-item-and-quit failure", "sync error was not re-raised")
-expect(
-  commands == ["--sync-login-item-and-quit", "--unregister-login-item-and-quit"],
-  "sync failure did not compensate by unregistering Launch at Login",
 )
 
 commands, _command_options, error = run_scenario(cask_path, "install")
 expect(error&.message == "forced install failure", "helper error was not re-raised")
 expect(
-  commands == [
-    "--sync-login-item-and-quit",
-    "install",
-    "--unregister-login-item-and-quit",
-  ],
-  "helper failure did not compensate by unregistering Launch at Login",
+  commands == ["install"],
+  "helper failure executed an unrelated maintenance action",
 )
 
 saved_path = ENV.fetch("PATH")

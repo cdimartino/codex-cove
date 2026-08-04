@@ -136,7 +136,7 @@ jobs:
           gh release download "$release_tag" \
             --repo "$GITHUB_REPOSITORY" \
             --dir "$release_directory"
-          ./scripts/verify-homebrew-cask-release.sh "$cask_path" "$release_directory"
+          ./scripts/verify-homebrew-cask-tap.sh "$cask_path" "$release_directory"
 
       - name: Run test suites
         run: make test
