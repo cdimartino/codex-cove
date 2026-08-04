@@ -37,7 +37,8 @@ trap cleanup EXIT HUP INT TERM
 
 rendered_cask="$temporary_directory/codex-cove.rb"
 "$repository_root/scripts/render-homebrew-cask.sh" \
-    "v$release_version" "$archive_path" "$rendered_cask" >/dev/null
+    --historical-release \
+    "$release_cask" "$archive_path" "$rendered_cask" >/dev/null
 cmp -s "$committed_cask" "$rendered_cask" ||
     fail "committed cask is not the deterministic output of the current template"
 

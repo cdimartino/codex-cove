@@ -36,8 +36,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: local.chris.codexcove.uitesthost
         PRODUCT_NAME: Codex Cove UI Test Host
-        MARKETING_VERSION: 0.2.0
-        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.3.0
+        CURRENT_PROJECT_VERSION: 2
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Codex Cove UI Test Host
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools

@@ -10,7 +10,6 @@ struct CoveQueueSurfaceView: View {
     @State private var selectedID: CoveQueueItemID?
     @State private var searchText = ""
     @State private var filter = CoveQueueFilter.all
-    @State private var showsMore = false
     @State private var showsDiagnostics = false
     @State private var showsRawEvents = false
 
@@ -24,34 +23,15 @@ struct CoveQueueSurfaceView: View {
             LazyVStack(
                 alignment: .leading,
                 spacing: 12,
-                pinnedViews: usesStickyMoreControls
+                pinnedViews: usesStickySectionHeaders
                     ? [.sectionHeaders]
                     : []
             ) {
                 queueHeader
 
-                queueSection(
-                    title: "Needs Attention",
-                    icon: "exclamationmark.bubble.fill",
-                    section: .needsAttention
-                )
-                queueSection(
-                    title: "Active",
-                    icon: "bolt.fill",
-                    section: .active
-                )
-                queueSection(
-                    title: "Recently Finished",
-                    icon: "checkmark.circle.fill",
-                    section: .recentlyFinished
-                )
-
-                Section {
-                    if showsMore {
-                        moreContents
-                    }
-                } header: {
-                    moreHeader
+                ForEach(state.settings.queueSectionOrder, id: \.self) {
+                    section in
+                    queueSection(section)
                 }
             }
             .padding(.horizontal, 14)
@@ -63,7 +43,7 @@ struct CoveQueueSurfaceView: View {
         }
         .scrollIndicators(.automatic)
         .accessibilityIdentifier("cove.queue.scroll")
-        .background(Color(hex: state.theme.backgroundHex))
+        .background(Color.clear)
         .foregroundStyle(Color(hex: state.theme.foregroundHex))
         .onAppear(perform: normalizeSelection)
         .onChange(of: projection.allTaskItems.map(\.id)) {
@@ -76,8 +56,8 @@ struct CoveQueueSurfaceView: View {
         CoveQueueProjection(state: state)
     }
 
-    private var usesStickyMoreControls: Bool {
-        showsMore && projection.taskCount >= 10
+    private var usesStickySectionHeaders: Bool {
+        projection.taskCount >= 10
     }
 
     private var selectedItem: CoveQueueItem? {
@@ -216,91 +196,164 @@ struct CoveQueueSurfaceView: View {
     }
 
     @ViewBuilder
-    private func queueSection(
+    private func queueSection(_ section: CoveQueueSection) -> some View {
+        switch section {
+        case .needsAttention:
+            taskQueueSection(
+                title: "Needs Attention",
+                icon: "exclamationmark.bubble.fill",
+                section: section
+            )
+        case .active:
+            taskQueueSection(
+                title: "Active",
+                icon: "bolt.fill",
+                section: section
+            )
+        case .recentlyFinished:
+            taskQueueSection(
+                title: "Recently Finished",
+                icon: "checkmark.circle.fill",
+                section: section
+            )
+        case .more:
+            Section {
+                if isExpanded(section) {
+                    moreContents
+                }
+            } header: {
+                queueSectionHeader(
+                    title: "More",
+                    icon: "ellipsis.circle.fill",
+                    section: section
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskQueueSection(
         title: String,
         icon: String,
         section: CoveQueueSection
     ) -> some View {
         let items = visibleItems(in: section)
         Section {
-            if items.isEmpty {
-                Text(emptyMessage(for: section))
-                    .coveOverlayFont(state.theme, .metadata)
-                    .foregroundStyle(Color(hex: state.theme.mutedTextHex))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 5)
-            } else {
-                ForEach(items) { item in
-                    CoveQueueTaskRow(
-                        item: item,
-                        theme: state.theme,
-                        redactsSensitiveContent: redactsSensitiveContent,
-                        isSelected: item.id == selectedID,
-                        isReminderScheduled: store.reminders[item.sessionId]
-                            != nil,
-                        onSelect: { selectedID = item.id },
-                        onFocus: { focus(item) }
-                    )
-                    .environmentObject(store)
+            if isExpanded(section) {
+                if items.isEmpty {
+                    Text(emptyMessage(for: section))
+                        .coveOverlayFont(state.theme, .metadata)
+                        .foregroundStyle(Color(hex: state.theme.mutedTextHex))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5)
+                } else {
+                    ForEach(items) { item in
+                        CoveQueueTaskRow(
+                            item: item,
+                            theme: state.theme,
+                            redactsSensitiveContent: redactsSensitiveContent,
+                            isSelected: item.id == selectedID,
+                            isReminderScheduled: store.reminders[item.sessionId]
+                                != nil,
+                            onSelect: { open(item) },
+                            onFocus: { focus(item) }
+                        )
+                        .environmentObject(store)
+                    }
                 }
             }
         } header: {
-            Label(title, systemImage: icon)
-                .coveOverlayFont(state.theme, .title)
-                .foregroundStyle(Color(hex: state.theme.foregroundHex))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 3)
-                .accessibilityIdentifier(
-                    section.coveAccessibilityIdentifier
-                )
+            queueSectionHeader(
+                title: title,
+                icon: icon,
+                section: section
+            )
         }
     }
 
-    private var moreHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func queueSectionHeader(
+        title: String,
+        icon: String,
+        section: CoveQueueSection
+    ) -> some View {
+        HStack(spacing: 8) {
             Button {
-                showsMore.toggle()
+                store.dispatch(
+                    .setQueueSectionCollapsed(section, isExpanded(section))
+                )
             } label: {
                 HStack(spacing: 8) {
-                    Label("More", systemImage: "ellipsis.circle.fill")
-                        .coveOverlayFont(state.theme, .title)
-                    Spacer()
                     Image(
-                        systemName: showsMore
-                            ? "chevron.up"
-                            : "chevron.down"
+                        systemName: isExpanded(section)
+                            ? "chevron.down"
+                            : "chevron.right"
                     )
                     .coveOverlayFont(state.theme, .badge)
+                    Label(title, systemImage: icon)
+                        .coveOverlayFont(state.theme, .title)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityValue(showsMore ? "Expanded" : "Collapsed")
-            .accessibilityIdentifier("cove.queue.more")
+            .accessibilityLabel("\(title) section")
+            .accessibilityValue(isExpanded(section) ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier(
+                "\(section.coveAccessibilityIdentifier).toggle"
+            )
 
-            if showsMore {
-                TextField("Search tasks", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                    .coveOverlayFont(state.theme, .body)
-                    .accessibilityLabel("Search queue tasks")
-                    .accessibilityIdentifier("cove.queue.search")
+            Spacer()
 
-                Picker("Filter tasks", selection: $filter) {
-                    ForEach(CoveQueueFilter.allCases) { filter in
-                        Text(filter.label).tag(filter)
-                    }
+            if section == .recentlyFinished,
+               store.archivableCompletedCount > 0 {
+                Button {
+                    store.archiveAllCompleted()
+                } label: {
+                    Label("Archive Completed", systemImage: "archivebox")
                 }
-                .pickerStyle(.segmented)
-                .coveOverlayFont(state.theme, .metadata)
-                .accessibilityIdentifier("cove.queue.filter")
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Archive all completed tasks")
+                .accessibilityLabel("Archive all completed tasks")
+                .accessibilityIdentifier(
+                    "cove.queue.archive-all-completed"
+                )
             }
+
+            Menu {
+                Button("Move Up", systemImage: "arrow.up") {
+                    moveSection(section, by: -1)
+                }
+                .disabled(sectionIndex(section) == 0)
+
+                Button("Move Down", systemImage: "arrow.down") {
+                    moveSection(section, by: 1)
+                }
+                .disabled(
+                    sectionIndex(section)
+                        == state.settings.queueSectionOrder.count - 1
+                )
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Reorder \(title)")
+            .accessibilityLabel("Reorder \(title) section")
+            .accessibilityIdentifier(
+                "\(section.coveAccessibilityIdentifier).reorder"
+            )
         }
         .padding(.vertical, 8)
-        .padding(.horizontal, usesStickyMoreControls ? 8 : 0)
-        .background(Color(hex: state.theme.backgroundHex))
+        .padding(.horizontal, usesStickySectionHeaders ? 8 : 0)
+        .background(
+            Color(
+                hex: state.theme.backgroundHex,
+                opacity: state.settings.expandedOpacity
+            )
+        )
         .overlay(alignment: .bottom) {
-            if usesStickyMoreControls {
+            if usesStickySectionHeaders {
                 Rectangle()
                     .fill(Color(hex: state.theme.borderHex))
                     .frame(height: 1)
@@ -310,6 +363,21 @@ struct CoveQueueSurfaceView: View {
 
     private var moreContents: some View {
         VStack(alignment: .leading, spacing: 10) {
+            TextField("Search tasks", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .coveOverlayFont(state.theme, .body)
+                .accessibilityLabel("Search queue tasks")
+                .accessibilityIdentifier("cove.queue.search")
+
+            Picker("Filter tasks", selection: $filter) {
+                ForEach(CoveQueueFilter.allCases) { filter in
+                    Text(filter.label).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+            .coveOverlayFont(state.theme, .metadata)
+            .accessibilityIdentifier("cove.queue.filter")
+
             diagnosticsSection
 
             if state.settings.showUsage
@@ -540,6 +608,23 @@ struct CoveQueueSurfaceView: View {
         CoveActivityAggregator.groups(from: state.recentEvents)
     }
 
+    private func isExpanded(_ section: CoveQueueSection) -> Bool {
+        !state.settings.collapsedQueueSections.contains(section)
+    }
+
+    private func sectionIndex(_ section: CoveQueueSection) -> Int {
+        state.settings.queueSectionOrder.firstIndex(of: section) ?? 0
+    }
+
+    private func moveSection(_ section: CoveQueueSection, by offset: Int) {
+        var order = state.settings.queueSectionOrder
+        guard let sourceIndex = order.firstIndex(of: section) else { return }
+        let destinationIndex = sourceIndex + offset
+        guard order.indices.contains(destinationIndex) else { return }
+        order.swapAt(sourceIndex, destinationIndex)
+        store.dispatch(.setQueueSectionOrder(order))
+    }
+
     private func visibleItems(
         in section: CoveQueueSection
     ) -> [CoveQueueItem] {
@@ -622,9 +707,14 @@ struct CoveQueueSurfaceView: View {
 
     private func openSelectedItem() {
         guard let selectedItem else { return }
-        if let request = selectedItem.directRequest {
+        open(selectedItem)
+    }
+
+    private func open(_ item: CoveQueueItem) {
+        selectedID = item.id
+        if let request = item.directRequest {
             store.openInCodex(for: request)
-        } else if let snapshot = selectedItem.snapshot {
+        } else if let snapshot = item.snapshot {
             store.open(snapshot)
         }
     }
@@ -773,7 +863,7 @@ private struct CoveQueueTaskRow: View {
             .accessibilityLabel(
                 "\(item.status.displayName), \(CoveQueueCopy.title(for: item, redactsSensitiveContent: redactsSensitiveContent))"
             )
-            .accessibilityHint("Selects this task")
+            .accessibilityHint("Opens this task in Codex")
 
             Button(action: onFocus) {
                 Text(item.directRequest == nil ? "Details" : "Review")
@@ -789,57 +879,7 @@ private struct CoveQueueTaskRow: View {
             .accessibilityIdentifier(focusAccessibilityIdentifier)
 
             Menu {
-                Button(item.isPinned ? "Unpin" : "Pin") {
-                    guard let snapshot = item.snapshot else { return }
-                    store.togglePinned(snapshot)
-                }
-                .disabled(item.snapshot == nil)
-                .accessibilityLabel(item.isPinned ? "Unpin" : "Pin")
-                .accessibilityIdentifier(
-                    actionAccessibilityIdentifier("pin")
-                )
-
-                Button(
-                    isReminderScheduled
-                        ? "Cancel Reminder"
-                        : "Remind Me"
-                ) {
-                    guard let snapshot = item.snapshot else { return }
-                    if isReminderScheduled {
-                        store.cancelFollowUp(snapshot)
-                    } else {
-                        store.scheduleFollowUp(snapshot)
-                    }
-                }
-                .disabled(item.snapshot == nil)
-                .accessibilityLabel(
-                    isReminderScheduled ? "Cancel Reminder" : "Remind Me"
-                )
-                .accessibilityIdentifier(
-                    actionAccessibilityIdentifier("reminder")
-                )
-
-                Button("Mark Read") {
-                    guard let snapshot = item.snapshot else { return }
-                    store.markRead(snapshot)
-                }
-                .disabled(item.snapshot?.unread != true)
-                .accessibilityLabel("Mark Read")
-                .accessibilityIdentifier(
-                    actionAccessibilityIdentifier("mark-read")
-                )
-
-                Divider()
-
-                Button("Archive") {
-                    guard let snapshot = item.snapshot else { return }
-                    store.dismiss(snapshot)
-                }
-                .disabled(item.snapshot == nil)
-                .accessibilityLabel("Archive")
-                .accessibilityIdentifier(
-                    actionAccessibilityIdentifier("archive")
-                )
+                quickActions
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .coveOverlayFont(theme, .body)
@@ -852,6 +892,65 @@ private struct CoveQueueTaskRow: View {
             .accessibilityIdentifier(actionsAccessibilityIdentifier)
         }
         .frame(minHeight: 54)
+        .contentShape(Rectangle())
+        .contextMenu {
+            quickActions
+        }
+    }
+
+    @ViewBuilder
+    private var quickActions: some View {
+        Button(item.isPinned ? "Unpin" : "Pin") {
+            guard let snapshot = item.snapshot else { return }
+            store.togglePinned(snapshot)
+        }
+        .disabled(item.snapshot == nil)
+        .accessibilityLabel(item.isPinned ? "Unpin" : "Pin")
+        .accessibilityIdentifier(
+            actionAccessibilityIdentifier("pin")
+        )
+
+        Button(
+            isReminderScheduled
+                ? "Cancel Reminder"
+                : "Remind Me"
+        ) {
+            guard let snapshot = item.snapshot else { return }
+            if isReminderScheduled {
+                store.cancelFollowUp(snapshot)
+            } else {
+                store.scheduleFollowUp(snapshot)
+            }
+        }
+        .disabled(item.snapshot == nil)
+        .accessibilityLabel(
+            isReminderScheduled ? "Cancel Reminder" : "Remind Me"
+        )
+        .accessibilityIdentifier(
+            actionAccessibilityIdentifier("reminder")
+        )
+
+        Button("Mark Read") {
+            guard let snapshot = item.snapshot else { return }
+            store.markRead(snapshot)
+        }
+        .disabled(item.snapshot?.unread != true)
+        .accessibilityLabel("Mark Read")
+        .accessibilityIdentifier(
+            actionAccessibilityIdentifier("mark-read")
+        )
+
+        Divider()
+
+        Button("Archive") {
+            guard let snapshot = item.snapshot else { return }
+            store.dismiss(snapshot)
+        }
+        .disabled(item.snapshot == nil)
+        .accessibilityLabel("Archive")
+        .accessibilityIdentifier(
+            actionAccessibilityIdentifier("archive")
+        )
     }
 
     private var rowAccessibilityIdentifier: String {
@@ -1114,6 +1213,8 @@ private struct CoveQueueUsageView: View {
 struct CoveFixtureAccessibilityMarkers: View {
     let stateDirectory: String
     let decisionAttemptCount: Int
+    let jumpCount: Int
+    let queueSectionOrder: [CoveQueueSection]
     let textScale: Double
 
     var body: some View {
@@ -1127,11 +1228,21 @@ struct CoveFixtureAccessibilityMarkers: View {
                 identifier: "cove.fixture.decision-attempt-count"
             )
             marker(
+                value: "\(jumpCount)",
+                identifier: "cove.fixture.jump-count"
+            )
+            marker(
+                value: queueSectionOrder
+                    .map { "\($0.rawValue)" }
+                    .joined(separator: ","),
+                identifier: "cove.fixture.queue-section-order"
+            )
+            marker(
                 value: String(format: "%.2f", textScale),
                 identifier: "cove.fixture.text-scale"
             )
         }
-        .frame(width: 3, height: 1)
+        .frame(width: 5, height: 1)
         .allowsHitTesting(false)
     }
 
@@ -1246,7 +1357,7 @@ struct CoveFocusedSurfaceView: View {
             .top,
             max(12, presentationMetrics.topContentInset + 6)
         )
-        .background(Color(hex: state.theme.backgroundHex))
+        .background(Color.clear)
         .foregroundStyle(Color(hex: state.theme.foregroundHex))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("cove.overlay.focused")

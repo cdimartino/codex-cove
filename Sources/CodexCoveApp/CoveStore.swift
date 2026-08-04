@@ -9,6 +9,7 @@ final class CoveStore: ObservableObject {
     var onOpenDirectRequest: ((CoveSessionSnapshot) -> CoveJumpResult)?
     var onMarkRead: ((String) -> Void)?
     var onDismissSession: ((String) -> Bool)?
+    var onDismissSessions: (([String]) -> Bool)?
     var onSetPinned: ((String, Bool) -> Bool)?
     var onScheduleFollowUp: ((String, Date) -> Bool)?
     var onCancelFollowUp: ((String) -> Bool)?
@@ -22,6 +23,7 @@ final class CoveStore: ObservableObject {
     @Published private(set) var decisionDelivery = CoveDecisionDeliveryState()
     @Published private(set) var decisionAttemptCount = 0
     @Published private(set) var fixtureRecordedDecisionCount = 0
+    @Published private(set) var fixtureRecordedJumpCount = 0
     @Published private(set) var soundPreferences: CoveSoundPreferences
     @Published private(set) var customThemes: [CoveThemePalette] = []
     @Published private(set) var persistenceWarning: String?
@@ -180,6 +182,10 @@ final class CoveStore: ObservableObject {
     /// in-memory sender. Production never installs the recorder callback.
     func recordFixtureDecisionReceipt(count: Int) {
         fixtureRecordedDecisionCount = max(0, count)
+    }
+
+    func recordFixtureJump() {
+        fixtureRecordedJumpCount += 1
     }
 
     @discardableResult
@@ -607,6 +613,63 @@ final class CoveStore: ObservableObject {
             reminders.removeValue(forKey: sessionID)
         }
         dispatch(.dismissSnapshot(snapshot.snapshotId))
+    }
+
+    var archivableCompletedCount: Int {
+        archivableCompletedSessionIDs.count
+    }
+
+    func archiveAllCompleted() {
+        let snapshots = archivableCompletedSnapshots
+        let sessionIDs = Array(
+            Set(snapshots.map { $0.sessionId ?? $0.snapshotId })
+        ).sorted()
+        guard !sessionIDs.isEmpty,
+              onDismissSessions?(sessionIDs) != false
+        else { return }
+
+        for sessionID in sessionIDs {
+            if state.pinnedSessionIDs.contains(sessionID) {
+                _ = onSetPinned?(sessionID, false)
+            }
+            if reminders[sessionID] != nil {
+                _ = onCancelFollowUp?(sessionID)
+                reminders.removeValue(forKey: sessionID)
+            }
+        }
+        dispatch(.dismissSnapshots(snapshots.map(\.snapshotId)))
+    }
+
+    private var archivableCompletedSessionIDs: Set<String> {
+        Set(
+            archivableCompletedSnapshots.map {
+                $0.sessionId ?? $0.snapshotId
+            }
+        )
+    }
+
+    private var archivableCompletedSnapshots: [CoveSessionSnapshot] {
+        let pendingSessionIDs = Set(
+            state.pendingDirectRequests.map(\.sessionId)
+        )
+        let snapshotsBySession = Dictionary(
+            grouping: state.session.snapshots,
+            by: { $0.sessionId ?? $0.snapshotId }
+        )
+        let safeSessionIDs = Set<String>(
+            snapshotsBySession.compactMap { sessionID, snapshots in
+                guard !pendingSessionIDs.contains(sessionID),
+                      snapshots.allSatisfy({ $0.status == .completed })
+                else { return nil }
+                return sessionID
+            }
+        )
+        return state.session.snapshots.filter { snapshot in
+            snapshot.status == .completed
+                && safeSessionIDs.contains(
+                    snapshot.sessionId ?? snapshot.snapshotId
+                )
+        }
     }
 
     func actionDraft(for key: CoveDirectRequestKey) -> CoveActionDraft? {

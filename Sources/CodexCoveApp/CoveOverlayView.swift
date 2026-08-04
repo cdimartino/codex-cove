@@ -19,14 +19,12 @@ struct CoveOverlayRootView: View {
             if state.settings.minimalIslandMode {
                 Color.black.opacity(0.97)
                 CoveMinimalIslandView(state: state)
-            } else if presentation == .collapsed {
-                Color.black.opacity(
-                    state.settings.privacyMode == .off ? 0.82 : 0.94
-                )
             } else {
                 CoveBackdropView(
                     theme: state.theme,
-                    opacity: state.settings.expandedOpacity,
+                    opacity: presentation.isExpanded
+                        ? state.settings.expandedOpacity
+                        : state.settings.collapsedOpacity,
                     blur: state.settings.blurStyle,
                     privacy: state.settings.privacyMode,
                     squareTopCorners: state.settings.squareTopCorners
@@ -58,6 +56,8 @@ struct CoveOverlayRootView: View {
                 CoveFixtureAccessibilityMarkers(
                     stateDirectory: fixtureStateDirectory,
                     decisionAttemptCount: store.fixtureRecordedDecisionCount,
+                    jumpCount: store.fixtureRecordedJumpCount,
+                    queueSectionOrder: state.settings.queueSectionOrder,
                     textScale: state.settings.textScale
                 )
             }

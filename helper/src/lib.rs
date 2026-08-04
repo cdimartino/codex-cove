@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const DEFAULT_MAX_FRAME_BYTES: usize = 1_048_576;
+pub const DEFAULT_MAX_FRAME_BYTES: usize = 8 * 1_048_576;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

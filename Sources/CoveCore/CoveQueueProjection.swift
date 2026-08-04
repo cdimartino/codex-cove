@@ -1,7 +1,7 @@
 import Foundation
 
 /// Stable section order for the attention-first queue.
-public enum CoveQueueSection: Int, CaseIterable, Sendable {
+public enum CoveQueueSection: Int, CaseIterable, Codable, Hashable, Sendable {
     case needsAttention
     case active
     case recentlyFinished

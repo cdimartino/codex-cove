@@ -499,13 +499,24 @@ pub fn find_real_codex(config: &Config, current_executable: &Path) -> io::Result
     {
         return Ok(path);
     }
+
+    // Package-manager upgrades commonly install a new versioned Codex binary
+    // while Cove's recorded path still points at the prior cask version. PATH
+    // is the live installation signal, so prefer its first non-Cove binary and
+    // retain the recorded path only as an offline/fallback location.
+    if let Ok(path) = find_real_codex_on_path(current_executable) {
+        return Ok(path);
+    }
     if let Some(path) = &config.real_codex
         && let Ok(path) = validate_executable(path.clone(), current_executable)
     {
         return Ok(path);
     }
 
-    find_real_codex_on_path(current_executable)
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "real Codex CLI not found; set CODEX_COVE_REAL_CODEX",
+    ))
 }
 
 pub fn find_real_codex_without_config(current_executable: &Path) -> io::Result<PathBuf> {
@@ -720,6 +731,46 @@ mod tests {
             find_real_codex(&config, &shim).unwrap(),
             fs::canonicalize(real).unwrap()
         );
+        if let Some(path) = old_path {
+            // SAFETY: see the note above.
+            unsafe { env::set_var("PATH", path) };
+        } else {
+            // SAFETY: see the note above.
+            unsafe { env::remove_var("PATH") };
+        }
+        if let Some(value) = old_override {
+            // SAFETY: see the note above.
+            unsafe { env::set_var("CODEX_COVE_REAL_CODEX", value) };
+        }
+    }
+
+    #[test]
+    fn live_path_binary_supersedes_an_existing_stale_recorded_version() {
+        let _environment = ENVIRONMENT_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let shim = temp.path().join("shim/codex");
+        let stale = temp.path().join("Caskroom/codex/0.145.0/bin/codex");
+        let current = temp.path().join("Caskroom/codex/0.146.0/bin/codex");
+        for path in [&shim, &stale, &current] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"binary").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut config = Config::for_home(temp.path());
+        config.real_codex = Some(stale);
+        let old_path = env::var_os("PATH");
+        let old_override = env::var_os("CODEX_COVE_REAL_CODEX");
+        // SAFETY: this test serializes and restores the process environment.
+        unsafe {
+            env::set_var("PATH", current.parent().unwrap());
+            env::remove_var("CODEX_COVE_REAL_CODEX");
+        }
+
+        assert_eq!(
+            find_real_codex(&config, &shim).unwrap(),
+            fs::canonicalize(current).unwrap()
+        );
+
         if let Some(path) = old_path {
             // SAFETY: see the note above.
             unsafe { env::set_var("PATH", path) };

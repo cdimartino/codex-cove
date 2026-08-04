@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import XCTest
 
 /// End-to-end acceptance coverage for the deterministic UI-test host.
@@ -153,7 +154,12 @@ final class CodexCoveUITests: XCTestCase {
         let waitingRow = element(taskQueueRowIdentifier("fixture-task-3"), in: app)
         XCTAssertTrue(waitingRow.waitForExistence(timeout: 5))
 
+        XCTAssertEqual(jumpCount(in: app), 0)
         waitingRow.click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) { self.jumpCount(in: app) == 1 },
+            "A primary row click must open the task's exact Codex origin"
+        )
         for (identifier, label) in [
             ("cove.queue.previous", "Select previous task"),
             ("cove.queue.next", "Select next task"),
@@ -200,6 +206,22 @@ final class CodexCoveUITests: XCTestCase {
             in: app
         ).click()
 
+        waitingRow.rightClick()
+        for action in overflowActions {
+            let contextAction = element(
+                taskControlIdentifier(
+                    "fixture-task-3",
+                    control: action.control
+                ),
+                in: app
+            )
+            XCTAssertTrue(
+                contextAction.waitForExistence(timeout: 2),
+                "Right-click must expose \(action.label) without opening details"
+            )
+        }
+        app.typeKey(.escape, modifierFlags: [])
+
         let focus = element(
             taskControlIdentifier("fixture-task-3", control: "queue-focus"),
             in: app
@@ -241,6 +263,83 @@ final class CodexCoveUITests: XCTestCase {
                     && overlay.frame.width < 400
             },
             "A second Escape must collapse the queue"
+        )
+    }
+
+    @MainActor
+    func testQueueSectionsCollapseReorderAndArchiveCompleted() {
+        let app = launchFixture("mixed-20")
+        let attentionHeader = element(
+            "cove.queue.section.needs-attention.toggle",
+            in: app
+        )
+        let activeHeader = element(
+            "cove.queue.section.active.toggle",
+            in: app
+        )
+        XCTAssertTrue(attentionHeader.waitForExistence(timeout: 5))
+        XCTAssertTrue(activeHeader.waitForExistence(timeout: 5))
+        XCTAssertLessThan(attentionHeader.frame.minY, activeHeader.frame.minY)
+
+        let reorderActive = element(
+            "cove.queue.section.active.reorder",
+            in: app
+        )
+        XCTAssertTrue(reorderActive.waitForExistence(timeout: 2))
+        reorderActive.click()
+        let moveUp = app.menuItems["Move Up"]
+        XCTAssertTrue(moveUp.waitForExistence(timeout: 2))
+        moveUp.click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.stringValue(
+                    of: self.element(
+                        "cove.fixture.queue-section-order",
+                        in: app
+                    )
+                ) == "1,0,2,3"
+            },
+            "Section reorder must persist immediately in the queue"
+        )
+
+        let activeRow = element(
+            taskQueueRowIdentifier("fixture-task-1"),
+            in: app
+        )
+        XCTAssertTrue(activeRow.waitForExistence(timeout: 2))
+        let activeToggle = element(
+            "cove.queue.section.active.toggle",
+            in: app
+        )
+        activeToggle.click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) { !activeRow.exists },
+            "Collapsing Active must hide its task rows"
+        )
+        activeToggle.click()
+        XCTAssertTrue(activeRow.waitForExistence(timeout: 2))
+
+        let archiveCompleted = element(
+            "cove.queue.archive-all-completed",
+            in: app
+        )
+        let queueScroll = element("cove.queue.scroll", in: app)
+        for _ in 0..<8 where !archiveCompleted.isHittable {
+            queueScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(archiveCompleted.isHittable)
+        archiveCompleted.click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) { !archiveCompleted.exists },
+            "Bulk archive must disappear after all completed tasks are archived"
+        )
+        XCTAssertTrue(
+            element(taskQueueRowIdentifier("fixture-task-8"), in: app).exists,
+            "Bulk completed archive must retain failed tasks"
+        )
+        XCTAssertFalse(
+            element(taskQueueRowIdentifier("fixture-task-7"), in: app).exists,
+            "Bulk completed archive must remove completed tasks"
         )
     }
 
@@ -657,6 +756,86 @@ final class CodexCoveUITests: XCTestCase {
                 "Down Arrow should navigate the Settings sidebar to \(pane)"
             )
         }
+    }
+
+    @MainActor
+    func testInstalledSurfaceAppliesThemeColorAndOpacity() {
+        let app = launchFixture("settings-appearance")
+        let settingsWindow = app.windows["Codex Cove Settings"]
+        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 5))
+
+        let collapse = element("cove.overlay.collapse", in: app)
+        XCTAssertTrue(collapse.waitForExistence(timeout: 3))
+        collapse.click()
+        let expand = element("cove.overlay.expand", in: app)
+        XCTAssertTrue(expand.waitForExistence(timeout: 3))
+
+        let baseline = sampledSurfaceColor(from: expand.screenshot())
+
+        let palette = element("settings.appearance.palette", in: app)
+        revealAndClick(palette, in: app)
+        let terminalGreen = app.menuItems["Terminal Green"]
+        XCTAssertTrue(terminalGreen.waitForExistence(timeout: 2))
+        terminalGreen.click()
+        let themed = sampledSurfaceColor(from: expand.screenshot())
+        XCTAssertGreaterThan(
+            colorDistance(baseline, themed),
+            0.025,
+            "The installed collapsed surface must use the selected theme color"
+        )
+
+        let opacityField = element(
+            "settings.appearance.collapsed-opacity.field",
+            in: app
+        )
+        revealAndClick(opacityField, in: app)
+        replaceText(
+            in: opacityField,
+            with: "35",
+            commitsWithReturn: true,
+            app: app
+        )
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.stringValue(of: opacityField) == "35"
+            }
+        )
+        let translucent = sampledSurfaceColor(from: expand.screenshot())
+        XCTAssertGreaterThan(
+            colorDistance(themed, translucent),
+            0.012,
+            "The installed collapsed surface must use its configured opacity"
+        )
+
+        expand.click()
+        XCTAssertTrue(collapse.waitForExistence(timeout: 3))
+        let expandedBaseline = sampledSurfaceColor(
+            from: element("cove.overlay", in: app).screenshot()
+        )
+        let expandedOpacityField = element(
+            "settings.appearance.expanded-opacity.field",
+            in: app
+        )
+        revealAndClick(expandedOpacityField, in: app)
+        replaceText(
+            in: expandedOpacityField,
+            with: "35",
+            commitsWithReturn: true,
+            app: app
+        )
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.stringValue(of: expandedOpacityField) == "35"
+            }
+        )
+        let expandedTranslucent = sampledSurfaceColor(
+            from: element("cove.overlay", in: app).screenshot()
+        )
+        XCTAssertGreaterThan(
+            colorDistance(expandedBaseline, expandedTranslucent),
+            0.012,
+            "The installed expanded surface must use its configured opacity"
+        )
     }
 
     @MainActor
@@ -1294,6 +1473,51 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    private func sampledSurfaceColor(
+        from screenshot: XCUIScreenshot
+    ) -> (red: Double, green: Double, blue: Double) {
+        guard let bitmap = NSBitmapImageRep(data: screenshot.pngRepresentation)
+        else {
+            XCTFail("Could not decode the surface screenshot")
+            return (0, 0, 0)
+        }
+        let xRange = max(0, Int(Double(bitmap.pixelsWide) * 0.78))
+            ..< max(1, Int(Double(bitmap.pixelsWide) * 0.90))
+        let yRange = max(0, Int(Double(bitmap.pixelsHigh) * 0.42))
+            ..< max(1, Int(Double(bitmap.pixelsHigh) * 0.58))
+        var red = 0.0
+        var green = 0.0
+        var blue = 0.0
+        var count = 0.0
+        for x in stride(from: xRange.lowerBound, to: xRange.upperBound, by: 2) {
+            for y in stride(from: yRange.lowerBound, to: yRange.upperBound, by: 2) {
+                guard let color = bitmap.colorAt(x: x, y: y)?
+                    .usingColorSpace(.deviceRGB)
+                else { continue }
+                red += Double(color.redComponent)
+                green += Double(color.greenComponent)
+                blue += Double(color.blueComponent)
+                count += 1
+            }
+        }
+        guard count > 0 else {
+            XCTFail("The sampled surface area contained no pixels")
+            return (0, 0, 0)
+        }
+        return (red / count, green / count, blue / count)
+    }
+
+    private func colorDistance(
+        _ lhs: (red: Double, green: Double, blue: Double),
+        _ rhs: (red: Double, green: Double, blue: Double)
+    ) -> Double {
+        let red = lhs.red - rhs.red
+        let green = lhs.green - rhs.green
+        let blue = lhs.blue - rhs.blue
+        return sqrt(red * red + green * green + blue * blue)
+    }
+
+    @MainActor
     private func labeledElement(
         _ label: String,
         in app: XCUIApplication
@@ -1326,6 +1550,13 @@ final class CodexCoveUITests: XCTestCase {
     @MainActor
     private func decisionAttemptCount(in app: XCUIApplication) -> Int {
         let marker = element("cove.fixture.decision-attempt-count", in: app)
+        guard marker.waitForExistence(timeout: 2) else { return -1 }
+        return Int(stringValue(of: marker)) ?? -1
+    }
+
+    @MainActor
+    private func jumpCount(in app: XCUIApplication) -> Int {
+        let marker = element("cove.fixture.jump-count", in: app)
         guard marker.waitForExistence(timeout: 2) else { return -1 }
         return Int(stringValue(of: marker)) ?? -1
     }
