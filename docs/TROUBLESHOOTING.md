@@ -31,39 +31,38 @@ instance to reveal itself. If neither the menu item nor the island appears:
 3. Open it again and inspect **Console.app** for the `CodexCove` process.
 4. Run Doctor after the app is open so its runtime-socket checks are meaningful.
 
-## `codex` is not routed through Cove
+## `codex-cove launch` is not routed through Cove
 
-Check command lookup in a new shell:
+Native `codex` is intentionally not replaced. Check the explicit helper command
+in a new shell:
 
 ```sh
 command -v codex
 command -v codex-cove
-ls -l "$HOME/bin/codex" "$HOME/bin/codex-cove"
+ls -l "$HOME/bin/codex-cove"
 ```
 
-Both commands should resolve below `~/bin`, and the links should point to Cove's
-managed helper. If `command -v codex` resolves the original installation, put
-`~/bin` before it on `PATH`:
+`codex-cove` should resolve below `~/bin`; `codex` should resolve to the native
+CLI. If the helper is not found, put `~/bin` on `PATH`:
 
 ```sh
 export PATH="$HOME/bin:$PATH"
 ```
 
-Restart the shell after changing a startup file. Do not replace an existing
-non-Cove `~/bin/codex` path by hand; the installer intentionally refuses to
-overwrite it. Move or rename that path only after you have identified its owner
-and decided how it should coexist.
+Restart the shell after changing a startup file. Cove preserves an existing
+`~/bin/codex` path. Do not replace or remove that path until you identify its
+owner.
 
-To bypass Cove while isolating a problem:
+To bypass Cove while isolating a routed-launch problem, run native Codex:
 
 ```sh
-CODEX_COVE_BYPASS=1 codex
+codex
 ```
 
 To show content-free broker readiness diagnostics:
 
 ```sh
-CODEX_COVE_TRACE_BROKER=1 codex
+CODEX_COVE_TRACE_BROKER=1 codex-cove launch
 ```
 
 ## Codex stays on “Starting MCP servers”
@@ -71,7 +70,7 @@ CODEX_COVE_TRACE_BROKER=1 codex
 First bypass Cove without changing MCP definitions:
 
 ```sh
-CODEX_COVE_BYPASS=1 codex --no-alt-screen
+codex --no-alt-screen
 ```
 
 If native Codex reaches its prompt but the routed launch does not, rerun the
@@ -93,13 +92,14 @@ configuration unless a separate native launch reproduces an npm failure.
 Work through these in order:
 
 1. Open Cove and rerun Doctor.
-2. Confirm the shell resolves Cove's shim as described above.
-3. Start a new Codex session; an already-running native session cannot acquire a
-   launch binding retroactively.
+2. Confirm `codex-cove` resolves to Cove's managed helper as described above.
+3. Start a new native Codex session for hook-only status, or a new
+   `codex-cove launch` session for the full broker route; an already-running
+   session cannot acquire a launch binding retroactively.
 4. In Codex, review the installed hook with `/hooks` and complete the native
    trust flow.
-5. Check the shim's startup message. If it says app-server is unavailable, Cove
-   deliberately fell back to native Codex.
+5. Check the explicit launcher's startup message. If it says app-server is
+   unavailable, Cove deliberately fell back to native Codex.
 
 Hook events can still provide status when a full broker route is unavailable,
 but authoritative in-Cove decisions require a broker-routed launch.
@@ -245,7 +245,7 @@ For common failures:
   Cask version and release tag agree, and report the mismatch. Do not edit the
   Cask, use `sha256 :no_check`, replace the release asset, or disable quarantine.
 - **Postflight integration is blocked.** Inspect the install plan and the exact
-  path named by the error. Cove intentionally preserves a modified shim, hook,
+  path named by the error. Cove intentionally preserves a modified legacy link, hook,
   helper, extension obligation, or manifest instead of overwriting it.
 - **An upgrade or uninstall is blocked.** Keep the app in place while
   investigating. Homebrew coordinates its app artifact with the helper's

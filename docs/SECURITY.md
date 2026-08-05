@@ -123,7 +123,7 @@ The installer may manage only these current-user surfaces:
 | --- | --- |
 | `~/Applications/Codex Cove.app` | Native app bundle |
 | `~/Library/Application Support/Codex Cove` | Helper, config, manifest, runtime, settings, metadata, imports |
-| `~/bin/codex` and `~/bin/codex-cove` | Cove-owned links to the managed helper |
+| `~/bin/codex-cove` | Cove-owned link to the managed helper; native `codex` is not replaced |
 | `~/.codex/hooks.json` | Structurally merged Cove hook entries |
 | VS Code/Cursor extension stores | The recorded private Cove extension |
 | Selected remote helper path | Helper deployed only through an explicit SSH alias |
@@ -132,6 +132,9 @@ Before replacing or removing anything, Cove validates the expected bundle ID,
 checksums, link targets, hook structure, and install manifest. An unexpected or
 modified path blocks the transaction and is preserved. Uninstall never edits
 SSH configuration or unrelated hooks and never contacts an unselected host.
+An upgrade removes a former `~/bin/codex` interception link only when it is
+still the exact Cove-owned link recorded by the legacy install; all foreign
+paths are preserved.
 
 The Homebrew Cask preserves this boundary rather than reimplementing integration
 with broad shell mutations. It installs the app at the same

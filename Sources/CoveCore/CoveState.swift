@@ -410,6 +410,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
     public var usageShowsRemaining: Bool
     public var conservativeCapturePrivacy: Bool
     public var customThemeID: String?
+    public var residentSet: CoveResidentSet
     public var quietHours: CoveQuietHours
     public var silencedProjectRules: [String]
     public var followFocusedApp: Bool
@@ -447,6 +448,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         usageShowsRemaining: Bool = false,
         conservativeCapturePrivacy: Bool = false,
         customThemeID: String? = nil,
+        residentSet: CoveResidentSet = .dungeonAndDragons,
         quietHours: CoveQuietHours = .init(),
         silencedProjectRules: [String] = [],
         followFocusedApp: Bool = false,
@@ -483,6 +485,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         self.usageShowsRemaining = usageShowsRemaining
         self.conservativeCapturePrivacy = conservativeCapturePrivacy
         self.customThemeID = customThemeID
+        self.residentSet = residentSet
         self.quietHours = quietHours
         self.silencedProjectRules = CoveSilencedProjectRules.normalize(
             silencedProjectRules
@@ -515,7 +518,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         case launchAtLogin, showNotifications, notificationPreferences, playSounds
         case globalShortcutsEnabled, autoExpandOnEvent
         case collapsedOpacity, expandedOpacity, usageShowsRemaining
-        case conservativeCapturePrivacy, customThemeID
+        case conservativeCapturePrivacy, customThemeID, residentSet
         case quietHours, silencedProjectRules, followFocusedApp, glanceMode
         case hoverDelaySeconds, autoCollapseSeconds, collapsedWidth, squareTopCorners
         case panelAnimationEnabled, panelAnimationDuration, idleAutoHideSeconds
@@ -549,6 +552,10 @@ public struct CoveSettings: Codable, Equatable, Sendable {
             usageShowsRemaining: try values.decodeIfPresent(Bool.self, forKey: .usageShowsRemaining) ?? false,
             conservativeCapturePrivacy: try values.decodeIfPresent(Bool.self, forKey: .conservativeCapturePrivacy) ?? false,
             customThemeID: try values.decodeIfPresent(String.self, forKey: .customThemeID),
+            residentSet: try values.decodeIfPresent(
+                CoveResidentSet.self,
+                forKey: .residentSet
+            ) ?? .dungeonAndDragons,
             quietHours: try values.decodeIfPresent(CoveQuietHours.self, forKey: .quietHours) ?? .init(),
             silencedProjectRules: try values.decodeIfPresent([String].self, forKey: .silencedProjectRules) ?? [],
             followFocusedApp: try values.decodeIfPresent(Bool.self, forKey: .followFocusedApp) ?? false,
@@ -703,6 +710,7 @@ public enum CoveAction: Equatable, Sendable {
     case setPalette(CovePaletteKind)
     case selectCustomTheme(CoveThemePalette)
     case clearCustomTheme
+    case setResidentSet(CoveResidentSet)
     case setOpacity(CoveOpacityStyle)
     case setCollapsedOpacity(Double)
     case setExpandedOpacity(Double)
@@ -815,6 +823,8 @@ public enum CoveReducer {
                 for: state.settings.themeFamily,
                 palette: state.settings.palette
             )
+        case let .setResidentSet(residentSet):
+            state.settings.residentSet = residentSet
         case let .setOpacity(style):
             state.settings.opacityStyle = style
             state.settings.collapsedOpacity = style.collapsedAlpha

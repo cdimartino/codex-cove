@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import CoveCore
@@ -81,6 +82,7 @@ struct SettingsView: View {
     @State private var selectedPane: CoveSettingsPane? = .appearance
     @State private var selectedNotificationKind: CoveNotificationEventKind = .approval
     @State private var residentPreviewStatus: CoveSessionStatus = .working
+    @State private var customThemeDraft: CoveThemePalette
 
     init(
         store: CoveStore,
@@ -98,6 +100,7 @@ struct SettingsView: View {
                 .flatMap(CoveSettingsPane.init(rawValue:))
                 ?? .appearance
         )
+        _customThemeDraft = State(initialValue: Self.themeDraft(from: store))
     }
 
     var body: some View {
@@ -128,6 +131,9 @@ struct SettingsView: View {
         .coveSystemFont(size: 13)
         .coveTextScale(store.state.settings.textScale)
         .accessibilityIdentifier("settings.window")
+        .onChange(of: store.state.theme) { _, _ in
+            customThemeDraft = Self.themeDraft(from: store)
+        }
         .overlay(alignment: .topLeading) {
             if !externalSideEffectsEnabled {
                 Text(
@@ -186,13 +192,20 @@ struct SettingsView: View {
     @ViewBuilder
     private var residentSettings: some View {
         Section("Preview") {
+            Picker("Character set", selection: residentSetBinding) {
+                ForEach(CoveResidentSet.allCases, id: \.self) { set in
+                    Text(set.displayName).tag(set)
+                }
+            }
+            .accessibilityIdentifier("settings.residents.character-set")
+
             Picker("Task state", selection: $residentPreviewStatus) {
                 ForEach(Self.residentPreviewStatuses, id: \.self) { status in
                     Text(status.displayName).tag(status)
                 }
             }
             .accessibilityIdentifier("settings.residents.preview-state")
-            Text("Cove automatically assigns a visual companion to each task. This gallery previews the available residents; it is not a character picker.")
+            Text("Cove automatically assigns each task a resident from the selected set. The gallery previews that set; individual residents are not selected per task.")
                 .coveSystemFont(size: 12)
                 .accessibilityIdentifier("settings.residents.assignment-description")
             Text(
@@ -210,7 +223,7 @@ struct SettingsView: View {
                 spacing: 12
             ) {
                 ForEach(
-                    Array(CovePixelCharacterArchetype.allCases.enumerated()),
+                    Array(store.state.settings.residentSet.archetypes.enumerated()),
                     id: \.element
                 ) { index, archetype in
                     let character = CovePixelCharacter(
@@ -369,14 +382,71 @@ struct SettingsView: View {
                 }
             }
 
+        }
+
+        Section("Custom theme colors") {
+            TextField("Theme name", text: $customThemeDraft.name)
+                .accessibilityIdentifier("settings.appearance.custom-theme-name")
+
+            themeColorPicker("Background", \.backgroundHex, id: "background")
+            themeColorPicker("Surface", \.surfaceHex, id: "surface")
+            themeColorPicker("Primary text", \.foregroundHex, id: "primary-text")
+            themeColorPicker("Muted text", \.mutedTextHex, id: "muted-text")
+            themeColorPicker("Accent", \.accentHex, id: "accent")
+            themeColorPicker("Working", \.workingHex, id: "working")
+            themeColorPicker(
+                "Waiting for approval",
+                \.waitingApprovalHex,
+                id: "waiting-approval"
+            )
+            themeColorPicker(
+                "Waiting for input",
+                \.waitingInputHex,
+                id: "waiting-input"
+            )
+            themeColorPicker("Compacting", \.compactingHex, id: "compacting")
+            themeColorPicker("Completed", \.completedHex, id: "completed")
+            themeColorPicker("Failed", \.failedHex, id: "failed")
+            themeColorPicker("Interrupted", \.interruptedHex, id: "interrupted")
+            themeColorPicker("Idle", \.idleHex, id: "idle")
+            themeColorPicker("Border", \.borderHex, id: "border")
+            themeColorPicker("Shadow", \.shadowHex, id: "shadow")
+
+            if customThemeContrastViolationCount > 0 {
+                Label(
+                    "Some text or status colors do not meet accessible contrast requirements.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .accessibilityIdentifier("settings.appearance.custom-theme-contrast-warning")
+            }
+
+            HStack {
+                Button("Save Custom Theme") {
+                    saveCustomTheme()
+                }
+                .disabled(
+                    customThemeDraft.name
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                )
+                .accessibilityIdentifier("settings.appearance.save-custom-theme")
+                Button("Reset from Selected") {
+                    customThemeDraft = Self.themeDraft(from: store)
+                }
+                .accessibilityIdentifier("settings.appearance.reset-custom-theme")
+            }
+
             CoveThemePreview(
-                theme: store.state.theme,
+                theme: configuredThemeDraft,
                 collapsedOpacity: store.state.settings.collapsedOpacity,
                 expandedOpacity: store.state.settings.expandedOpacity,
                 blur: store.state.settings.blurStyle,
                 privacy: store.state.settings.privacyMode,
                 squareTopCorners: store.state.settings.squareTopCorners
             )
+        }
+        .onAppear {
+            NSColorPanel.shared.mode = .wheel
         }
 
         Section("Surface") {
@@ -396,7 +466,7 @@ struct SettingsView: View {
                 accessibilityIdentifier: "settings.appearance.collapsed-width"
             )
             Text(
-                "Match the black bubble to this Mac’s physical notch width. "
+                "Match the collapsed bubble to this Mac’s physical notch width. "
                     + "Visible depth scales with the final width (about "
                     + "\(Int(CoveOverlayGeometry.collapsedDepth(forWidth: store.state.settings.collapsedWidth).rounded())) pt here)."
             )
@@ -839,7 +909,7 @@ struct SettingsView: View {
         Section("Island") {
             Toggle("Minimal island / menu-bar mode", isOn: minimalIslandBinding)
                 .accessibilityIdentifier("settings.sessions.minimal-island")
-            Text("Shows a small black status cue without task text. Waiting approval and input counts remain visible; restore the full island from the menu bar.")
+            Text("Shows a small themed status cue without task text. Waiting approval and input counts remain visible; restore the full island from the menu bar.")
                 .coveSystemFont(size: 11)
                 .foregroundStyle(.secondary)
 
@@ -899,10 +969,65 @@ struct SettingsView: View {
         }
     }
 
+    private static func themeDraft(from store: CoveStore) -> CoveThemePalette {
+        var theme = store.state.theme
+        theme.collapsedOpacity = store.state.settings.collapsedOpacity
+        theme.expandedOpacity = store.state.settings.expandedOpacity
+        theme.blurStyle = store.state.settings.blurStyle
+        if theme.isBuiltIn {
+            theme.name += " Custom"
+        }
+        return theme
+    }
+
+    private var configuredThemeDraft: CoveThemePalette {
+        var theme = customThemeDraft
+        theme.collapsedOpacity = store.state.settings.collapsedOpacity
+        theme.expandedOpacity = store.state.settings.expandedOpacity
+        theme.blurStyle = store.state.settings.blurStyle
+        return theme
+    }
+
+    private var customThemeContrastViolationCount: Int {
+        CoveThemeContrastMatrix.violations(
+            theme: configuredThemeDraft,
+            contexts: CoveThemeContrastMatrix.defaultContexts(
+                for: configuredThemeDraft
+            )
+        ).count
+    }
+
+    private func themeColorPicker(
+        _ title: String,
+        _ keyPath: WritableKeyPath<CoveThemePalette, String>,
+        id: String
+    ) -> some View {
+        ColorPicker(
+            title,
+            selection: Binding(
+                get: { Color(hex: customThemeDraft[keyPath: keyPath]) },
+                set: { color in
+                    var draft = customThemeDraft
+                    draft[keyPath: keyPath] = color.hex
+                    customThemeDraft = draft
+                }
+            ),
+            supportsOpacity: false
+        )
+        .accessibilityIdentifier("settings.appearance.color.\(id)")
+    }
+
     private var themeBinding: Binding<CoveThemeFamily> {
         Binding(
             get: { store.state.settings.themeFamily },
             set: { store.dispatch(.setThemeFamily($0)) }
+        )
+    }
+
+    private var residentSetBinding: Binding<CoveResidentSet> {
+        Binding(
+            get: { store.state.settings.residentSet },
+            set: { store.dispatch(.setResidentSet($0)) }
         )
     }
 
@@ -932,6 +1057,19 @@ struct SettingsView: View {
             return nil
         }
         return store.customThemes.first { $0.identifier == identifier }
+    }
+
+    private func saveCustomTheme() {
+        do {
+            let theme = try store.saveCustomTheme(
+                configuredThemeDraft,
+                named: customThemeDraft.name
+            )
+            customThemeDraft = theme
+            themeAlertMessage = "Saved and selected “\(theme.name)”."
+        } catch {
+            themeAlertMessage = error.localizedDescription
+        }
     }
 
     private func importTheme() {

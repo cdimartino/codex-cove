@@ -5,7 +5,8 @@ import SwiftUI
 import CoveCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
+    ObservableObject {
     private static let conservativeCaptureBundleIdentifiers: Set<String> = [
         "us.zoom.xos",
         "com.microsoft.teams2",
@@ -338,6 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func showSettings() {
+        store.collapseForSettings()
         if let settingsWindowController,
            let window = settingsWindowController.window {
             presentSettingsWindow(
@@ -378,12 +380,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         window.identifier = NSUserInterfaceItemIdentifier(
             "CodexCove.Settings"
         )
+        window.delegate = self
         window.tabbingMode = .disallowed
         window.center()
 
         let controller = NSWindowController(window: window)
         settingsWindowController = controller
         presentSettingsWindow(window, controller: controller)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === settingsWindowController?.window
+        else { return }
+        store.endSettingsPresentation()
     }
 
     private func presentSettingsWindow(

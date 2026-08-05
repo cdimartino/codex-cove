@@ -219,6 +219,11 @@ private struct CoveStoreFoundationTests {
             fatalError("Metadata origin collision test failed: \(error)")
         }
         testArchiveAllCompletedSafety()
+        do {
+            try testCustomThemeSaveAndExport()
+        } catch {
+            fatalError("Custom theme save/export failed: \(error)")
+        }
 
         let fixture = approvalFixture()
         let requestKey = CoveDirectRequest.approval(fixture.request).key
@@ -238,6 +243,21 @@ private struct CoveStoreFoundationTests {
         precondition(store.decisionAttemptCount == 0)
         precondition(store.isActionDirty(requestKey))
         precondition(store.decisionDelivery.isStaged(requestKey))
+
+        // Settings hides Cove without discarding a staged decision.
+        store.collapseForSettings()
+        precondition(store.overlayPresentation == .collapsed)
+        precondition(store.isActionDirty(requestKey))
+        store.setOverlayHovered(true)
+        store.collapseForSettings()
+        try? await Task.sleep(for: .milliseconds(300))
+        precondition(store.overlayPresentation == .collapsed)
+        store.showQueue()
+        store.dispatch(.setExpanded(true))
+        precondition(store.overlayPresentation == .collapsed)
+        precondition(!store.state.session.isExpanded)
+        store.endSettingsPresentation()
+        precondition(store.focusDirectRequest(requestKey))
 
         // Hover and keyboard focus can both leave a panel while an approval is
         // staged. Neither path may collapse a dirty focused action.
@@ -317,6 +337,63 @@ private struct CoveStoreFoundationTests {
         precondition(failureStore.decisionAttemptCount == 2)
 
         print("CoveStore foundation tests passed")
+    }
+
+    static func testCustomThemeSaveAndExport() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let themeStorage = CoveThemeFileStore(
+            directoryURL: directory.appendingPathComponent("Themes")
+        )
+        let store = CoveStore(
+            storage: MemoryStorage(),
+            themeStorage: themeStorage,
+            initialState: CoveState(
+                settings: CoveSettings(
+                    blurStyle: .thick,
+                    collapsedOpacity: 0.55,
+                    expandedOpacity: 0.66
+                )
+            ),
+            persistenceWritesEnabledOverride: false,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+
+        var draft = store.state.theme
+        draft.backgroundHex = "#123456"
+        draft.accentHex = "#ABCDEF"
+        let saved = try store.saveCustomTheme(draft, named: "My Theme")
+        precondition(!saved.isBuiltIn)
+        precondition(saved.name == "My Theme")
+        precondition(saved.backgroundHex == "#123456")
+        precondition(saved.accentHex == "#ABCDEF")
+        precondition(saved.collapsedOpacity == 0.55)
+        precondition(saved.expandedOpacity == 0.66)
+        precondition(saved.blurStyle == .thick)
+        precondition(store.state.settings.customThemeID == saved.identifier)
+        let loadedThemes = try themeStorage.loadCustomThemes()
+        precondition(loadedThemes == [saved])
+
+        let exportURL = directory.appendingPathComponent("export.json")
+        try store.exportTheme(saved, to: exportURL)
+        let exported = try CoveThemeDocument.decodeAndValidate(
+            Data(contentsOf: exportURL)
+        )
+        precondition(exported.id == saved.identifier)
+        precondition(exported.collapsedOpacity == 0.55)
+        precondition(exported.expandedOpacity == 0.66)
+        precondition(exported.blur == .thick)
+
+        var updated = saved
+        updated.surfaceHex = "#654321"
+        let resaved = try store.saveCustomTheme(updated, named: "My Theme 2")
+        precondition(resaved.identifier == saved.identifier)
+        precondition(resaved.name == "My Theme 2")
+        precondition(resaved.surfaceHex == "#654321")
+        precondition(store.customThemes == [resaved])
     }
 
     static func testDirectRequestOriginRouting() {

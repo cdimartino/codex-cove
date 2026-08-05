@@ -393,6 +393,7 @@ fn run_management(args: &[String]) -> io::Result<i32> {
         return Ok(0);
     };
     match command {
+        "launch" => run_codex_shim(&args[1..]),
         "hook" => {
             hook::run_hook(&Config::load()?)?;
             Ok(0)
@@ -2145,7 +2146,8 @@ fn flag_path_at(args: &[String], index: usize) -> io::Result<PathBuf> {
 fn print_help() {
     println!(
         "Codex Cove helper\n\
-         usage: codex-cove <doctor|privacy|theme|remote|install|uninstall|hook>\n\
+         usage: codex-cove <launch|doctor|privacy|theme|remote|install|uninstall|hook>\n\
+         launch [CODEX_ARGS...] starts an explicitly Cove-routed Codex session\n\
          install --app-path PATH applies user-local integration; --plan previews\n\
          uninstall [--keep-settings] [--keep-app] removes integration; --keep-app leaves the verified bundle for an external package manager"
     );
@@ -2915,10 +2917,7 @@ mod tests {
         assert_eq!(fs::read(&layout.hooks_path).unwrap(), hooks_before);
         assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
         assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
-        assert_eq!(
-            fs::read_link(&layout.codex_shim).unwrap(),
-            layout.managed_binary
-        );
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
         assert_eq!(
             fs::read_link(&layout.management_link).unwrap(),
             layout.managed_binary
