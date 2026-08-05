@@ -30,6 +30,8 @@ Start with the guide that matches what you are trying to do.
 - [Codex Cove 0.4.0 release notes](releases/v0.4.0.md) — custom theme
   authoring, resident sets, Settings collapse, and native Codex-by-default
   installation.
+- [Codex Cove 0.5.0 release notes](releases/v0.5.0.md) — live solid and gradient
+  themes, native translucency, restorable idle hide, and latest task output.
 
 ## Version-specific engineering records
 

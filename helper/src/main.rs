@@ -2075,9 +2075,9 @@ fn validate_theme(value: &Value) -> io::Result<()> {
         )
         || !value.get("palette").is_some_and(Value::is_object)
         || !value.get("typography").is_some_and(Value::is_object)
-        || value.get("surfaceFill").is_some_and(|fill| {
-            !matches!(fill.as_str(), Some("solid" | "gradient"))
-        })
+        || value
+            .get("surfaceFill")
+            .is_some_and(|fill| !matches!(fill.as_str(), Some("solid" | "gradient")))
         || value
             .pointer("/palette/name")
             .and_then(Value::as_str)
