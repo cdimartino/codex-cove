@@ -5,6 +5,7 @@ import CoveCore
 enum CoveUITestFixture: String, CaseIterable {
     case emptyQueue = "empty-queue"
     case collapsedCue = "collapsed-cue"
+    case minimalCue = "minimal-cue"
     case mixedTasks = "mixed-20"
     case commandApproval = "command-approval"
     case fileApproval = "file-approval"
@@ -417,13 +418,16 @@ enum CoveUITestFixtures {
             showTokenMetrics: false
         )
         settings.panelAnimationEnabled = false
+        if fixture == .minimalCue {
+            settings.minimalIslandMode = true
+        }
         let now = Date(timeIntervalSince1970: 1_767_225_600)
         var snapshots: [CoveSessionSnapshot] = []
         var requests: [CoveDirectRequest] = []
         var dismissed: [String] = []
 
         switch fixture {
-        case .emptyQueue:
+        case .emptyQueue, .minimalCue:
             break
         case .collapsedCue:
             snapshots = [
@@ -472,7 +476,8 @@ enum CoveUITestFixtures {
 
         return CoveState(
             session: CoveSessionState(
-                isExpanded: fixture != .collapsedCue,
+                isExpanded: fixture != .collapsedCue
+                    && fixture != .minimalCue,
                 isVisible: true,
                 activeStatus: snapshots.first?.status ?? .idle,
                 statusPriority: snapshots.first?.priority ?? 0,

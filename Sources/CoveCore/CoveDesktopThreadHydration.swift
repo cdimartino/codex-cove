@@ -349,6 +349,38 @@ public enum CoveDesktopThreadSnapshotParser {
         )
     }
 
+    public static func latestOutput(
+        fromThreadTurnsListResponse data: Data,
+        expectedID: String
+    ) throws -> String? {
+        guard let response = try? JSONDecoder().decode(
+            CoveJSONValue.self,
+            from: data
+        ).objectValue,
+            response["id"]?.scalarStringValue == expectedID,
+            response["error"] == nil || response["error"] == .null,
+            let turns = response["result"]?.objectValue?["data"]?.arrayValue
+        else {
+            throw CoveDesktopThreadHydrationFailure.protocolUnavailable
+        }
+        for turn in turns {
+            let items = turn.objectValue?["items"]?.arrayValue ?? []
+            for item in items.reversed() {
+                guard let object = item.objectValue,
+                      object["type"]?.stringValue == "agentMessage",
+                      let text = object["text"]?.stringValue
+                else { continue }
+                let trimmed = text.trimmingCharacters(
+                    in: .whitespacesAndNewlines
+                )
+                if !trimmed.isEmpty {
+                    return String(trimmed.prefix(4_000))
+                }
+            }
+        }
+        return nil
+    }
+
     public static func discoverableDesktopThreadIDs(
         fromThreadListResponse data: Data,
         expectedID: String,
@@ -699,6 +731,7 @@ private enum CoveAppServerThreadQuery {
     private static let initializeID = "cove-desktop-initialize"
     private static let threadListID = "cove-desktop-thread-list"
     private static let threadReadID = "cove-desktop-thread-read"
+    private static let threadTurnsListID = "cove-desktop-thread-turns"
     private static let maximumMessagesPerRequest = 256
     private static let proxyProbeTimeout: TimeInterval = 0.75
 
@@ -784,7 +817,7 @@ private enum CoveAppServerThreadQuery {
                         "title": "Codex Cove",
                         "version": configuration.clientVersion,
                     ],
-                    "capabilities": ["experimentalApi": false],
+                    "capabilities": ["experimentalApi": true],
                 ],
             ],
             to: input.fileDescriptor
@@ -855,6 +888,19 @@ private enum CoveAppServerThreadQuery {
                 ],
                 to: input.fileDescriptor
             )
+            try writeJSON(
+                [
+                    "id": "\(threadTurnsListID)-\(threadID)",
+                    "method": "thread/turns/list",
+                    "params": [
+                        "threadId": threadID,
+                        "limit": 8,
+                        "sortDirection": "desc",
+                        "itemsView": "summary",
+                    ],
+                ],
+                to: input.fileDescriptor
+            )
         }
         var snapshots: [CoveSessionSnapshot] = []
         for threadID in threadIDs {
@@ -878,6 +924,27 @@ private enum CoveAppServerThreadQuery {
             } catch {
                 // A missing/deleted ordinary task should not make the whole
                 // discovery batch unavailable or delete persisted jump data.
+            }
+        }
+        for index in snapshots.indices {
+            let threadID = snapshots[index].sessionId
+                ?? snapshots[index].snapshotId
+            let expectedID = "\(threadTurnsListID)-\(threadID)"
+            do {
+                let turnsResponse = try response(
+                    withID: expectedID,
+                    reader: &reader,
+                    responses: &responses,
+                    deadline: deadline
+                )
+                snapshots[index].latestOutput = try CoveDesktopThreadSnapshotParser
+                    .latestOutput(
+                        fromThreadTurnsListResponse: turnsResponse,
+                        expectedID: expectedID
+                    )
+            } catch {
+                // Latest output is optional enrichment. Metadata hydration
+                // remains useful when an older app-server lacks this method.
             }
         }
         return .init(

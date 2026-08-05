@@ -157,8 +157,12 @@ permission hooks likewise remain native.
 Desktop hydration first probes the existing public app-server proxy and then
 uses one bounded stdio connection if necessary. It calls `thread/list` only to
 identify a small set of candidate tasks and reads each exact task with
-`includeTurns=false`. Responses are correlated by JSON-RPC ID and may arrive
-out of order. Exact navigation uses the public Codex deep link.
+`includeTurns=false`. It also requests a bounded summary from the public
+experimental `thread/turns/list` method for each exact task so the queue can
+show the latest assistant output. That enrichment is optional: unsupported or
+failed requests leave metadata hydration intact. Responses are correlated by
+JSON-RPC ID and may arrive out of order. Exact navigation uses the public Codex
+deep link, and assistant output remains in memory only.
 
 When Codex Desktop is already the primary durable client, Cove does not start,
 restart, or manage its daemon.

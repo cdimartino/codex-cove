@@ -284,7 +284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             }
             .store(in: &cancellables)
 
-        if uiTestConfiguration?.fixture == .collapsedCue {
+        if uiTestConfiguration?.fixture == .collapsedCue
+            || uiTestConfiguration?.fixture == .minimalCue {
             // Preserve the fixture's collapsed presentation. Calling showCove()
             // would deliberately begin an interaction and expand it before
             // XCUITest can inspect the collapsed accessibility surface.
@@ -438,12 +439,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func toggleOverlay() {
-        overlayController.toggleVisibility()
+        if store.state.settings.minimalIslandMode
+            || !store.state.session.isVisible {
+            restoreIsland()
+        } else {
+            overlayController.toggleVisibility()
+        }
     }
 
     func showCove() {
         NSLog("Cove user reveal requested")
         NSApp.activate(ignoringOtherApps: true)
+        store.dispatch(.setMinimalIslandMode(false))
         store.dispatch(.setVisible(true))
         store.beginOverlayInteraction(releaseAfterMilliseconds: 5_000)
         overlayController.show()
@@ -620,7 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         startDesktopThreadHydration(restoredMetadata: restoredMetadata)
 
         shortcuts.onToggleOverlay = { [weak self] in
-            self?.overlayController.toggleVisibility()
+            self?.toggleOverlay()
         }
         shortcuts.onToggleExpanded = { [weak self] in
             guard let self else { return }
@@ -1191,6 +1198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             "priority": .number(Double(snapshot.priority)),
             "title": .string(snapshot.title),
             "detail": snapshot.detail.map(CoveJSONValue.string) ?? .null,
+            "latestOutput": snapshot.latestOutput.map(CoveJSONValue.string)
+                ?? .null,
             "unread": .bool(snapshot.unread),
         ]
         let timestampMilliseconds = Int(

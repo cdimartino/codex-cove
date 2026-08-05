@@ -94,6 +94,11 @@ public enum CoveThemeAnimationEasing: String, Codable, CaseIterable, Sendable {
     case spring
 }
 
+public enum CoveThemeSurfaceFill: String, Codable, CaseIterable, Sendable {
+    case solid
+    case gradient
+}
+
 public struct CoveThemeColors: Codable, Equatable, Sendable {
     public var background: String
     public var surface: String
@@ -294,6 +299,7 @@ public struct CoveThemeDocument: Codable, Equatable, Sendable {
     public var name: String
     public var family: CoveThemeFamilyToken
     public var palette: CoveThemePaletteDocument
+    public var surfaceFill: CoveThemeSurfaceFill
     public var typography: CoveThemeTypography
     public var cornerRadius: Double
     public var border: CoveThemeBorder
@@ -310,6 +316,7 @@ public struct CoveThemeDocument: Codable, Equatable, Sendable {
         name: String,
         family: CoveThemeFamilyToken,
         palette: CoveThemePaletteDocument,
+        surfaceFill: CoveThemeSurfaceFill = .gradient,
         typography: CoveThemeTypography,
         cornerRadius: Double,
         border: CoveThemeBorder,
@@ -325,6 +332,7 @@ public struct CoveThemeDocument: Codable, Equatable, Sendable {
         self.name = name
         self.family = family
         self.palette = palette
+        self.surfaceFill = surfaceFill
         self.typography = typography
         self.cornerRadius = cornerRadius
         self.border = border
@@ -337,7 +345,7 @@ public struct CoveThemeDocument: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, name, family, palette, typography, cornerRadius
+        case schemaVersion, id, name, family, palette, surfaceFill, typography, cornerRadius
         case border, shadow, noise, blur, collapsedOpacity, expandedOpacity, animation
     }
 
@@ -346,6 +354,10 @@ public struct CoveThemeDocument: Codable, Equatable, Sendable {
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         family = try values.decode(CoveThemeFamilyToken.self, forKey: .family)
         palette = try values.decode(CoveThemePaletteDocument.self, forKey: .palette)
+        surfaceFill = try values.decodeIfPresent(
+            CoveThemeSurfaceFill.self,
+            forKey: .surfaceFill
+        ) ?? .gradient
         id = try values.decodeIfPresent(String.self, forKey: .id)
             ?? "\(family.rawValue).\(CovePaletteKind(themeName: palette.name)?.token ?? "legacy")"
         name = try values.decodeIfPresent(String.self, forKey: .name)
@@ -608,6 +620,7 @@ public struct CoveThemePalette: Codable, Equatable, Sendable, Identifiable {
     public var paletteName: String
     public var accentHex: String
     public var backgroundHex: String
+    public var surfaceFill: CoveThemeSurfaceFill
     public var surfaceHex: String
     public var foregroundHex: String
     public var mutedTextHex: String
@@ -653,6 +666,7 @@ public struct CoveThemePalette: Codable, Equatable, Sendable, Identifiable {
         paletteName: String? = nil,
         accentHex: String,
         backgroundHex: String,
+        surfaceFill: CoveThemeSurfaceFill = .gradient,
         surfaceHex: String? = nil,
         foregroundHex: String,
         mutedTextHex: String? = nil,
@@ -694,6 +708,7 @@ public struct CoveThemePalette: Codable, Equatable, Sendable, Identifiable {
         self.paletteName = paletteName ?? palette.rawValue
         self.accentHex = accentHex
         self.backgroundHex = backgroundHex
+        self.surfaceFill = surfaceFill
         self.surfaceHex = surfaceHex ?? backgroundHex
         self.foregroundHex = foregroundHex
         self.mutedTextHex = mutedTextHex ?? foregroundHex
@@ -738,6 +753,7 @@ public struct CoveThemePalette: Codable, Equatable, Sendable, Identifiable {
             paletteName: document.palette.name,
             accentHex: document.palette.colors.accent,
             backgroundHex: document.palette.colors.background,
+            surfaceFill: document.surfaceFill,
             surfaceHex: document.palette.colors.surface,
             foregroundHex: document.palette.colors.primaryText,
             mutedTextHex: document.palette.colors.mutedText,
@@ -796,6 +812,7 @@ public struct CoveThemePalette: Codable, Equatable, Sendable, Identifiable {
                     idle: idleHex
                 )
             ),
+            surfaceFill: surfaceFill,
             typography: CoveThemeTypography(
                 family: fontName,
                 sizeScale: fontSizeScale,
@@ -1094,9 +1111,10 @@ private enum CoveThemeJSONShapeValidator {
         let rootKeys: Set<String> = [
             "schemaVersion", "id", "name", "family", "palette", "typography",
             "cornerRadius", "border", "shadow", "noise", "blur",
-            "collapsedOpacity", "expandedOpacity", "animation",
+            "collapsedOpacity", "expandedOpacity", "animation", "surfaceFill",
         ]
         var requiredRoot = rootKeys
+        requiredRoot.remove("surfaceFill")
         if allowsLegacyBuiltIn {
             requiredRoot.remove("id")
             requiredRoot.remove("name")

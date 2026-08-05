@@ -51,6 +51,7 @@ struct CoveCoreSmokeTests {
         try await run("account usage process fixture", testAccountUsageProcessFixture)
         try await run("oversized account usage line", testAccountUsageRejectsOversizedLine)
         try run("snapshot priority", testReducerSnapshotPriority)
+        run("latest assistant output projection", testLatestAssistantOutputProjection)
         try run(
             "snapshot origin collision fails closed",
             testSnapshotOriginCollisionFailsClosed
@@ -325,6 +326,7 @@ struct CoveCoreSmokeTests {
             """.utf8
         )
         let migrated = try CoveThemeDocument.decodeAndValidate(legacy)
+        precondition(migrated.surfaceFill == .gradient)
         precondition(migrated.id == "retroTerminal.terminalGreen")
         precondition(migrated.name == "Retro Terminal · Terminal Green")
         precondition(migrated.palette.colors.waitingInput == "#E8FF6A")
@@ -411,9 +413,11 @@ struct CoveCoreSmokeTests {
             .document
         theme.id = "chris.roundtrip"
         theme.name = "Round Trip"
+        theme.surfaceFill = .solid
         let encodedTheme = try theme.encoded()
         let decoded = try CoveThemeDocument.decodeAndValidate(encodedTheme)
         precondition(decoded == theme)
+        precondition(decoded.surfaceFill == .solid)
     }
 
     static func testQuietPolicies() throws {
@@ -2056,6 +2060,36 @@ struct CoveCoreSmokeTests {
         precondition(snapshot.timestamp == Date(timeIntervalSince1970: 40))
         precondition(snapshot.unread)
 
+        let turnsResponse = Data(
+            """
+            {
+              "id": "cove-desktop-thread-turns-thread-ABC_123",
+              "result": {
+                "data": [
+                  {
+                    "id": "newest-turn",
+                    "items": [
+                      {"type": "userMessage", "content": [{"type": "text", "text": "Next"}]}
+                    ]
+                  },
+                  {
+                    "id": "previous-turn",
+                    "items": [
+                      {"type": "userMessage", "content": [{"type": "text", "text": "Request"}]},
+                      {"type": "agentMessage", "text": "Latest assistant output", "phase": "finalAnswer"}
+                    ]
+                  }
+                ]
+              }
+            }
+            """.utf8
+        )
+        let latestOutput = try CoveDesktopThreadSnapshotParser.latestOutput(
+            fromThreadTurnsListResponse: turnsResponse,
+            expectedID: "cove-desktop-thread-turns-thread-ABC_123"
+        )
+        precondition(latestOutput == "Latest assistant output")
+
         let guardianResponse = Data(
             """
             {
@@ -2430,6 +2464,10 @@ struct CoveCoreSmokeTests {
             while IFS= read -r request; do
               case "$request" in
                 *'"id":"cove-desktop-initialize"'*)
+                  case "$request" in
+                    *'"experimentalApi":true'*) ;;
+                    *) exit 47 ;;
+                  esac
                   printf '%s\n' '{"id":"cove-desktop-initialize","result":{"platformFamily":"unix"}}'
                   ;;
                 *'"method":"initialized"'*)
@@ -2438,7 +2476,18 @@ struct CoveCoreSmokeTests {
                   printf '%s\n' '{"id":"cove-desktop-thread-list","result":{"data":[{"id":"vscode-not-loaded","name":"Desktop from direct stdio","sourceKinds":["vscode"],"statusKinds":["notLoaded"]}]}}'
                   ;;
                 *'"id":"cove-desktop-thread-read-vscode-not-loaded"'*)
+                  case "$request" in
+                    *'"includeTurns":false'*) ;;
+                    *) exit 45 ;;
+                  esac
                   printf '%s\n' '{"id":"cove-desktop-thread-read-vscode-not-loaded","result":{"thread":{"id":"vscode-not-loaded","name":"Desktop from direct stdio","sourceKinds":["vscode"],"statusKinds":["notLoaded"]}}}'
+                  ;;
+                *'"id":"cove-desktop-thread-turns-vscode-not-loaded"'*)
+                  case "$request" in
+                    *'"itemsView":"summary"'*'"limit":8'*'"sortDirection":"desc"'*) ;;
+                    *) exit 46 ;;
+                  esac
+                  printf '%s\n' '{"id":"cove-desktop-thread-turns-vscode-not-loaded","error":{"code":-32601,"message":"unsupported"}}'
                   ;;
               esac
             done
@@ -3019,6 +3068,58 @@ struct CoveCoreSmokeTests {
         )
         precondition(!state.pendingDirectRequests.isEmpty)
         precondition(!state.session.isExpanded)
+    }
+
+    static func testLatestAssistantOutputProjection() {
+        func hook(
+            _ name: String,
+            id: String,
+            timestamp: TimeInterval,
+            lastOutput: String? = nil
+        ) -> CoveWireEnvelope {
+            var data: [String: CoveJSONValue] = [
+                "hook_event_name": .string(name),
+                "session_id": .string("output-session"),
+            ]
+            if let lastOutput {
+                data["last_assistant_message"] = .string(lastOutput)
+            }
+            return CoveWireEnvelope(
+                eventId: id,
+                kind: .hook,
+                timestamp: Date(timeIntervalSince1970: timestamp),
+                source: .localCli,
+                sessionId: "output-session",
+                payload: .object([
+                    "hookEventName": .string(name),
+                    "data": .object(data),
+                ])
+            )
+        }
+
+        var state = CoveState()
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(
+                hook(
+                    "Stop",
+                    id: "output-stop",
+                    timestamp: 10,
+                    lastOutput: "  Finished the requested work.  "
+                )
+            )
+        )
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(
+                hook("PostToolUse", id: "output-post-tool", timestamp: 11)
+            )
+        )
+        let snapshot = state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }
+        precondition(snapshot?.latestOutput == "Finished the requested work.")
+        precondition(snapshot?.title == "Codex task")
     }
 
     static func testSnapshotOriginCollisionFailsClosed() throws {

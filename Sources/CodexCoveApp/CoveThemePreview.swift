@@ -49,6 +49,7 @@ struct CoveThemePreview: View {
                     .fill(Color(hex: theme.accentHex))
                     .frame(width: 8, height: 8)
                     .accessibilityHidden(true)
+                Text(theme.surfaceFill.rawValue.capitalized)
                 Text(blur.rawValue)
                 Text("Noise \(Int(theme.noiseOpacity * 100))%")
                 Text(

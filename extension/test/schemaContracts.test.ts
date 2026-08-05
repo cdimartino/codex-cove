@@ -62,6 +62,8 @@ test("theme schema covers the expanded plan tokens", () => {
     "easeInOut",
     "spring",
   ]);
+  assert.deepEqual(schema.properties.surfaceFill.enum, ["solid", "gradient"]);
+  assert.equal(schema.properties.surfaceFill.default, "gradient");
   assert.equal(schema.properties.id.pattern.includes("\\.\\."), true);
   assert.equal(schema.properties.collapsedOpacity.minimum, 0.35);
   assert.equal(schema.properties.expandedOpacity.maximum, 1);

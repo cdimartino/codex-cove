@@ -344,6 +344,7 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
             priority: object["priority"]?.intValue ?? 0,
             title: object["title"]?.stringValue ?? "Snapshot",
             detail: object["detail"]?.stringValue,
+            latestOutput: object["latestOutput"]?.stringValue,
             timestamp: timestamp,
             sessionId: sessionId,
             launchId: launchId,
@@ -478,6 +479,19 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
             summary: mapped.2,
             timestamp: timestamp
         )
+    }
+
+    public func latestAssistantOutput() -> String? {
+        let item = requestParameters["item"]?.objectValue ?? requestParameters
+        let raw = requestParameters["last_assistant_message"]?.stringValue
+            ?? (effectiveMethod == "item/completed"
+                && item["type"]?.stringValue == "agentMessage"
+                ? item["text"]?.stringValue
+                : nil)
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(4_000))
     }
 
     public func resolvedRequestID() -> CoveRequestID? {
@@ -797,6 +811,8 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
             return "Task completed"
         case "turn/failed", "error":
             return "Task failed"
+        case let value? where value.hasPrefix("hook/"):
+            return "Codex task"
         case let value?:
             return value.replacingOccurrences(of: "/", with: " ").capitalized
         case nil:

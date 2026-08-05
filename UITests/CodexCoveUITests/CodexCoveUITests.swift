@@ -88,6 +88,24 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testMinimalMenuBarCueRestoresCove() {
+        let app = launchFixture("minimal-cue")
+        let restore = app.buttons["cove.overlay.restore-island"].firstMatch
+        XCTAssertTrue(
+            restore.waitForExistence(timeout: 5),
+            "Minimal mode must leave a clickable menu-bar cue"
+        )
+        XCTAssertTrue(restore.isHittable)
+
+        restore.click()
+        XCTAssertTrue(
+            text("Queue", in: app).waitForExistence(timeout: 3),
+            "Clicking the menu-bar cue must restore Cove"
+        )
+        XCTAssertFalse(restore.exists)
+    }
+
+    @MainActor
     func testQueueHasExactlyOneScrollOwner() {
         let app = launchFixture("mixed-20")
         let overlay = element("cove.overlay", in: app)
@@ -800,6 +818,27 @@ final class CodexCoveUITests: XCTestCase {
             "The installed collapsed surface must use the selected theme color"
         )
 
+        let surfaceFill = element(
+            "settings.appearance.surface-fill",
+            in: app
+        )
+        let solidOption = surfaceFill.descendants(matching: .radioButton)[
+            "Solid"
+        ].firstMatch
+        revealAndClick(solidOption, in: app)
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.stringValue(of: solidOption) == "1"
+            },
+            "Solid must be selectable as the live surface fill"
+        )
+        let solidSurface = sampledSurfaceColor(from: expand.screenshot())
+        XCTAssertGreaterThan(
+            colorDistance(themed, solidSurface),
+            0.012,
+            "Switching from Gradient to Solid must update the live island"
+        )
+
         let backgroundColor = element(
             "settings.appearance.color.background",
             in: app
@@ -870,7 +909,7 @@ final class CodexCoveUITests: XCTestCase {
         )
         let translucent = sampledSurfaceColor(from: expand.screenshot())
         XCTAssertGreaterThan(
-            colorDistance(themed, translucent),
+            colorDistance(solidSurface, translucent),
             0.012,
             "The installed collapsed surface must use its configured opacity"
         )

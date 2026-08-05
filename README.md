@@ -45,13 +45,14 @@ named suggestion; update the tap or use the source or verified manual path. See
 - Exact-origin navigation for Terminal, iTerm2, tmux, WezTerm, VS Code, Cursor,
   remote CLI sessions, and Codex Desktop tasks.
 - Native Glass, Retro Terminal, and Minimal OLED styles, five built-in palettes,
-  color-wheel custom-theme authoring and JSON import/export, scalable text,
-  configurable geometry, Reduce Motion support, notifications, and per-event
-  sounds.
+  live color-wheel custom-theme authoring, solid or two-color translucent
+  surfaces, JSON import/export, scalable text, configurable geometry, Reduce
+  Motion support, notifications, and per-event sounds.
 - Dungeon/D&D, tech-creature, and virus/bacteria resident sets with stable
   per-task assignment.
 - Privacy modes, content-level notification controls, quiet hours, project
-  silence rules, focused-app quieting, and a menu-only minimal mode.
+  silence rules, focused-app quieting, and a restorable menu-bar-level minimal
+  cue.
 - Optional account rate-limit and token-usage views sourced only from public
   Codex app-server responses. Missing or stale values are labeled, never
   inferred.
