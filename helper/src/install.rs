@@ -25,6 +25,13 @@ enum ManagedPathKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedLinkState {
+    Absent,
+    Owned,
+    Foreign,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PathIdentity {
     device: u64,
     inode: u64,
@@ -75,6 +82,40 @@ impl PathIdentity {
     }
 }
 
+fn managed_link_state(path: &Path, target: &Path) -> io::Result<ManagedLinkState> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                && metadata.uid() == unsafe { libc::geteuid() } =>
+        {
+            let identity = PathIdentity::from_metadata(&metadata);
+            let actual = match fs::read_link(path) {
+                Ok(actual) => actual,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return Ok(ManagedLinkState::Absent);
+                }
+                Err(_) => return Ok(ManagedLinkState::Foreign),
+            };
+            if actual != target {
+                return Ok(ManagedLinkState::Foreign);
+            }
+            Ok(
+                if identity
+                    .require_current(path, "managed link inspection")
+                    .is_ok()
+                {
+                    ManagedLinkState::Owned
+                } else {
+                    ManagedLinkState::Foreign
+                },
+            )
+        }
+        Ok(_) => Ok(ManagedLinkState::Foreign),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(ManagedLinkState::Absent),
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone)]
 enum PathSnapshot {
     Absent,
@@ -90,6 +131,36 @@ enum PathSnapshot {
 }
 
 impl PathSnapshot {
+    fn capture_owned_symlink(path: &Path, target: &Path) -> io::Result<Option<Self>> {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    && metadata.uid() == unsafe { libc::geteuid() } =>
+            {
+                metadata
+            }
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let identity = PathIdentity::from_metadata(&metadata);
+        let actual = match fs::read_link(path) {
+            Ok(actual) => actual,
+            Err(_) => return Ok(None),
+        };
+        if actual != target
+            || identity
+                .require_current(path, "owned symlink snapshot")
+                .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self::Symlink {
+            target: actual,
+            identity,
+        }))
+    }
+
     fn capture(path: &Path) -> io::Result<Self> {
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -191,13 +262,18 @@ struct DirectorySnapshot {
 
 impl InstallSnapshot {
     fn capture(layout: &InstallLayout) -> io::Result<Self> {
-        let paths = [
+        let manifest_original = PathSnapshot::capture(&layout.manifest_path)?;
+        let legacy_manifest = match &manifest_original {
+            PathSnapshot::File { bytes, .. } => serde_json::from_slice::<InstallManifest>(bytes)
+                .ok()
+                .filter(|manifest| manifest_authorizes_legacy_shim_cleanup(manifest, layout)),
+            _ => None,
+        };
+        let mut paths = [
             &layout.managed_binary,
             &layout.config_path,
             &layout.hooks_path,
-            &layout.codex_shim,
             &layout.management_link,
-            &layout.manifest_path,
         ]
         .into_iter()
         .map(|path| {
@@ -209,11 +285,66 @@ impl InstallSnapshot {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
+        paths.push(InstallPathSnapshot {
+            path: layout.manifest_path.clone(),
+            original: manifest_original,
+            staged_original: None,
+            replacement: None,
+        });
+        if legacy_manifest.is_some()
+            && let Some(original) =
+                PathSnapshot::capture_owned_symlink(&layout.codex_shim, &layout.managed_binary)?
+        {
+            paths.push(InstallPathSnapshot {
+                path: layout.codex_shim.clone(),
+                original,
+                staged_original: None,
+                replacement: None,
+            });
+        }
         let directories = managed_directory_paths(layout)?
             .into_iter()
             .map(DirectorySnapshot::capture)
             .collect::<io::Result<Vec<_>>>()?;
         Ok(Self { paths, directories })
+    }
+
+    fn staged_manifest_authorizes_legacy_shim_cleanup(&self, layout: &InstallLayout) -> bool {
+        let Some(stage) = self
+            .paths
+            .iter()
+            .find(|entry| entry.path == layout.manifest_path)
+            .and_then(|entry| entry.staged_original.as_ref())
+        else {
+            return false;
+        };
+        let Ok(bytes) = read_current_user_regular_file(&stage.payload, Some(1_048_576)) else {
+            return false;
+        };
+        serde_json::from_slice::<InstallManifest>(&bytes)
+            .ok()
+            .is_some_and(|manifest| manifest_authorizes_legacy_shim_cleanup(&manifest, layout))
+    }
+
+    fn stage_legacy_codex_shim(&mut self, path: &Path, target: &Path) -> io::Result<()> {
+        let Some(entry) = self.paths.iter().find(|entry| entry.path == path) else {
+            return Ok(());
+        };
+        let is_owned = matches!(
+            &entry.original,
+            PathSnapshot::Symlink {
+                target: actual,
+                identity,
+            } if actual == target && identity.owner == unsafe { libc::geteuid() }
+        );
+        if !is_owned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("tracked legacy shim is not Cove-owned: {}", path.display()),
+            ));
+        }
+        self.stage_original(path)?;
+        Ok(())
     }
 
     fn record_replacement(&mut self, path: &Path, expected: PathIdentity) -> io::Result<()> {
@@ -950,6 +1081,10 @@ pub struct InstallManifest {
     pub binary_sha256: String,
     pub hook_command: String,
     pub codex_shim: PathBuf,
+    /// Schema-1 manifests written before native-default integration omit this
+    /// field and therefore retain their legacy shim cleanup obligation.
+    #[serde(default = "legacy_manages_codex_shim")]
+    pub manages_codex_shim: bool,
     pub management_link: PathBuf,
     pub editor_extension_id: Option<String>,
     /// `None` is the schema-1 legacy representation: the extension ID was
@@ -958,6 +1093,22 @@ pub struct InstallManifest {
     /// that case. New manifests always write `Some`, including an empty list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor_extension_targets: Option<Vec<String>>,
+}
+
+fn legacy_manages_codex_shim() -> bool {
+    true
+}
+
+fn manifest_authorizes_legacy_shim_cleanup(
+    manifest: &InstallManifest,
+    layout: &InstallLayout,
+) -> bool {
+    manifest.schema_version == 1
+        && manifest.manages_codex_shim
+        && manifest.managed_binary == layout.managed_binary
+        && manifest.codex_shim == layout.codex_shim
+        && manifest.management_link == layout.management_link
+        && manifest.hook_command == format!("{} hook", shell_quote(&layout.managed_binary))
 }
 
 impl InstallManifest {
@@ -1013,6 +1164,7 @@ pub struct UninstallPreflight {
     manifest: InstallManifest,
     removable_app: Option<PathBuf>,
     hooks_present: bool,
+    remove_codex_shim: bool,
     identities: Vec<(PathBuf, Option<PathIdentity>)>,
 }
 
@@ -1060,6 +1212,7 @@ struct UninstallInspection {
     manifest: Option<InstallManifest>,
     removable_app: Option<PathBuf>,
     hooks_present: bool,
+    remove_codex_shim: bool,
     blockers: Vec<UninstallBlocker>,
 }
 
@@ -1100,31 +1253,41 @@ pub fn install_plan_for_layout(
             detail: "preserve unrelated matcher groups; normal /hooks trust required".to_owned(),
         },
     ];
-    for link in [&layout.codex_shim, &layout.management_link] {
-        if link.exists() || fs::symlink_metadata(link).is_ok() {
-            let owned = fs::symlink_metadata(link)
-                .ok()
-                .filter(|metadata| {
-                    metadata.file_type().is_symlink()
-                        && metadata.uid() == unsafe { libc::geteuid() }
-                })
-                .and_then(|_| fs::read_link(link).ok())
-                .is_some_and(|target| target == layout.managed_binary);
-            if !owned {
-                blocked = true;
-                actions.push(PlannedAction {
-                    kind: "blocked".to_owned(),
-                    path: link.clone(),
-                    detail: "existing path is not Cove-owned; preserve it".to_owned(),
-                });
-            }
-        } else {
+    let legacy_shim_cleanup_authorized = read_manifest(layout)
+        .ok()
+        .is_some_and(|manifest| manifest_authorizes_legacy_shim_cleanup(&manifest, layout));
+    match managed_link_state(&layout.codex_shim, &layout.managed_binary)? {
+        ManagedLinkState::Owned if legacy_shim_cleanup_authorized => actions.push(PlannedAction {
+            kind: "removeOwnedLegacyShim".to_owned(),
+            path: layout.codex_shim.clone(),
+            detail: "remove the exact Cove-owned Codex interception link".to_owned(),
+        }),
+        ManagedLinkState::Owned | ManagedLinkState::Foreign => actions.push(PlannedAction {
+            kind: "preserveUnmanagedPath".to_owned(),
+            path: layout.codex_shim.clone(),
+            detail: "native Codex path is not managed by Cove".to_owned(),
+        }),
+        ManagedLinkState::Absent => actions.push(PlannedAction {
+            kind: "alreadyAbsent".to_owned(),
+            path: layout.codex_shim.clone(),
+            detail: "native Codex remains unmodified".to_owned(),
+        }),
+    }
+    match managed_link_state(&layout.management_link, &layout.managed_binary)? {
+        ManagedLinkState::Owned => {}
+        ManagedLinkState::Foreign => {
+            blocked = true;
             actions.push(PlannedAction {
-                kind: "symlink".to_owned(),
-                path: link.clone(),
-                detail: layout.managed_binary.display().to_string(),
+                kind: "blocked".to_owned(),
+                path: layout.management_link.clone(),
+                detail: "existing path is not Cove-owned; preserve it".to_owned(),
             });
         }
+        ManagedLinkState::Absent => actions.push(PlannedAction {
+            kind: "symlink".to_owned(),
+            path: layout.management_link.clone(),
+            detail: layout.managed_binary.display().to_string(),
+        }),
     }
     Ok(MutationPlan {
         operation: "install".to_owned(),
@@ -1209,7 +1372,7 @@ where
         let hooks_identity = atomic_write_json_new(&layout.hooks_path, &hooks, 0o600)?;
         snapshot.record_replacement(&layout.hooks_path, hooks_identity)?;
 
-        let user_bin = layout.codex_shim.parent().unwrap();
+        let user_bin = layout.management_link.parent().unwrap();
         let created_bin = PathIdentity::capture(user_bin)?.is_none();
         snapshot.ensure_directory(user_bin, 0o755)?;
         let bin_metadata = fs::symlink_metadata(user_bin)?;
@@ -1222,10 +1385,11 @@ where
         if created_bin {
             fs::set_permissions(user_bin, fs::Permissions::from_mode(0o755))?;
         }
-        before_links()?;
-        if let Some(identity) = ensure_owned_symlink(&layout.codex_shim, &layout.managed_binary)? {
-            snapshot.record_replacement(&layout.codex_shim, identity)?;
+        snapshot.stage_original(&layout.manifest_path)?;
+        if snapshot.staged_manifest_authorizes_legacy_shim_cleanup(layout) {
+            snapshot.stage_legacy_codex_shim(&layout.codex_shim, &layout.managed_binary)?;
         }
+        before_links()?;
         if let Some(identity) =
             ensure_owned_symlink(&layout.management_link, &layout.managed_binary)?
         {
@@ -1241,11 +1405,11 @@ where
             binary_sha256: sha256_file(&layout.managed_binary)?,
             hook_command,
             codex_shim: layout.codex_shim.clone(),
+            manages_codex_shim: false,
             management_link: layout.management_link.clone(),
             editor_extension_id: editor_extension_id.map(str::to_owned),
             editor_extension_targets: editor_extension_id.is_none().then(Vec::new),
         };
-        snapshot.stage_original(&layout.manifest_path)?;
         let manifest_identity = atomic_write_json_new(
             &layout.manifest_path,
             &serde_json::to_value(&manifest)
@@ -1548,24 +1712,40 @@ pub fn uninstall_plan_for_layout_with_options(
             "hooks file is already absent".to_owned()
         },
     });
-    for link in [&layout.codex_shim, &layout.management_link] {
-        let present = fs::symlink_metadata(link).is_ok();
-        actions.push(PlannedAction {
-            kind: if present {
-                "removeOwnedSymlink"
-            } else {
-                "alreadyAbsent"
-            }
-            .to_owned(),
-            path: link.clone(),
-            detail: if present {
-                "remove only after the complete preflight proves the target is Cove-owned"
-                    .to_owned()
-            } else {
-                "owned link is already absent".to_owned()
-            },
-        });
-    }
+    let shim_present = fs::symlink_metadata(&layout.codex_shim).is_ok();
+    actions.push(PlannedAction {
+        kind: if inspection.remove_codex_shim {
+            "removeOwnedSymlink"
+        } else if shim_present {
+            "preserveUnmanagedPath"
+        } else {
+            "alreadyAbsent"
+        }
+        .to_owned(),
+        path: layout.codex_shim.clone(),
+        detail: if inspection.remove_codex_shim {
+            "remove only after the complete preflight proves the target is Cove-owned".to_owned()
+        } else if shim_present {
+            "native Codex path is not managed by Cove".to_owned()
+        } else {
+            "native Codex remains unmodified".to_owned()
+        },
+    });
+    let management_present = fs::symlink_metadata(&layout.management_link).is_ok();
+    actions.push(PlannedAction {
+        kind: if management_present {
+            "removeOwnedSymlink"
+        } else {
+            "alreadyAbsent"
+        }
+        .to_owned(),
+        path: layout.management_link.clone(),
+        detail: if management_present {
+            "remove only after the complete preflight proves the target is Cove-owned".to_owned()
+        } else {
+            "owned link is already absent".to_owned()
+        },
+    });
     if let Some(app_path) = inspection.removable_app.as_ref() {
         actions.push(PlannedAction {
             kind: if keep_app {
@@ -1624,14 +1804,14 @@ pub fn preflight_uninstall(layout: &InstallLayout) -> io::Result<UninstallPrefli
             format!("uninstall blocked; installation left unchanged: {details}"),
         ));
     }
+    let remove_codex_shim = inspection.remove_codex_shim;
     let manifest = inspection.manifest.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             "uninstall blocked; install manifest is unavailable",
         )
     })?;
-    let mut identities = Vec::new();
-    for (path, required, kind) in [
+    let mut uninstall_paths = vec![
         (&layout.support, true, ManagedPathKind::Directory),
         (&layout.manifest_path, true, ManagedPathKind::File),
         (&layout.managed_binary, true, ManagedPathKind::File),
@@ -1640,9 +1820,13 @@ pub fn preflight_uninstall(layout: &InstallLayout) -> io::Result<UninstallPrefli
             inspection.hooks_present,
             ManagedPathKind::File,
         ),
-        (&layout.codex_shim, false, ManagedPathKind::Symlink),
-        (&layout.management_link, false, ManagedPathKind::Symlink),
-    ] {
+    ];
+    if remove_codex_shim {
+        uninstall_paths.push((&layout.codex_shim, true, ManagedPathKind::Symlink));
+    }
+    uninstall_paths.push((&layout.management_link, false, ManagedPathKind::Symlink));
+    let mut identities = Vec::new();
+    for (path, required, kind) in uninstall_paths {
         identities.push((
             path.clone(),
             capture_uninstall_identity(path, required, kind)?,
@@ -1670,6 +1854,7 @@ pub fn preflight_uninstall(layout: &InstallLayout) -> io::Result<UninstallPrefli
         manifest,
         removable_app: inspection.removable_app,
         hooks_present: inspection.hooks_present,
+        remove_codex_shim,
         identities,
     })
 }
@@ -1860,15 +2045,34 @@ where
             transaction.mark_replacement(&layout.hooks_path, replacement)?;
         }
 
-        for link in [&layout.codex_shim, &layout.management_link] {
-            if let Some(staged) = transaction.stage(link, preflight.identity_for(link)?)?
-                && fs::read_link(&staged)? != manifest.managed_binary
-            {
+        if preflight.remove_codex_shim {
+            let staged = transaction
+                .stage(
+                    &layout.codex_shim,
+                    preflight.identity_for(&layout.codex_shim)?,
+                )?
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "legacy Codex shim disappeared")
+                })?;
+            if fs::read_link(&staged)? != manifest.managed_binary {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("{} changed after preflight", link.display()),
+                    format!("{} changed after preflight", layout.codex_shim.display()),
                 ));
             }
+        }
+        if let Some(staged) = transaction.stage(
+            &layout.management_link,
+            preflight.identity_for(&layout.management_link)?,
+        )? && fs::read_link(&staged)? != manifest.managed_binary
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{} changed after preflight",
+                    layout.management_link.display()
+                ),
+            ));
         }
 
         if !keep_app && let Some(app_path) = preflight.removable_app.as_ref() {
@@ -1984,6 +2188,7 @@ where
 fn inspect_uninstall(layout: &InstallLayout) -> UninstallInspection {
     let mut blockers = Vec::new();
     let mut hooks_present = false;
+    let mut remove_codex_shim = false;
     let mut removable_app = None;
 
     match fs::symlink_metadata(&layout.support) {
@@ -2082,7 +2287,11 @@ fn inspect_uninstall(layout: &InstallLayout) -> UninstallInspection {
         }
 
         validate_helper_for_preflight(layout, manifest, &mut blockers);
-        validate_link_for_preflight(&layout.codex_shim, &layout.managed_binary, &mut blockers);
+        if manifest.manages_codex_shim {
+            validate_link_for_preflight(&layout.codex_shim, &layout.managed_binary, &mut blockers);
+            remove_codex_shim = managed_link_state(&layout.codex_shim, &layout.managed_binary)
+                .is_ok_and(|state| state == ManagedLinkState::Owned);
+        }
         validate_link_for_preflight(
             &layout.management_link,
             &layout.managed_binary,
@@ -2181,22 +2390,19 @@ fn inspect_uninstall(layout: &InstallLayout) -> UninstallInspection {
                 },
             },
         }
-    } else {
-        for link in [&layout.codex_shim, &layout.management_link] {
-            if fs::symlink_metadata(link).is_ok() {
-                push_blocker(
-                    &mut blockers,
-                    link,
-                    "cannot prove ownership without a valid install manifest",
-                );
-            }
-        }
+    } else if fs::symlink_metadata(&layout.management_link).is_ok() {
+        push_blocker(
+            &mut blockers,
+            &layout.management_link,
+            "cannot prove ownership without a valid install manifest",
+        );
     }
 
     UninstallInspection {
         manifest,
         removable_app,
         hooks_present,
+        remove_codex_shim,
         blockers,
     }
 }
@@ -3515,6 +3721,20 @@ mod tests {
         app
     }
 
+    fn convert_install_to_legacy_shim(layout: &InstallLayout) -> InstallManifest {
+        let mut manifest = read_manifest(layout).unwrap();
+        assert!(!manifest.manages_codex_shim);
+        symlink(&layout.managed_binary, &layout.codex_shim).unwrap();
+        manifest.manages_codex_shim = true;
+        atomic_write_json(
+            &layout.manifest_path,
+            &serde_json::to_value(&manifest).unwrap(),
+            0o600,
+        )
+        .unwrap();
+        manifest
+    }
+
     fn managed_install_state(layout: &InstallLayout) -> [String; 3] {
         [
             sha256_tree(&layout.support).unwrap(),
@@ -3527,11 +3747,91 @@ mod tests {
     fn install_plan_preserves_existing_unowned_shim() {
         let temp = tempdir().unwrap();
         let layout = InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        executable(&source, b"helper");
+        executable(&real, b"codex");
         fs::create_dir_all(layout.codex_shim.parent().unwrap()).unwrap();
         fs::write(&layout.codex_shim, b"user binary").unwrap();
         let config = Config::for_home(temp.path());
-        let plan = install_plan_for_layout(Path::new("/tmp/helper"), &config, &layout).unwrap();
-        assert!(plan.blocked);
+        let plan = install_plan_for_layout(&source, &config, &layout).unwrap();
+        assert!(!plan.blocked);
+        assert!(plan.actions.iter().any(|action| {
+            action.kind == "preserveUnmanagedPath" && action.path == layout.codex_shim
+        }));
+
+        apply_install(&source, None, &real, &layout, None).unwrap();
+        assert_eq!(fs::read(&layout.codex_shim).unwrap(), b"user binary");
+        apply_uninstall(&layout, false).unwrap();
+        assert_eq!(fs::read(&layout.codex_shim).unwrap(), b"user binary");
+    }
+
+    #[test]
+    fn install_and_uninstall_preserve_an_unmanaged_codex_directory() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        executable(&source, b"helper");
+        executable(&real, b"codex");
+        fs::create_dir_all(&layout.codex_shim).unwrap();
+        fs::write(layout.codex_shim.join("sentinel"), b"user directory").unwrap();
+
+        apply_install(&source, None, &real, &layout, None).unwrap();
+        apply_uninstall(&layout, false).unwrap();
+
+        assert_eq!(
+            fs::read(layout.codex_shim.join("sentinel")).unwrap(),
+            b"user directory"
+        );
+    }
+
+    #[test]
+    fn install_and_uninstall_preserve_an_unmanaged_codex_symlink() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        let user_target = temp.path().join("user-codex");
+        executable(&source, b"helper");
+        executable(&real, b"codex");
+        executable(&user_target, b"user codex");
+        fs::create_dir_all(layout.codex_shim.parent().unwrap()).unwrap();
+        symlink(&user_target, &layout.codex_shim).unwrap();
+
+        apply_install(&source, None, &real, &layout, None).unwrap();
+        apply_uninstall(&layout, false).unwrap();
+
+        assert_eq!(fs::read_link(&layout.codex_shim).unwrap(), user_target);
+    }
+
+    #[test]
+    fn reinstall_preserves_an_exact_target_symlink_not_owned_by_the_manifest() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source_v1 = temp.path().join("source-helper-v1");
+        let source_v2 = temp.path().join("source-helper-v2");
+        let real = temp.path().join("real-codex");
+        executable(&source_v1, b"helper-v1");
+        executable(&source_v2, b"helper-v2");
+        executable(&real, b"codex");
+        apply_install(&source_v1, None, &real, &layout, None).unwrap();
+        symlink(&layout.managed_binary, &layout.codex_shim).unwrap();
+
+        let config = Config::load_from(&layout.config_path).unwrap();
+        let plan = install_plan_for_layout(&source_v2, &config, &layout).unwrap();
+        assert!(!plan.blocked);
+        assert!(plan.actions.iter().any(|action| {
+            action.kind == "preserveUnmanagedPath" && action.path == layout.codex_shim
+        }));
+
+        let manifest = apply_install(&source_v2, None, &real, &layout, None).unwrap();
+
+        assert!(!manifest.manages_codex_shim);
+        assert_eq!(
+            fs::read_link(&layout.codex_shim).unwrap(),
+            layout.managed_binary
+        );
     }
 
     #[test]
@@ -3569,10 +3869,12 @@ mod tests {
         .unwrap();
 
         apply_install(&source, None, &real, &layout, None).unwrap();
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
         assert_eq!(
-            fs::read_link(&layout.codex_shim).unwrap(),
+            fs::read_link(&layout.management_link).unwrap(),
             layout.managed_binary
         );
+        assert!(!read_manifest(&layout).unwrap().manages_codex_shim);
         assert_eq!(
             fs::metadata(&layout.managed_binary)
                 .unwrap()
@@ -3598,6 +3900,80 @@ mod tests {
         assert_eq!(
             hooks.pointer("/hooks/Stop/0/hooks/0/command"),
             Some(&Value::String("mine".to_owned()))
+        );
+    }
+
+    #[test]
+    fn reinstall_removes_an_exact_owned_legacy_shim() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source_v1 = temp.path().join("source-helper-v1");
+        let source_v2 = temp.path().join("source-helper-v2");
+        let real = temp.path().join("real-codex");
+        executable(&source_v1, b"helper-v1");
+        executable(&source_v2, b"helper-v2");
+        executable(&real, b"codex");
+        apply_install(&source_v1, None, &real, &layout, None).unwrap();
+        convert_install_to_legacy_shim(&layout);
+
+        let config = Config::load_from(&layout.config_path).unwrap();
+        let plan = install_plan_for_layout(&source_v2, &config, &layout).unwrap();
+        assert!(!plan.blocked);
+        assert!(plan.actions.iter().any(|action| {
+            action.kind == "removeOwnedLegacyShim" && action.path == layout.codex_shim
+        }));
+
+        let manifest = apply_install(&source_v2, None, &real, &layout, None).unwrap();
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
+        assert!(!manifest.manages_codex_shim);
+        assert_eq!(
+            fs::read_link(&layout.management_link).unwrap(),
+            layout.managed_binary
+        );
+    }
+
+    #[test]
+    fn install_rollback_preserves_a_concurrent_codex_replacement_and_legacy_recovery() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source_v1 = temp.path().join("source-helper-v1");
+        let source_v2 = temp.path().join("source-helper-v2");
+        let real = temp.path().join("real-codex");
+        executable(&source_v1, b"helper-v1");
+        executable(&source_v2, b"helper-v2");
+        executable(&real, b"codex");
+        apply_install(&source_v1, None, &real, &layout, None).unwrap();
+        convert_install_to_legacy_shim(&layout);
+
+        let error = apply_install_transactional(&source_v2, None, &real, &layout, None, || {
+            fs::write(&layout.codex_shim, b"concurrent user replacement")?;
+            Err(io::Error::other("injected concurrent shim replacement"))
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("concurrent replacement preserved")
+        );
+        assert_eq!(
+            fs::read(&layout.codex_shim).unwrap(),
+            b"concurrent user replacement"
+        );
+        let recovery = fs::read_dir(layout.codex_shim.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".codex-cove-install-stage."))
+                    && path.join("codex").is_symlink()
+            })
+            .expect("legacy shim must remain in private recovery");
+        assert_eq!(
+            fs::read_link(recovery.join("codex")).unwrap(),
+            layout.managed_binary
         );
     }
 
@@ -3731,6 +4107,7 @@ mod tests {
         executable(&real_v1, b"codex-v1");
         executable(&real_v2, b"codex-v2");
         apply_install(&source_v1, None, &real_v1, &layout, None).unwrap();
+        convert_install_to_legacy_shim(&layout);
         let mut customized = Config::load_from(&layout.config_path).unwrap();
         customized.privacy = PrivacyMode::Off;
         customized.hook_timeout_ms = 2_345;
@@ -3743,6 +4120,7 @@ mod tests {
         let management_before = fs::read_link(&layout.management_link).unwrap();
 
         let error = apply_install_transactional(&source_v2, None, &real_v2, &layout, None, || {
+            assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
             Err(io::Error::other("injected reinstall failure"))
         })
         .unwrap_err();
@@ -3810,6 +4188,23 @@ mod tests {
     }
 
     #[test]
+    fn schema_one_manifest_without_shim_ownership_defaults_to_legacy() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        let source = temp.path().join("source-helper");
+        let real = temp.path().join("real-codex");
+        executable(&source, b"helper");
+        executable(&real, b"codex");
+        let manifest = apply_install(&source, None, &real, &layout, None).unwrap();
+        let mut value = serde_json::to_value(manifest).unwrap();
+        value.as_object_mut().unwrap().remove("managesCodexShim");
+
+        let decoded: InstallManifest = serde_json::from_value(value).unwrap();
+
+        assert!(decoded.manages_codex_shim);
+    }
+
+    #[test]
     fn malformed_editor_cleanup_targets_block_uninstall_preflight() {
         let temp = tempdir().unwrap();
         let layout = InstallLayout::for_home(temp.path());
@@ -3852,7 +4247,7 @@ mod tests {
         fs::write(&layout.managed_binary, b"modified").unwrap();
         assert!(apply_uninstall(&layout, false).is_err());
         assert!(layout.managed_binary.exists());
-        assert!(layout.codex_shim.exists());
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
     }
 
     #[test]
@@ -3871,6 +4266,7 @@ mod tests {
         )
         .unwrap();
         apply_install(&source, Some(&app), &real, &layout, None).unwrap();
+        convert_install_to_legacy_shim(&layout);
 
         fs::remove_file(&layout.codex_shim).unwrap();
         fs::write(&layout.codex_shim, b"user replacement").unwrap();
@@ -4000,10 +4396,7 @@ mod tests {
         assert_eq!(fs::read(&layout.hooks_path).unwrap(), hooks_before);
         assert_eq!(fs::read(&layout.managed_binary).unwrap(), helper_before);
         assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
-        assert_eq!(
-            fs::read_link(&layout.codex_shim).unwrap(),
-            layout.managed_binary
-        );
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
         assert_eq!(
             fs::read_link(&layout.management_link).unwrap(),
             layout.managed_binary
@@ -4028,7 +4421,7 @@ mod tests {
         assert!(error.to_string().contains("app bundle checksum changed"));
         assert!(app.exists());
         assert!(layout.managed_binary.exists());
-        assert!(layout.codex_shim.exists());
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
         assert!(layout.management_link.exists());
         assert_eq!(fs::read(&layout.hooks_path).unwrap(), hooks_before);
         assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
@@ -4300,10 +4693,7 @@ mod tests {
         assert_eq!(fs::read(&layout.manifest_path).unwrap(), manifest_before);
         assert_eq!(fs::read(&layout.config_path).unwrap(), config_before);
         assert_eq!(fs::read(&settings).unwrap(), b"settings");
-        assert_eq!(
-            fs::read_link(&layout.codex_shim).unwrap(),
-            layout.managed_binary
-        );
+        assert!(fs::symlink_metadata(&layout.codex_shim).is_err());
         assert_eq!(
             fs::read_link(&layout.management_link).unwrap(),
             layout.managed_binary

@@ -9,17 +9,22 @@ in charge whenever it cannot handle an action safely.
 
 ### Terminal and iTerm2
 
-After installation, make sure `~/bin` precedes the original Codex binary on
-`PATH`, open Cove, and launch Codex normally:
+Open Cove and launch native Codex normally for hook-based task status:
 
 ```sh
-export PATH="$HOME/bin:$PATH"
 codex
 ```
 
-The shim attempts to establish Cove's local app-server broker. If that public
-transport is unavailable, it reports the fallback and executes native Codex
-instead of blocking the session.
+When you want actionable approvals and questions inside Cove, opt in for that
+session:
+
+```sh
+codex-cove launch [CODEX_ARGS...]
+```
+
+The launcher attempts to establish Cove's local app-server broker. If that
+public transport is unavailable, it reports the fallback and executes native
+Codex instead of blocking the session. Installation never replaces `codex`.
 
 ### VS Code and Cursor
 
@@ -27,7 +32,8 @@ After installing or upgrading Cove, reload editor windows so the bundled
 extension activates. The Command Palette provides:
 
 - **Cove: Create Routed Terminal** — creates a terminal with a launch identifier
-  bound to that exact editor terminal. This is the preferred workflow.
+  bound to that exact editor terminal. Run `codex-cove launch` there when you
+  also want in-Cove approvals and questions.
 - **Cove: Register Active Terminal** — registers an already-open terminal.
 - **Cove: Focus Exact Registered Terminal** — exercises the extension's exact
   terminal focus path.
@@ -94,8 +100,9 @@ its local metadata remains available.
 
 ## Approvals and questions
 
-Cove renders only approval choices advertised by an authoritative broker-routed
-request. Positive approval scopes use two steps: select a scope, then confirm.
+Cove renders only approval choices advertised by an authoritative, explicitly
+broker-routed request. Positive approval scopes use two steps: select a scope,
+then confirm.
 Decline and cancel remain distinct when Codex advertises them.
 
 Question drafts are protected while editing. Navigation that would discard a
@@ -162,7 +169,7 @@ The wave menu provides:
 - **Mute Sounds**
 - **Quit Codex Cove**
 
-Minimal island mode shows a small black status cue without task text. Waiting
+Minimal island mode shows a small themed status cue without task text. Waiting
 approval and input counts remain visible. Restore the full island from the
 menu.
 
@@ -208,13 +215,16 @@ calendar event, or cloud reminder.
 
 ## Themes and accessibility
 
-**Settings → Appearance** includes three style families, five palettes,
-custom-theme import/export, text scaling from 100% to 200%, opacity and blur,
-collapsed width, corner treatment, and expansion animation. Theme documents are
-validated against Cove's versioned schema before import.
+**Settings → Appearance** includes three style families, five palettes, native
+color-wheel controls for every theme color, save/import/export for custom
+themes, text scaling from 100% to 200%, opacity and blur, collapsed width,
+corner treatment, and expansion animation. Theme documents are validated
+against Cove's versioned schema before import.
 
-**Settings → Residents** previews the automatically assigned resident library
-and task states. Residents are not manually assigned to specific tasks.
+**Settings → Residents** selects and previews the Dungeon/D&D, Tech Creatures,
+or Virus/Bacteria set. Cove still assigns an individual resident automatically
+and stably within the selected set. Opening Settings collapses the island so it
+does not compete with the configuration window.
 
 Cove honors Reduce Motion, exposes named controls and status through the
 Accessibility tree, maintains contrast floors, and reflows its queue and
@@ -232,8 +242,8 @@ missing data is labeled instead of estimated.
 
 | Pane | Main controls |
 | --- | --- |
-| Appearance | Text scale, style, palette, custom themes, width, opacity, blur, corners, animation |
-| Residents | State preview and resident library |
+| Appearance | Text scale, style, palette, color-wheel custom themes, width, opacity, blur, corners, animation |
+| Residents | Character set, state preview, and resident library |
 | General | Login launch, shortcuts, Glance mode, usage views, collapse, idle hide, reminder delay |
 | Notifications | Authorization, event matrix, content disclosure, live preview |
 | Sounds | Global playback and mute, event source, volume, preview, imports |

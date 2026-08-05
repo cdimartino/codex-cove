@@ -227,48 +227,18 @@ require_value p1_open_count 0
 require_value final_process_count 1
 
 require_value defect_register_schema privacy_safe_v1
-require_value defect_register_entry_count 6
-require_value supersedes_source_candidate_digest 5b84d88feb8cb25ed1bbdc7f76e90b70636d73ce5c43eb82f00b983536583337
-require_value superseded_candidate_receipt_sha256 527ca369b5a5425c5c8bdc9cfd263d76c57513b976dd57961e54dfdcd4a531b6
+require_value defect_register_entry_count 1
+require_value supersedes_source_candidate_digest c6554230a86206a9e18f7541e81d54f6842d8e083653484d749613620f03512d
+require_value superseded_candidate_receipt_sha256 ff2b18254529e33f66fccfbbca3e60fde371f853dee91d51a8fc13a3f7b27eb5
 require_value superseded_candidate_failure_row_count 1
 require_value superseded_candidate_owner_attempt not-run
 require_value superseded_candidate_owner_scripted_pass not-run
 require_value defect_001_ref P1-001
 require_value defect_001_severity P1
-require_value defect_001_release_row vscode_two_window_focus
+require_value defect_001_release_row component_gate
 require_value defect_001_status resolved-automated
-require_value defect_001_current_candidate_retest_receipt editor_extension_gate
-require_value defect_001_symptom_category exact_editor_window_not_activated
-require_value defect_002_ref P1-002
-require_value defect_002_severity P1
-require_value defect_002_release_row cursor_two_window_focus
-require_value defect_002_status resolved-automated
-require_value defect_002_current_candidate_retest_receipt editor_extension_gate
-require_value defect_002_symptom_category exact_editor_window_not_activated
-require_value defect_003_ref P1-003
-require_value defect_003_severity P1
-require_value defect_003_release_row sleep_wake
-require_value defect_003_status resolved-automated
-require_value defect_003_current_candidate_retest_receipt component_gate
-require_value defect_003_symptom_category locked_privacy_state_not_cleared
-require_value defect_004_ref P1-004
-require_value defect_004_severity P1
-require_value defect_004_release_row interactive_shim
-require_value defect_004_status resolved-automated
-require_value defect_004_current_candidate_retest_receipt component_gate
-require_value defect_004_symptom_category websocket_app_list_frame_limit_disconnect
-require_value defect_005_ref P1-005
-require_value defect_005_severity P1
-require_value defect_005_release_row component_gate
-require_value defect_005_status resolved-automated
-require_value defect_005_current_candidate_retest_receipt component_gate
-require_value defect_005_symptom_category historical_cask_source_version_mismatch
-require_value defect_006_ref P1-006
-require_value defect_006_severity P1
-require_value defect_006_release_row component_gate
-require_value defect_006_status resolved-automated
-require_value defect_006_current_candidate_retest_receipt component_gate
-require_value defect_006_symptom_category websocket_peer_close_test_race
+require_value defect_001_current_candidate_retest_receipt component_gate
+require_value defect_001_symptom_category empty_pid_file_read_race
 
 for timestamp_key in \
     started_at \
@@ -278,11 +248,6 @@ for timestamp_key in \
     bootstrap_gate_at \
     product_build_gate_at \
     defect_001_first_observed_at \
-    defect_002_first_observed_at \
-    defect_003_first_observed_at \
-    defect_004_first_observed_at \
-    defect_005_first_observed_at \
-    defect_006_first_observed_at \
     defect_register_reviewed_at \
     receipt_binding_verify_at \
     candidate_verify_final_at
@@ -291,7 +256,7 @@ do
 done
 
 require_recorded defect_register_reviewed_at
-require_value source_change_reason websocket_test_close_race_fix
+require_value source_change_reason atomic_pid_fixture_write
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then

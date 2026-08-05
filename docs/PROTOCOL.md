@@ -89,9 +89,9 @@ or its child app-server indefinitely.
 
 The helper retains a raw JSON Lines path for protocol fixtures and compatibility
 tests; that path applies the same inbound line cap before forwarding.
-Production shim-routed Codex uses WebSocket-over-Unix. A published
+Production `codex-cove launch` sessions use WebSocket-over-Unix. A published
 broker that is never claimed expires after a bounded five-minute window, while
-the shim itself uses its much shorter configured startup deadline before
+the launcher itself uses its much shorter configured startup deadline before
 falling back to native Codex.
 
 Each spawned app-server owns a new process group. Client input EOF, output
@@ -104,7 +104,7 @@ descendants to the system process.
 
 ## Broker decisions
 
-Every shim-routed CLI launch has a private decision socket. A client answers a
+Every explicitly broker-routed CLI launch has a private decision socket. A client answers a
 server request with one JSON line:
 
 ```json

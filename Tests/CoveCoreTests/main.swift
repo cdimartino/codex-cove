@@ -487,6 +487,7 @@ struct CoveCoreSmokeTests {
     static func testQuietSettingsRoundTrip() throws {
         let settings = CoveSettings(
             textScale: 1.65,
+            residentSet: .virusAndBacteria,
             quietHours: .init(
                 enabled: true,
                 startMinute: 23 * 60 + 15,
@@ -511,6 +512,7 @@ struct CoveCoreSmokeTests {
             from: JSONEncoder().encode(settings)
         )
         precondition(decoded == settings)
+        precondition(decoded.residentSet == .virusAndBacteria)
         precondition(decoded.textScale == 1.65)
         precondition(decoded.quietHours.startMinute == 23 * 60 + 15)
         precondition(decoded.silencedProjectRules == ["dashboard", "Codex Cove"])
@@ -1510,10 +1512,24 @@ struct CoveCoreSmokeTests {
         let archetypes = CovePixelCharacterArchetype.allCases
         precondition(archetypes.count == 16)
         precondition(Set(archetypes.map(\.rawValue)).count == archetypes.count)
-        let assignment = CovePixelCharacter.assigned(to: "stable-thread-id")
-        precondition(
-            assignment == CovePixelCharacter.assigned(to: "stable-thread-id")
-        )
+        precondition(CoveResidentSet.allCases.count == 3)
+        let residentSetArchetypes = CoveResidentSet.allCases.flatMap(\.archetypes)
+        precondition(Set(residentSetArchetypes) == Set(archetypes))
+        precondition(residentSetArchetypes.count == archetypes.count)
+        for set in CoveResidentSet.allCases {
+            precondition(!set.archetypes.isEmpty)
+            let assignment = CovePixelCharacter.assigned(
+                to: "stable-thread-id",
+                set: set
+            )
+            precondition(
+                assignment == CovePixelCharacter.assigned(
+                    to: "stable-thread-id",
+                    set: set
+                )
+            )
+            precondition(set.archetypes.contains(assignment.archetype))
+        }
 
         let silhouetteSignatures = Set(archetypes.map { archetype in
             CovePixelCharacter(archetype: archetype)
@@ -1929,8 +1945,10 @@ struct CoveCoreSmokeTests {
 
         var state = CoveState()
         CoveReducer.reduce(&state, .setMinimalIslandMode(true))
+        CoveReducer.reduce(&state, .setResidentSet(.techCreatures))
         CoveReducer.reduce(&state, .setExpanded(true))
         precondition(state.settings.minimalIslandMode)
+        precondition(state.settings.residentSet == .techCreatures)
         precondition(!state.session.isExpanded)
         CoveReducer.reduce(&state, .setShowUsage(false))
         CoveReducer.reduce(&state, .setShowProfileTokenUsage(true))
@@ -1993,6 +2011,7 @@ struct CoveCoreSmokeTests {
         precondition(settings.showUsage)
         precondition(!settings.showProfileTokenUsage)
         precondition(!settings.showTokenMetrics)
+        precondition(settings.residentSet == .dungeonAndDragons)
     }
 
     static func testDesktopThreadHydrationParsing() throws {

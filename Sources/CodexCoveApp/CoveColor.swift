@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension Color {
@@ -19,5 +20,18 @@ extension Color {
         }
 
         self.init(.sRGB, red: r, green: g, blue: b, opacity: opacity)
+    }
+
+    var hex: String {
+        let color = NSColor(self).usingColorSpace(.sRGB) ?? .white
+        func byte(_ value: CGFloat) -> Int {
+            Int((min(1, max(0, value)) * 255).rounded())
+        }
+        return String(
+            format: "#%02X%02X%02X",
+            byte(color.redComponent),
+            byte(color.greenComponent),
+            byte(color.blueComponent)
+        )
     }
 }

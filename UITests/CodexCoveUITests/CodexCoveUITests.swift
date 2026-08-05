@@ -64,6 +64,13 @@ final class CodexCoveUITests: XCTestCase {
     func testCollapsedIslandIsAnAccessibleExpandButton() {
         let app = launchFixture("collapsed-cue")
         let expand = app.buttons["cove.overlay.expand"].firstMatch
+        let collapse = app.buttons["cove.overlay.collapse"].firstMatch
+
+        // Launching under XCUITest can place the pointer over the island and
+        // legitimately trigger its hover expansion. Normalize before checking AX.
+        if collapse.waitForExistence(timeout: 2) {
+            collapse.click()
+        }
 
         XCTAssertTrue(
             expand.waitForExistence(timeout: 5),
@@ -759,16 +766,18 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
-    func testInstalledSurfaceAppliesThemeColorAndOpacity() {
+    func testInstalledSurfaceAppliesThemeColorAndOpacity() throws {
         let app = launchFixture("settings-appearance")
         let settingsWindow = app.windows["Codex Cove Settings"]
         XCTAssertTrue(settingsWindow.waitForExistence(timeout: 5))
 
         let collapse = element("cove.overlay.collapse", in: app)
-        XCTAssertTrue(collapse.waitForExistence(timeout: 3))
-        collapse.click()
         let expand = element("cove.overlay.expand", in: app)
-        XCTAssertTrue(expand.waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            expand.waitForExistence(timeout: 3),
+            "Opening Settings must automatically collapse Cove"
+        )
+        XCTAssertFalse(collapse.exists)
 
         let baseline = sampledSurfaceColor(from: expand.screenshot())
 
@@ -776,12 +785,71 @@ final class CodexCoveUITests: XCTestCase {
         revealAndClick(palette, in: app)
         let terminalGreen = app.menuItems["Terminal Green"]
         XCTAssertTrue(terminalGreen.waitForExistence(timeout: 2))
-        terminalGreen.click()
+        app.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.stringValue(of: palette) == "Terminal Green"
+            }
+        )
         let themed = sampledSurfaceColor(from: expand.screenshot())
         XCTAssertGreaterThan(
             colorDistance(baseline, themed),
             0.025,
             "The installed collapsed surface must use the selected theme color"
+        )
+
+        let backgroundColor = element(
+            "settings.appearance.color.background",
+            in: app
+        )
+        revealAndClick(backgroundColor, in: app)
+        let colorsPanel = app.windows["Colors"]
+        XCTAssertTrue(
+            colorsPanel.waitForExistence(timeout: 2),
+            "Theme colors must open the native color wheel"
+        )
+        colorsPanel.buttons[XCUIIdentifierCloseWindow].click()
+
+        let themeName = element(
+            "settings.appearance.custom-theme-name",
+            in: app
+        )
+        revealAndClick(themeName, in: app)
+        replaceText(
+            in: themeName,
+            with: "UI Saved Theme",
+            commitsWithReturn: false,
+            app: app
+        )
+        let saveTheme = element(
+            "settings.appearance.save-custom-theme",
+            in: app
+        )
+        revealAndClick(saveTheme, in: app)
+        let dismissThemeAlert = element(
+            "settings.theme-alert.dismiss",
+            in: app
+        )
+        XCTAssertTrue(dismissThemeAlert.waitForExistence(timeout: 2))
+        dismissThemeAlert.click()
+        XCTAssertEqual(
+            stringValue(
+                of: element("settings.appearance.custom-theme", in: app)
+            ),
+            "UI Saved Theme"
+        )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: stateDirectory.appendingPathComponent(
+                    "Themes",
+                    isDirectory: true
+                ),
+                includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "json" }.count,
+            1,
+            "Saving in Settings must persist one custom theme document"
         )
 
         let opacityField = element(
@@ -807,34 +875,12 @@ final class CodexCoveUITests: XCTestCase {
             "The installed collapsed surface must use its configured opacity"
         )
 
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(waitUntil(timeout: 2) { !settingsWindow.exists })
         expand.click()
-        XCTAssertTrue(collapse.waitForExistence(timeout: 3))
-        let expandedBaseline = sampledSurfaceColor(
-            from: element("cove.overlay", in: app).screenshot()
-        )
-        let expandedOpacityField = element(
-            "settings.appearance.expanded-opacity.field",
-            in: app
-        )
-        revealAndClick(expandedOpacityField, in: app)
-        replaceText(
-            in: expandedOpacityField,
-            with: "35",
-            commitsWithReturn: true,
-            app: app
-        )
         XCTAssertTrue(
-            waitUntil(timeout: 2) {
-                self.stringValue(of: expandedOpacityField) == "35"
-            }
-        )
-        let expandedTranslucent = sampledSurfaceColor(
-            from: element("cove.overlay", in: app).screenshot()
-        )
-        XCTAssertGreaterThan(
-            colorDistance(expandedBaseline, expandedTranslucent),
-            0.012,
-            "The installed expanded surface must use its configured opacity"
+            collapse.waitForExistence(timeout: 3),
+            "Cove may expand again after Settings closes"
         )
     }
 
@@ -1328,7 +1374,20 @@ final class CodexCoveUITests: XCTestCase {
         XCTAssertTrue(description.waitForExistence(timeout: 5))
         XCTAssertEqual(
             displayText(of: description),
-            "Cove automatically assigns a visual companion to each task. This gallery previews the available residents; it is not a character picker."
+            "Cove automatically assigns each task a resident from the selected set. The gallery previews that set; individual residents are not selected per task."
+        )
+        let characterSet = element("settings.residents.character-set", in: app)
+        revealAndClick(characterSet, in: app)
+        for set in ["Dungeon / D&D", "Tech Creatures", "Virus / Bacteria"] {
+            XCTAssertTrue(app.menuItems[set].waitForExistence(timeout: 2))
+        }
+        app.menuItems["Virus / Bacteria"].click()
+        XCTAssertTrue(
+            element("settings.residents.preview.shellRunner", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        XCTAssertFalse(
+            element("settings.residents.preview.beaconKeeper", in: app).exists
         )
         XCTAssertEqual(
             app.buttons.matching(
@@ -1397,15 +1456,12 @@ final class CodexCoveUITests: XCTestCase {
     ) {
         if !element.exists || !element.isHittable {
             let settingsWindow = app.windows["Codex Cove Settings"]
-            let detailScrollViews = settingsWindow.scrollViews
-                .allElementsBoundByIndex
-                .filter { $0.frame.width > 300 }
-            if let scrollView = detailScrollViews.last {
-                for _ in 0 ..< 20 {
-                    if element.exists && element.isHittable { break }
-                    guard scrollView.exists else { break }
-                    scrollView.scroll(byDeltaX: 0, deltaY: -260)
-                }
+            let detail = settingsWindow.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.78, dy: 0.65)
+            )
+            for _ in 0 ..< 20 {
+                if element.exists && element.isHittable { break }
+                detail.scroll(byDeltaX: 0, deltaY: -260)
             }
         }
         XCTAssertTrue(

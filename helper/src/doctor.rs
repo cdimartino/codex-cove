@@ -87,11 +87,7 @@ pub fn run(config: &Config, real_codex: Option<&Path>) -> DoctorReport {
                 checks.push(manifest_check);
                 if manifest_valid {
                     checks.push(managed_binary_integrity_check(&layout, &manifest));
-                    checks.push(owned_link_check(
-                        "codexShim",
-                        &layout.codex_shim,
-                        &layout.managed_binary,
-                    ));
+                    checks.push(codex_shim_check(&layout, &manifest));
                     checks.push(owned_link_check(
                         "managementLink",
                         &layout.management_link,
@@ -272,7 +268,7 @@ fn install_manifest_check(layout: &InstallLayout, manifest: &InstallManifest) ->
         },
         detail: if problems.is_empty() {
             format!(
-                "schema 1, private current-user file, and owned paths verified at {}",
+                "schema 1, private current-user file, and canonical paths verified at {}",
                 layout.manifest_path.display()
             )
         } else {
@@ -866,6 +862,58 @@ fn owned_link_check(name: &str, path: &Path, target: &Path) -> DoctorCheck {
     }
 }
 
+fn codex_shim_check(layout: &InstallLayout, manifest: &InstallManifest) -> DoctorCheck {
+    if manifest.manages_codex_shim {
+        return owned_link_check("codexShim", &layout.codex_shim, &layout.managed_binary);
+    }
+    match fs::symlink_metadata(&layout.codex_shim) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => DoctorCheck {
+            name: "codexShim".to_owned(),
+            status: CheckStatus::Pass,
+            detail: "unmanaged; native Codex remains unmodified".to_owned(),
+        },
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            match fs::read_link(&layout.codex_shim) {
+                Ok(_)
+                    if fs::canonicalize(&layout.codex_shim)
+                        .ok()
+                        .zip(fs::canonicalize(&layout.managed_binary).ok())
+                        .is_some_and(|(shim, helper)| shim == helper) =>
+                {
+                    DoctorCheck {
+                        name: "codexShim".to_owned(),
+                        status: CheckStatus::Fail,
+                        detail: format!(
+                            "legacy Cove interception remains at {}",
+                            layout.codex_shim.display()
+                        ),
+                    }
+                }
+                Ok(_) => DoctorCheck {
+                    name: "codexShim".to_owned(),
+                    status: CheckStatus::Pass,
+                    detail: "unmanaged; preserved existing Codex path".to_owned(),
+                },
+                Err(error) => DoctorCheck {
+                    name: "codexShim".to_owned(),
+                    status: CheckStatus::Fail,
+                    detail: error.to_string(),
+                },
+            }
+        }
+        Ok(_) => DoctorCheck {
+            name: "codexShim".to_owned(),
+            status: CheckStatus::Pass,
+            detail: "unmanaged; preserved existing Codex path".to_owned(),
+        },
+        Err(error) => DoctorCheck {
+            name: "codexShim".to_owned(),
+            status: CheckStatus::Fail,
+            detail: error.to_string(),
+        },
+    }
+}
+
 fn hook_check(path: &Path, command: &str) -> DoctorCheck {
     let parsed = fs::read(path)
         .ok()
@@ -1199,6 +1247,7 @@ mod tests {
             binary_sha256: sha256_file(&layout.managed_binary).unwrap(),
             hook_command: expected_hook_command(&layout.managed_binary),
             codex_shim: layout.codex_shim.clone(),
+            manages_codex_shim: false,
             management_link: layout.management_link.clone(),
             editor_extension_id: None,
             editor_extension_targets: Some(Vec::new()),
@@ -1229,6 +1278,64 @@ mod tests {
         assert_eq!(
             install_manifest_check(&layout, &wrong_path).status,
             CheckStatus::Fail
+        );
+    }
+
+    #[test]
+    fn codex_shim_check_accepts_native_state_and_flags_owned_legacy_interception() {
+        let temp = tempdir().unwrap();
+        let layout = InstallLayout::for_home(temp.path());
+        fs::create_dir_all(layout.managed_binary.parent().unwrap()).unwrap();
+        fs::write(&layout.managed_binary, b"managed helper").unwrap();
+        let mut manifest = InstallManifest {
+            schema_version: 1,
+            installed_at: "2026-08-01T00:00:00Z".to_owned(),
+            app_path: None,
+            app_bundle_sha256: None,
+            managed_binary: layout.managed_binary.clone(),
+            binary_sha256: sha256_file(&layout.managed_binary).unwrap(),
+            hook_command: expected_hook_command(&layout.managed_binary),
+            codex_shim: layout.codex_shim.clone(),
+            manages_codex_shim: false,
+            management_link: layout.management_link.clone(),
+            editor_extension_id: None,
+            editor_extension_targets: Some(Vec::new()),
+        };
+
+        assert_eq!(
+            codex_shim_check(&layout, &manifest).status,
+            CheckStatus::Pass
+        );
+
+        fs::create_dir_all(layout.codex_shim.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&layout.managed_binary, &layout.codex_shim).unwrap();
+        let leftover = codex_shim_check(&layout, &manifest);
+        assert_eq!(leftover.status, CheckStatus::Fail);
+        assert!(leftover.detail.contains("legacy Cove interception remains"));
+
+        manifest.manages_codex_shim = true;
+        assert_eq!(
+            codex_shim_check(&layout, &manifest).status,
+            CheckStatus::Pass
+        );
+
+        manifest.manages_codex_shim = false;
+        fs::remove_file(&layout.codex_shim).unwrap();
+        let chained_target = layout.codex_shim.with_file_name("legacy-cove");
+        std::os::unix::fs::symlink(&layout.managed_binary, &chained_target).unwrap();
+        std::os::unix::fs::symlink("legacy-cove", &layout.codex_shim).unwrap();
+        assert_eq!(
+            codex_shim_check(&layout, &manifest).status,
+            CheckStatus::Fail
+        );
+
+        fs::remove_file(&layout.codex_shim).unwrap();
+        fs::remove_file(chained_target).unwrap();
+        let user_target = temp.path().join("user-codex");
+        std::os::unix::fs::symlink(&user_target, &layout.codex_shim).unwrap();
+        assert_eq!(
+            codex_shim_check(&layout, &manifest).status,
+            CheckStatus::Pass
         );
     }
 

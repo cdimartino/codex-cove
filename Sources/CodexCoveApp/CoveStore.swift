@@ -49,6 +49,7 @@ final class CoveStore: ObservableObject {
     private var isOverlayHovered = false
     private var isOverlayFocused = false
     private var isDirectInteractionActive = false
+    private var isSettingsPresented = false
 
     init(
         storage: CoveStateStorage,
@@ -137,6 +138,9 @@ final class CoveStore: ObservableObject {
     }
 
     func dispatch(_ action: CoveAction) {
+        if isSettingsPresented, actionRequestsExpansion(action) {
+            return
+        }
         if actionRequestsCollapse(action),
            let requestKey = focusedDirtyRequestKey {
             pendingDirtyExitConfirmation = .init(
@@ -176,6 +180,20 @@ final class CoveStore: ObservableObject {
     func showQueue() {
         pendingDirtyExitConfirmation = nil
         applyOverlayPresentation(.queue)
+    }
+
+    func collapseForSettings() {
+        isSettingsPresented = true
+        cancelInteractionTimers()
+        isOverlayHovered = false
+        isOverlayFocused = false
+        isDirectInteractionActive = false
+        pendingDirtyExitConfirmation = nil
+        applyOverlayPresentation(.collapsed)
+    }
+
+    func endSettingsPresentation() {
+        isSettingsPresented = false
     }
 
     /// Test-host-only observation of frames actually received by the injected
@@ -276,6 +294,10 @@ final class CoveStore: ObservableObject {
     }
 
     func setOverlayHovered(_ hovered: Bool) {
+        guard !isSettingsPresented else {
+            isOverlayHovered = false
+            return
+        }
         isOverlayHovered = hovered
         hoverExpansionTask?.cancel()
         hoverExpansionTask = nil
@@ -303,6 +325,10 @@ final class CoveStore: ObservableObject {
     }
 
     func setOverlayFocused(_ focused: Bool) {
+        guard !isSettingsPresented else {
+            isOverlayFocused = false
+            return
+        }
         isOverlayFocused = focused
         if focused {
             isDirectInteractionActive = false
@@ -317,7 +343,9 @@ final class CoveStore: ObservableObject {
     }
 
     func beginOverlayInteraction(releaseAfterMilliseconds: UInt64 = 750) {
-        guard !state.settings.minimalIslandMode else { return }
+        guard !state.settings.minimalIslandMode,
+              !isSettingsPresented
+        else { return }
         isDirectInteractionActive = true
         autoCollapseTask?.cancel()
         autoCollapseTask = nil
@@ -387,8 +415,24 @@ final class CoveStore: ObservableObject {
         return theme
     }
 
+    @discardableResult
+    func saveCustomTheme(
+        _ draft: CoveThemePalette,
+        named rawName: String
+    ) throws -> CoveThemePalette {
+        var theme = configuredTheme(draft)
+        theme.name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if theme.isBuiltIn {
+            theme.identifier = "custom.\(UUID().uuidString.lowercased())"
+        }
+        let saved = try themeStorage.importTheme(data: theme.document.encoded())
+        upsertCustomTheme(saved)
+        dispatch(.selectCustomTheme(saved))
+        return saved
+    }
+
     func exportTheme(_ theme: CoveThemePalette, to url: URL) throws {
-        try themeStorage.exportTheme(theme, to: url)
+        try themeStorage.exportTheme(configuredTheme(theme), to: url)
     }
 
     func removeCustomTheme(_ theme: CoveThemePalette) throws {
@@ -428,6 +472,16 @@ final class CoveStore: ObservableObject {
             return $0.name.localizedCaseInsensitiveCompare($1.name)
                 == .orderedAscending
         }
+    }
+
+    private func configuredTheme(
+        _ theme: CoveThemePalette
+    ) -> CoveThemePalette {
+        var theme = theme
+        theme.collapsedOpacity = state.settings.collapsedOpacity
+        theme.expandedOpacity = state.settings.expandedOpacity
+        theme.blurStyle = state.settings.blurStyle
+        return theme
     }
 
     func restore(metadata: [CoveSessionMetadata]) {
@@ -1199,9 +1253,23 @@ final class CoveStore: ObservableObject {
         }
     }
 
+    private func actionRequestsExpansion(_ action: CoveAction) -> Bool {
+        switch action {
+        case let .setExpanded(expanded):
+            expanded
+        case .toggleExpanded:
+            !state.session.isExpanded
+        default:
+            false
+        }
+    }
+
     private func applyOverlayPresentation(
         _ presentation: CoveOverlayPresentation
     ) {
+        let presentation = isSettingsPresented
+            ? CoveOverlayPresentation.collapsed
+            : presentation
         overlayPresentation = presentation
         let shouldExpand = presentation.isExpanded
         if state.session.isExpanded != shouldExpand {

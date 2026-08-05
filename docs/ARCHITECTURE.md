@@ -8,10 +8,10 @@ coordination is local except the explicit SSH relay to a user-selected host.
 
 ```mermaid
 flowchart LR
-    CLI["Codex CLI"] --> SHIM["Rust shim"]
-    SHIM --> BROKER["Local app-server broker"]
+    CLI["Native Codex CLI"] --> HOOK["Codex hooks"]
+    LAUNCH["codex-cove launch"] --> CLI
+    LAUNCH --> BROKER["Local app-server broker"]
     BROKER <--> AS["Public Codex app-server"]
-    CLI --> HOOK["Codex hooks"]
     HOOK --> HELPER["Rust hook bridge"]
     BROKER --> EVENT["Private event socket"]
     HELPER --> EVENT
@@ -75,12 +75,13 @@ session IDs from different origins are not merged.
 
 ### `helper`
 
-The Rust executable has two public identities:
+The Rust executable has two public roles:
 
-- invoked as `codex`, it is a shim that locates and `exec`s the original Codex
-  binary after attempting Cove routing; and
-- invoked as `codex-cove`, it manages installation, diagnostics, privacy,
-  themes, remote hosts, hook delivery, and relay processes.
+- `codex-cove launch [CODEX_ARGS...]` explicitly locates and launches native
+  Codex through Cove's broker; and
+- other `codex-cove` commands manage installation, diagnostics, privacy,
+  themes, remote hosts, hook delivery, and relay processes. Installation does
+  not replace the native `codex` command.
 
 For a routed local CLI launch, the helper creates an opaque launch identifier,
 a private broker socket, and a private decision socket. The production broker
@@ -126,12 +127,12 @@ TypeScript side and Swift/Rust consumers agree on the same contracts.
 
 ## Local CLI event flow
 
-1. A shell resolves `codex` to Cove's managed link.
-2. The shim validates configuration and locates a different, executable native
-   Codex binary.
+1. A shell explicitly invokes `codex-cove launch` for a broker-routed session.
+2. The launcher validates configuration and locates an executable native Codex
+   binary.
 3. Commands that must remain direct, including explicit remote invocation, are
    immediately `exec`ed without Cove routing.
-4. For eligible interactive work, the shim asks Codex to bootstrap its durable
+4. For eligible interactive work, the launcher asks Codex to bootstrap its durable
    app-server daemon, probes the public proxy, and falls back to direct stdio
    only when advertised and responsive.
 5. The broker starts on a private opaque Unix socket and registers launch
@@ -141,9 +142,10 @@ TypeScript side and Swift/Rust consumers agree on the same contracts.
 7. A confirmed decision is written once to the launch's validated decision
    socket and correlated by launch and request ID.
 
-If configuration, broker startup, or both public app-server modes fail, the shim
-prints a bounded diagnostic and `exec`s native Codex. Cove availability must not
-make the terminal unusable.
+Normal `codex` launches skip these broker steps and emit only installed hook
+events. If configuration, broker startup, or both public app-server modes fail,
+the launcher prints a bounded diagnostic and `exec`s native Codex. Cove
+availability must not make the terminal unusable.
 
 ## Hook and Desktop flow
 
@@ -166,8 +168,8 @@ restart, or manage its daemon.
 Remote support starts only for aliases explicitly saved through
 `codex-cove remote add`. The local app opens a persistent non-interactive SSH
 relay with strict host-key checking and bounded connection/keepalive behavior.
-The deployed helper runs the same shim, hook, broker, and relay logic on macOS
-or Linux.
+The deployed helper runs the same explicit launcher, hook, broker, and relay
+logic on macOS or Linux.
 
 Events use the same JSON envelope with a `remoteCli` source and opaque host ID.
 Remote control frames are length-prefixed and correlated by a unique control

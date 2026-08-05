@@ -788,7 +788,8 @@ private struct CoveQueueTaskRow: View {
                 HStack(alignment: .top, spacing: 9) {
                     CovePixelCharacterRowAvatar(
                         character: CovePixelCharacter.assigned(
-                            to: item.sessionId
+                            to: item.sessionId,
+                            set: store.state.settings.residentSet
                         ),
                         status: item.status,
                         theme: theme,

@@ -17,7 +17,7 @@ struct CoveOverlayRootView: View {
         let presentation = store.overlayPresentation
         ZStack {
             if state.settings.minimalIslandMode {
-                Color.black.opacity(0.97)
+                Color(hex: state.theme.backgroundHex).opacity(0.97)
                 CoveMinimalIslandView(state: state)
             } else {
                 CoveBackdropView(
@@ -393,7 +393,10 @@ struct CoveCollapsedBubbleView: View {
 
     private func cue(_ descriptor: CueDescriptor, size: CGFloat) -> some View {
         CovePixelCharacterBubble(
-            character: CovePixelCharacter.assigned(to: descriptor.characterIdentity),
+            character: CovePixelCharacter.assigned(
+                to: descriptor.characterIdentity,
+                set: state.settings.residentSet
+            ),
             status: descriptor.status,
             theme: state.theme,
             reduceMotion: reduceMotion,
@@ -924,7 +927,8 @@ struct CoveSessionListView: View {
             HStack(alignment: .top, spacing: 9) {
                 CovePixelCharacterRowAvatar(
                     character: CovePixelCharacter.assigned(
-                        to: snapshot.sessionId ?? snapshot.snapshotId
+                        to: snapshot.sessionId ?? snapshot.snapshotId,
+                        set: store.state.settings.residentSet
                     ),
                     status: snapshot.status,
                     theme: theme,

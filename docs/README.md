@@ -27,6 +27,9 @@ Start with the guide that matches what you are trying to do.
   contents and compatibility notes for the `v0.2.0` release contract.
 - [Codex Cove 0.3.0 release notes](releases/v0.3.0.md) — queue organization,
   bulk archiving, direct task opening, and installed theme rendering fixes.
+- [Codex Cove 0.4.0 release notes](releases/v0.4.0.md) — custom theme
+  authoring, resident sets, Settings collapse, and native Codex-by-default
+  installation.
 
 ## Version-specific engineering records
 

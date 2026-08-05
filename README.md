@@ -9,7 +9,7 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.3.0`. Check
+> **Release status:** the source tree is currently version `0.4.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
@@ -27,8 +27,9 @@ brew install --cask cdimartino/codex-cove/codex-cove
 ```
 
 The Cask installs `Codex Cove.app` in `~/Applications` and runs its bundled
-helper to apply the same current-user Codex hooks, shim, and editor integration
-as the manual installer. It does not approve hook trust or macOS permissions.
+helper to apply the same current-user Codex hooks, management command, and
+editor integration as the manual installer. It does not approve hook trust or
+macOS permissions, and it does not replace the native `codex` command.
 Codex Cove does not depend on the deprecated `codex-app` Homebrew Cask. If
 Homebrew reports that `codex-cove` is unavailable, do not install a similarly
 named suggestion; update the tap or use the source or verified manual path. See
@@ -44,8 +45,11 @@ named suggestion; update the tap or use the source or verified manual path. See
 - Exact-origin navigation for Terminal, iTerm2, tmux, WezTerm, VS Code, Cursor,
   remote CLI sessions, and Codex Desktop tasks.
 - Native Glass, Retro Terminal, and Minimal OLED styles, five built-in palettes,
-  custom themes, scalable text, configurable geometry, Reduce Motion support,
-  notifications, and per-event sounds.
+  color-wheel custom-theme authoring and JSON import/export, scalable text,
+  configurable geometry, Reduce Motion support, notifications, and per-event
+  sounds.
+- Dungeon/D&D, tech-creature, and virus/bacteria resident sets with stable
+  per-task assignment.
 - Privacy modes, content-level notification controls, quiet hours, project
   silence rules, focused-app quieting, and a menu-only minimal mode.
 - Optional account rate-limit and token-usage views sourced only from public
@@ -63,7 +67,7 @@ musl builds for arm64 and x86_64 Linux.
 
 | Surface | Integration | Additional permission or tool |
 | --- | --- | --- |
-| Codex CLI | Local shim, hooks, app-server broker, approvals and questions | `~/bin` must precede the native Codex binary on `PATH` |
+| Codex CLI | Native hooks by default; explicit `codex-cove launch` for broker-routed approvals and questions | Trust the installed hook; put `~/bin` on `PATH` only for the helper command |
 | Codex Desktop | Read-only public app-server hydration and exact `codex://` task links | Codex Desktop installed |
 | Terminal.app | Exact tab restoration by TTY | Terminal Automation permission |
 | iTerm2 | Exact session restoration by TTY | iTerm Automation permission |
@@ -105,12 +109,12 @@ the corresponding editor CLI is available, and applies current-user Codex
 integration. It stops a running Cove instance before replacement and does not
 relaunch it.
 
-Ensure Cove's shim directory is early on `PATH`, then start Codex normally:
+Start native Codex normally. Use Cove's explicit launcher only when you want
+approvals and questions handled inside Cove:
 
 ```sh
-export PATH="$HOME/bin:$PATH"
-command -v codex
 codex
+"$HOME/bin/codex-cove" launch
 ```
 
 For VS Code or Cursor, run **Cove: Create Routed Terminal** from the Command
@@ -134,8 +138,9 @@ When global shortcuts are enabled and Cove has Accessibility access:
 - `Command-Shift-T` returns to the most recently registered origin.
 
 Approvals use select-then-confirm controls. Cove answers only authoritative
-requests from a shim-routed CLI session. Unsupported or ambiguous requests stay
-in the native Codex client, where Cove offers an **Open in Codex** action.
+requests from an explicitly broker-routed `codex-cove launch` session.
+Unsupported, hook-only, or ambiguous requests stay in the native Codex client,
+where Cove offers an **Open in Codex** action.
 Archiving in Cove hides local metadata only; it never archives or deletes the
 underlying Codex task.
 
@@ -152,7 +157,7 @@ make ui-test    # XCUITest; full Xcode and an unlocked console required
 make run        # uninstalled development app only
 ```
 
-`make run` does not install the shim, hooks, editor extension, login item, or
+`make run` does not install the helper, hooks, editor extension, login item, or
 remote helper. SwiftPM and `scripts/package-app.sh` are authoritative for
 production builds. `CodexCoveUITests.xcodeproj` is the source-tree UI-test host
 and can be regenerated after an intentional project-spec change:
@@ -176,7 +181,7 @@ and checksums all pass. See [Release Process](docs/RELEASES.md).
 | --- | --- |
 | `Sources/CodexCoveApp` | AppKit lifecycle, SwiftUI surfaces, notifications, sounds, exact-origin focus |
 | `Sources/CoveCore` | State reduction, persistence, themes, IPC models, usage aggregation |
-| `helper` | Rust shim, hook, broker, diagnostics, installation, remote relay |
+| `helper` | Rust launcher, hook, broker, diagnostics, installation, remote relay |
 | `extension` | Private VS Code/Cursor extension and exact-terminal focus service |
 | `schemas` | Versioned cross-language IPC contracts |
 | `Tests`, `UITests` | Foundation, cross-language, integration, and XCUITest coverage |

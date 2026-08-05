@@ -47,8 +47,8 @@ trusting every package in the tap. The install command downloads the exact relea
 verifies its pinned SHA-256, places `Codex Cove.app` at
 `~/Applications/Codex Cove.app`, and runs the bundled helper without `sudo` to:
 
-1. install the managed helper and the `~/bin/codex` and `~/bin/codex-cove`
-   links;
+1. install the managed helper and its `~/bin/codex-cove` link while leaving the
+   native `codex` command unmodified;
 2. structurally merge Cove's entries into `~/.codex/hooks.json`; and
 3. install the bundled private extension in VS Code and Cursor when their
    command-line launchers are available.
@@ -111,8 +111,8 @@ The install target:
 1. builds and signs `build/Codex Cove.app`;
 2. stops a currently running Cove instance after validating its identity;
 3. installs the app at `~/Applications/Codex Cove.app`;
-4. installs a managed helper and the `~/bin/codex` and
-   `~/bin/codex-cove` links;
+4. installs a managed helper and its `~/bin/codex-cove` link without replacing
+   the native `codex` command;
 5. merges Cove entries into `~/.codex/hooks.json` without replacing unrelated
    hook groups;
 6. installs the bundled private extension in VS Code and Cursor when their
@@ -122,6 +122,10 @@ The install target:
 An upgrade moves the prior app to a timestamped backup before committing the
 replacement. If integration setup then fails, the installer restores that
 backup and retains the failed package for inspection.
+
+Upgrading from a release that installed `~/bin/codex` removes that link only
+when it is still the exact Cove-owned link to the managed helper. A missing,
+changed, or independently owned `codex` path is preserved.
 
 The default source build uses an ad-hoc signature. To use an existing compatible
 identity, pass its exact keychain name:
@@ -171,10 +175,10 @@ Do not bypass Gatekeeper or remove quarantine attributes solely to make an
 unverified artifact open. An ad-hoc-signed development asset is not equivalent
 to a Developer ID signed and notarized distribution.
 
-## Shell setup and hook trust
+## Helper command and hook trust
 
-The Cove shim participates only when `~/bin/codex` wins command lookup. Add
-this to the appropriate shell startup file if needed:
+Native `codex` remains the default. Add `~/bin` to the appropriate shell startup
+file only if you want to invoke `codex-cove` without its absolute path:
 
 ```sh
 export PATH="$HOME/bin:$PATH"
@@ -188,9 +192,11 @@ command -v codex-cove
 codex-cove doctor
 ```
 
-Both commands should resolve under `~/bin`. The shim discovers and executes the
-original Codex binary; `CODEX_COVE_BYPASS=1 codex` is the emergency route around
-Cove when troubleshooting.
+`codex-cove` should resolve under `~/bin`; `codex` should continue to resolve to
+the independently installed native CLI. Native launches receive passive hook
+status. Use `codex-cove launch [CODEX_ARGS...]` only when you explicitly want
+Cove's app-server route and actionable in-Cove approvals or questions. Running
+`codex` directly is the fallback if that route has a problem.
 
 Codex owns hook trust. After installation, start Codex and use its `/hooks`
 flow to review and trust the Cove hook through the normal Codex UI. Cove does
