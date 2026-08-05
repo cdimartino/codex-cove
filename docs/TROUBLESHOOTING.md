@@ -251,6 +251,19 @@ For common failures:
   investigating. Homebrew coordinates its app artifact with the helper's
   package-manager-only `--keep-app --keep-settings` cleanup. Running the ordinary
   helper uninstall first can remove the app before Homebrew finishes.
+- **A legacy upgrade says the embedded uninstall script does not exist.** Do
+  not use `--zap`; it would remove settings. Clear only the broken 0.2.0 or
+  0.3.0 Cask receipt, then install the current recipe:
+
+  ```sh
+  brew uninstall --cask --force cdimartino/codex-cove/codex-cove
+  brew install --cask cdimartino/codex-cove/codex-cove
+  "$HOME/bin/codex-cove" doctor --json
+  ```
+
+  The forced uninstall is only for this exact missing-script receipt failure;
+  the following normal install repairs Cove-owned integration and retains
+  settings.
 
 After resolving an ownership problem, repair only the published version with:
 

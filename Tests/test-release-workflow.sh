@@ -97,6 +97,8 @@ require_text "$verify_cask" 'brew style --cask' \
     "read-only Homebrew job must run style"
 require_text "$verify_cask" 'brew audit --cask' \
     "read-only Homebrew job must run audit"
+require_text "$verify_cask" 'HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}' \
+    "Homebrew audit must authenticate GitHub API requests"
 require_text "$verify_cask" 'name: validated-homebrew-cask' \
     "read-only Homebrew job must upload the validated Cask handoff"
 require_text "$verify_cask" \

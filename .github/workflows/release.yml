@@ -678,6 +678,7 @@ jobs:
       - name: Audit the exact released cask artifact
         shell: bash
         env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.preflight.outputs.release-tag }}
         run: |
           set -euo pipefail
