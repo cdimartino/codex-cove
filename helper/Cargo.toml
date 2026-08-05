@@ -11,7 +11,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 libc = "0.2"
-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 tempfile = "3.20"
 
 [profile.release]
