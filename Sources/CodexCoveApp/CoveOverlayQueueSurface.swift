@@ -76,7 +76,10 @@ struct CoveQueueSurfaceView: View {
                     .padding(.vertical, 3)
                     .background(
                         Capsule(style: .continuous)
-                            .fill(Color(hex: state.theme.surfaceHex))
+                            .fill(
+                                Color(hex: state.theme.surfaceHex)
+                                    .opacity(state.theme.expandedOpacity)
+                            )
                     )
                     .overlay {
                         Capsule(style: .continuous)
@@ -164,7 +167,10 @@ struct CoveQueueSurfaceView: View {
             .padding(10)
             .background(
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color(hex: state.theme.surfaceHex))
+                    .fill(
+                        Color(hex: state.theme.surfaceHex)
+                            .opacity(state.theme.expandedOpacity)
+                    )
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -185,7 +191,10 @@ struct CoveQueueSurfaceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color(hex: state.theme.surfaceHex))
+                        .fill(
+                            Color(hex: state.theme.surfaceHex)
+                                .opacity(state.theme.expandedOpacity)
+                        )
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -471,7 +480,10 @@ struct CoveQueueSurfaceView: View {
                                 cornerRadius: 7,
                                 style: .continuous
                             )
-                            .fill(Color(hex: state.theme.surfaceHex))
+                            .fill(
+                                Color(hex: state.theme.surfaceHex)
+                                    .opacity(state.theme.expandedOpacity)
+                            )
                         )
                     }
                 }
@@ -535,7 +547,10 @@ struct CoveQueueSurfaceView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color(hex: state.theme.surfaceHex))
+                .fill(
+                    Color(hex: state.theme.surfaceHex)
+                        .opacity(state.theme.expandedOpacity)
+                )
         )
         .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -596,7 +611,10 @@ struct CoveQueueSurfaceView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color(hex: state.theme.surfaceHex))
+                .fill(
+                    Color(hex: state.theme.surfaceHex)
+                        .opacity(state.theme.expandedOpacity)
+                )
         )
         .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -1042,11 +1060,12 @@ private struct CoveQueueSelectionButtonStyle: ButtonStyle {
         isPressed: Bool
     ) -> Color {
         if !isEnabled {
-            return Color(hex: theme.surfaceHex).opacity(0.45)
+            return Color(hex: theme.surfaceHex)
+                .opacity(theme.expandedOpacity * 0.45)
         }
         if isPressed { return Color(hex: theme.backgroundHex) }
         if isHovering { return Color(hex: theme.accentHex).opacity(0.16) }
-        return Color(hex: theme.surfaceHex)
+        return Color(hex: theme.surfaceHex).opacity(theme.expandedOpacity)
     }
 
     private var borderColor: Color {
@@ -1077,6 +1096,9 @@ private enum CoveQueueCopy {
             case let .planSnapshot(plan):
                 return plan.title
             }
+        }
+        if let output = preview(item.snapshot?.latestOutput) {
+            return output
         }
         return item.snapshot?.title ?? "Codex task"
     }
@@ -1111,6 +1133,14 @@ private enum CoveQueueCopy {
         return metadata.isEmpty ? item.status.displayName : metadata.joined(
             separator: " · "
         )
+    }
+
+    private static func preview(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        return String(normalized.prefix(240))
     }
 }
 
@@ -1161,7 +1191,10 @@ private struct CoveQueueUsageView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color(hex: theme.surfaceHex))
+                .fill(
+                    Color(hex: theme.surfaceHex)
+                        .opacity(theme.expandedOpacity)
+                )
         )
         .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -1315,7 +1348,10 @@ struct CoveDirtyExitConfirmationView: View {
             .frame(maxWidth: 360)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(hex: theme.surfaceHex))
+                    .fill(
+                        Color(hex: theme.surfaceHex)
+                            .opacity(theme.expandedOpacity)
+                    )
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -2235,6 +2271,11 @@ private struct CoveFocusedSessionView: View {
                     .coveOverlayFont(theme, .body)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
+                if let output = snapshot.latestOutput, !output.isEmpty {
+                    Text(output)
+                        .coveOverlayFont(theme, .body)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let detail = snapshot.detail, !detail.isEmpty {
                     Text(detail)
                         .coveOverlayFont(theme, .body)
@@ -2483,6 +2524,7 @@ private struct CoveOpaqueChoiceButtonStyle: ButtonStyle {
                         configuration.isPressed
                             ? Color(hex: theme.backgroundHex)
                             : Color(hex: theme.surfaceHex)
+                                .opacity(theme.expandedOpacity)
                     )
             )
             .overlay {
@@ -2574,7 +2616,10 @@ private extension View {
             .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(hex: theme.surfaceHex))
+                    .fill(
+                        Color(hex: theme.surfaceHex)
+                            .opacity(theme.expandedOpacity)
+                    )
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)

@@ -388,11 +388,31 @@ struct SettingsView: View {
             TextField("Theme name", text: $customThemeDraft.name)
                 .accessibilityIdentifier("settings.appearance.custom-theme-name")
 
-            themeColorPicker("Background", \.backgroundHex, id: "background")
+            Picker("Surface fill", selection: surfaceFillBinding) {
+                ForEach(CoveThemeSurfaceFill.allCases, id: \.self) { fill in
+                    Text(fill.rawValue.capitalized).tag(fill)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("settings.appearance.surface-fill")
+
+            themeColorPicker(
+                customThemeDraft.surfaceFill == .solid
+                    ? "Solid color"
+                    : "Gradient start",
+                \.backgroundHex,
+                id: "background"
+            )
+            themeColorPicker(
+                customThemeDraft.surfaceFill == .gradient
+                    ? "Gradient end / Accent"
+                    : "Accent",
+                \.accentHex,
+                id: "accent"
+            )
             themeColorPicker("Surface", \.surfaceHex, id: "surface")
             themeColorPicker("Primary text", \.foregroundHex, id: "primary-text")
             themeColorPicker("Muted text", \.mutedTextHex, id: "muted-text")
-            themeColorPicker("Accent", \.accentHex, id: "accent")
             themeColorPicker("Working", \.workingHex, id: "working")
             themeColorPicker(
                 "Waiting for approval",
@@ -432,6 +452,7 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.appearance.save-custom-theme")
                 Button("Reset from Selected") {
                     customThemeDraft = Self.themeDraft(from: store)
+                    store.clearThemePreview()
                 }
                 .accessibilityIdentifier("settings.appearance.reset-custom-theme")
             }
@@ -989,12 +1010,24 @@ struct SettingsView: View {
     }
 
     private var customThemeContrastViolationCount: Int {
-        CoveThemeContrastMatrix.violations(
-            theme: configuredThemeDraft,
-            contexts: CoveThemeContrastMatrix.defaultContexts(
-                for: configuredThemeDraft
+        let theme = configuredThemeDraft
+        let contexts = CoveThemeContrastMatrix.defaultContexts(for: theme)
+        var violations = CoveThemeContrastMatrix.violations(
+            theme: theme,
+            contexts: contexts
+        )
+        if theme.surfaceFill == .gradient {
+            var endpoint = theme
+            endpoint.backgroundHex = theme.accentHex
+            violations += CoveThemeContrastMatrix.violations(
+                theme: endpoint,
+                contexts: contexts,
+                pairs: CoveSemanticContrastPair.overlay.filter {
+                    $0.background == .background
+                }
             )
-        ).count
+        }
+        return violations.count
     }
 
     private func themeColorPicker(
@@ -1010,6 +1043,7 @@ struct SettingsView: View {
                     var draft = customThemeDraft
                     draft[keyPath: keyPath] = color.hex
                     customThemeDraft = draft
+                    store.previewTheme(configuredTheme(draft))
                 }
             ),
             supportsOpacity: false
@@ -1020,7 +1054,22 @@ struct SettingsView: View {
     private var themeBinding: Binding<CoveThemeFamily> {
         Binding(
             get: { store.state.settings.themeFamily },
-            set: { store.dispatch(.setThemeFamily($0)) }
+            set: {
+                store.clearThemePreview()
+                store.dispatch(.setThemeFamily($0))
+            }
+        )
+    }
+
+    private var surfaceFillBinding: Binding<CoveThemeSurfaceFill> {
+        Binding(
+            get: { customThemeDraft.surfaceFill },
+            set: { fill in
+                var draft = customThemeDraft
+                draft.surfaceFill = fill
+                customThemeDraft = draft
+                store.previewTheme(configuredTheme(draft))
+            }
         )
     }
 
@@ -1041,7 +1090,10 @@ struct SettingsView: View {
     private var paletteBinding: Binding<CovePaletteKind> {
         Binding(
             get: { store.state.settings.palette },
-            set: { store.dispatch(.setPalette($0)) }
+            set: {
+                store.clearThemePreview()
+                store.dispatch(.setPalette($0))
+            }
         )
     }
 
@@ -1050,6 +1102,14 @@ struct SettingsView: View {
             get: { store.state.settings.customThemeID },
             set: { store.selectCustomTheme(identifier: $0) }
         )
+    }
+
+    private func configuredTheme(_ draft: CoveThemePalette) -> CoveThemePalette {
+        var theme = draft
+        theme.collapsedOpacity = store.state.settings.collapsedOpacity
+        theme.expandedOpacity = store.state.settings.expandedOpacity
+        theme.blurStyle = store.state.settings.blurStyle
+        return theme
     }
 
     private var selectedCustomTheme: CoveThemePalette? {

@@ -125,6 +125,7 @@ export interface ThemeDefinition {
   readonly schemaVersion: typeof COVE_SCHEMA_VERSION;
   readonly family: ThemeFamily;
   readonly palette: ThemePalette;
+  readonly surfaceFill?: "solid" | "gradient";
   readonly typography: ThemeTypography;
   readonly cornerRadius: number;
   readonly border?: ThemeBorder;

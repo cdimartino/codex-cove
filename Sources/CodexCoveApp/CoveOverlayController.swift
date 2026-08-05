@@ -39,17 +39,26 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
                 .environmentObject(presentationMetrics)
             let hosting = NSHostingView(rootView: rootView)
             hosting.translatesAutoresizingMaskIntoConstraints = false
+            let contentView = NSView()
+            contentView.wantsLayer = true
+            contentView.layer?.backgroundColor = NSColor.clear.cgColor
             let effectView = NSVisualEffectView()
+            effectView.translatesAutoresizingMaskIntoConstraints = false
             effectView.blendingMode = .behindWindow
             effectView.material = .hudWindow
             effectView.state = .active
             effectView.wantsLayer = true
-            effectView.addSubview(hosting)
+            contentView.addSubview(effectView)
+            contentView.addSubview(hosting)
             NSLayoutConstraint.activate([
-                hosting.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
-                hosting.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
-                hosting.topAnchor.constraint(equalTo: effectView.topAnchor),
-                hosting.bottomAnchor.constraint(equalTo: effectView.bottomAnchor),
+                effectView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                effectView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                effectView.topAnchor.constraint(equalTo: contentView.topAnchor),
+                effectView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+                hosting.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                hosting.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                hosting.topAnchor.constraint(equalTo: contentView.topAnchor),
+                hosting.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             ])
             let overlayPanel = CoveOverlayPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 396, height: 112),
@@ -58,7 +67,7 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
                 defer: false
             )
             overlayPanel.delegate = self
-            overlayPanel.contentView = effectView
+            overlayPanel.contentView = contentView
             overlayPanel.isReleasedWhenClosed = false
             overlayPanel.titleVisibility = NSWindow.TitleVisibility.hidden
             overlayPanel.titlebarAppearsTransparent = true
@@ -236,14 +245,15 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
         if panel.alphaValue != 1 {
             panel.alphaValue = 1
         }
-        let effectState: NSVisualEffectView.State = state.settings.minimalIslandMode
-                || state.settings.blurStyle == .off
-                || state.settings.privacyMode == .on
-                || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-            ? .inactive
-            : .active
-        if visualEffectView?.state != effectState {
-            visualEffectView?.state = effectState
+        let hidesVisualEffect = state.settings.minimalIslandMode
+            || state.settings.blurStyle == .off
+            || state.settings.privacyMode == .on
+            || NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        if visualEffectView?.state != .active {
+            visualEffectView?.state = .active
+        }
+        if visualEffectView?.isHidden != hidesVisualEffect {
+            visualEffectView?.isHidden = hidesVisualEffect
         }
         let material: NSVisualEffectView.Material = switch state.settings.blurStyle {
         case .off, .thin:

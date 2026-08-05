@@ -26,6 +26,7 @@ final class CoveStore: ObservableObject {
     @Published private(set) var fixtureRecordedJumpCount = 0
     @Published private(set) var soundPreferences: CoveSoundPreferences
     @Published private(set) var customThemes: [CoveThemePalette] = []
+    @Published private(set) var themePreview: CoveThemePalette?
     @Published private(set) var persistenceWarning: String?
     @Published private(set) var selectedSessionID: String?
     @Published private(set) var reminders: [String: Date] = [:]
@@ -184,6 +185,7 @@ final class CoveStore: ObservableObject {
 
     func collapseForSettings() {
         isSettingsPresented = true
+        themePreview = nil
         cancelInteractionTimers()
         isOverlayHovered = false
         isOverlayFocused = false
@@ -194,6 +196,15 @@ final class CoveStore: ObservableObject {
 
     func endSettingsPresentation() {
         isSettingsPresented = false
+        themePreview = nil
+    }
+
+    func previewTheme(_ theme: CoveThemePalette) {
+        themePreview = configuredTheme(theme)
+    }
+
+    func clearThemePreview() {
+        themePreview = nil
     }
 
     /// Test-host-only observation of frames actually received by the injected
@@ -410,6 +421,7 @@ final class CoveStore: ObservableObject {
     @discardableResult
     func importCustomTheme(from url: URL) throws -> CoveThemePalette {
         let theme = try themeStorage.importTheme(from: url)
+        themePreview = nil
         upsertCustomTheme(theme)
         dispatch(.selectCustomTheme(theme))
         return theme
@@ -421,6 +433,7 @@ final class CoveStore: ObservableObject {
         named rawName: String
     ) throws -> CoveThemePalette {
         var theme = configuredTheme(draft)
+        themePreview = nil
         theme.name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         if theme.isBuiltIn {
             theme.identifier = "custom.\(UUID().uuidString.lowercased())"
@@ -437,6 +450,7 @@ final class CoveStore: ObservableObject {
 
     func removeCustomTheme(_ theme: CoveThemePalette) throws {
         guard !theme.isBuiltIn else { return }
+        themePreview = nil
         try themeStorage.removeCustomTheme(identifier: theme.identifier)
         customThemes.removeAll { $0.identifier == theme.identifier }
         if state.settings.customThemeID == theme.identifier {
@@ -445,6 +459,7 @@ final class CoveStore: ObservableObject {
     }
 
     func selectCustomTheme(identifier: String?) {
+        themePreview = nil
         guard let identifier else {
             dispatch(.clearCustomTheme)
             return
@@ -1361,6 +1376,7 @@ final class CoveStore: ObservableObject {
         let delay = state.settings.idleAutoHideSeconds
         guard delay > 0,
               state.session.isVisible,
+              !state.settings.minimalIslandMode,
               state.pendingDirectRequests.isEmpty,
               !isOverlayHovered,
               !isOverlayFocused,
@@ -1385,6 +1401,7 @@ final class CoveStore: ObservableObject {
                   !self.isOverlayFocused,
                   !self.isDirectInteractionActive,
                   !self.actionDrafts.hasDirtyDrafts,
+                  !self.state.settings.minimalIslandMode,
                   self.state.pendingDirectRequests.isEmpty,
                   !self.state.session.snapshots.contains(where: {
                       [.waitingApproval, .waitingInput, .blocked].contains(
@@ -1392,7 +1409,7 @@ final class CoveStore: ObservableObject {
                       )
                   })
             else { return }
-            self.dispatch(.setVisible(false))
+            self.dispatch(.setMinimalIslandMode(true))
         }
     }
 

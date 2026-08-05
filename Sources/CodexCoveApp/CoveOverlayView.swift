@@ -5,12 +5,25 @@ struct CoveOverlayRootView: View {
     @EnvironmentObject private var store: CoveStore
     @EnvironmentObject private var presentationMetrics: CoveOverlayPresentationMetrics
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let onOpenSettings: @MainActor () -> Void
     let onRestoreArchived: @MainActor (String?) -> Void
     let fixtureStateDirectory: String?
 
     var body: some View {
-        let state = store.state
+        let state: CoveState = {
+            var state = store.state
+            var theme = store.themePreview ?? state.theme
+            let suppressesTransparency = state.settings.privacyMode
+                .suppressVisualEffects || reduceTransparency
+            theme.collapsedOpacity = suppressesTransparency
+                ? 1 : state.settings.collapsedOpacity
+            theme.expandedOpacity = suppressesTransparency
+                ? 1 : state.settings.expandedOpacity
+            theme.blurStyle = state.settings.blurStyle
+            state.theme = theme
+            return state
+        }()
         let redactsSensitiveContent = state.settings.privacyMode == .on
             || state.privacyScene != .normal
             || state.session.activeStatus == .hidden
@@ -27,7 +40,8 @@ struct CoveOverlayRootView: View {
                         : state.settings.collapsedOpacity,
                     blur: state.settings.blurStyle,
                     privacy: state.settings.privacyMode,
-                    squareTopCorners: state.settings.squareTopCorners
+                    squareTopCorners: state.settings.squareTopCorners,
+                    rendersMaterial: false
                 )
             }
             if state.settings.minimalIslandMode {
@@ -448,6 +462,8 @@ private struct CoveOverlayClipShape: InsettableShape {
 }
 
 struct CoveMinimalIslandView: View {
+    @EnvironmentObject private var store: CoveStore
+
     let state: CoveState
 
     var body: some View {
@@ -463,39 +479,46 @@ struct CoveMinimalIslandView: View {
         let activeCount = state.session.snapshots.filter {
             [.working, .active, .compacting].contains($0.status)
         }.count
-        HStack(spacing: 7) {
-            ForEach(Array(statuses.prefix(1).enumerated()), id: \.offset) {
-                _, status in
-                Circle()
-                    .fill(Color(hex: state.theme.statusHex(status)))
-                    .frame(width: 7, height: 7)
-            }
-            Color.clear
-                .frame(width: 64, height: 1)
-                .accessibilityHidden(true)
-            if attentionCount > 0 {
-                Image(systemName: "exclamationmark")
-                    .font(.system(size: 9, weight: .black))
-                    .foregroundStyle(
-                        Color(
-                            hex: state.theme.waitingApprovalHex
-                        )
-                    )
-            } else {
+        Button {
+            store.dispatch(.setMinimalIslandMode(false))
+            store.beginOverlayInteraction()
+        } label: {
+            HStack(spacing: 7) {
+                ForEach(Array(statuses.prefix(1).enumerated()), id: \.offset) {
+                    _, status in
+                    Circle()
+                        .fill(Color(hex: state.theme.statusHex(status)))
+                        .frame(width: 7, height: 7)
+                }
                 Color.clear
-                    .frame(width: 9, height: 9)
+                    .frame(width: 64, height: 1)
                     .accessibilityHidden(true)
+                if attentionCount > 0 {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundStyle(
+                            Color(
+                                hex: state.theme.waitingApprovalHex
+                            )
+                        )
+                } else {
+                    Color.clear
+                        .frame(width: 9, height: 9)
+                        .accessibilityHidden(true)
+                }
             }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Capsule())
         }
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .ignore)
+        .buttonStyle(.plain)
         .accessibilityLabel(
             attentionCount > 0
                 ? "\(attentionCount) Codex tasks need attention"
                 : "\(activeCount) active Codex tasks"
         )
-        .accessibilityHint("Restore the full island from the menu bar")
+        .accessibilityHint("Restore the full island")
+        .accessibilityIdentifier("cove.overlay.restore-island")
     }
 
     private var statuses: [CoveSessionStatus] {
@@ -514,28 +537,19 @@ struct CoveBackdropView: View {
     let blur: CoveBlurStyle
     let privacy: CovePrivacyMode
     var squareTopCorners = false
+    var rendersMaterial = true
 
     var body: some View {
         let suppressVisualEffects = privacy.suppressVisualEffects || reduceTransparency
         let baseOpacity = suppressVisualEffects ? 1.0 : min(1, max(0.35, opacity))
-        let accent = Color(hex: theme.accentHex)
-        let background = Color(hex: theme.backgroundHex, opacity: baseOpacity)
         ZStack {
             // Material belongs behind the palette tint. Drawing it after the
             // tint lets the system material wash the selected theme toward
             // gray, especially at lower expanded opacities.
-            if !suppressVisualEffects {
+            if rendersMaterial && !suppressVisualEffects {
                 materialLayer
             }
-            LinearGradient(
-                colors: [
-                    background,
-                    accent.opacity(suppressVisualEffects ? 0.12 : 0.20),
-                    background
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            surfaceFill.opacity(baseOpacity)
             if theme.noiseOpacity > 0, !suppressVisualEffects {
                 Canvas { context, size in
                     let dot = Color(hex: theme.foregroundHex)
@@ -573,7 +587,6 @@ struct CoveBackdropView: View {
                     )
                 )
         }
-        .background(Color(hex: theme.surfaceHex, opacity: baseOpacity))
         .clipShape(
             CoveOverlayClipShape(
                 cornerRadius: theme.cornerRadius,
@@ -587,6 +600,23 @@ struct CoveBackdropView: View {
             x: theme.shadowX,
             y: theme.shadowY
         )
+    }
+
+    @ViewBuilder
+    private var surfaceFill: some View {
+        switch theme.surfaceFill {
+        case .solid:
+            Rectangle().fill(Color(hex: theme.backgroundHex))
+        case .gradient:
+            LinearGradient(
+                colors: [
+                    Color(hex: theme.backgroundHex),
+                    Color(hex: theme.accentHex),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
     }
 
     @ViewBuilder

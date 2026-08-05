@@ -15,10 +15,14 @@ bounded `app-server --stdio` connection. A missing or wedged proxy cannot consum
 the full Desktop discovery window. Startup discovery uses `thread/list` only to
 find a small set of confidently Desktop-openable thread IDs, then calls
 `thread/read` with `includeTurns=false` for each exact thread on the same
-connection. Those read requests may complete out of order; Cove retains a
-bounded response map keyed by JSON-RPC ID so an early response for another
-requested thread is not discarded. In the currently installed public protocol
-shape, Codex Desktop
+connection. With the public experimental API capability enabled, Cove also
+requests a bounded `thread/turns/list` summary for each exact thread and keeps
+the latest non-empty `agentMessage` in memory for card and focused-detail
+display. That request is optional and never blocks metadata hydration when an
+older app-server does not support it. Requests may complete out of order; Cove
+retains a bounded response map keyed by JSON-RPC ID so an early response for
+another requested thread is not discarded. In the currently installed public
+protocol shape, Codex Desktop
 threads can appear with `sourceKinds: ["vscode"]`; Cove treats those rows as
 Desktop-openable because their public deep link still targets the running Codex
 app. `statusKinds: ["notLoaded"]` maps to an idle card, never an active

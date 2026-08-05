@@ -296,6 +296,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
     public var priority: Int
     public var title: String
     public var detail: String?
+    public var latestOutput: String?
     public var timestamp: Date
     public var sessionId: String?
     public var launchId: String?
@@ -311,6 +312,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         priority: Int,
         title: String,
         detail: String? = nil,
+        latestOutput: String? = nil,
         timestamp: Date,
         sessionId: String? = nil,
         launchId: String? = nil,
@@ -325,6 +327,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         self.priority = priority
         self.title = title
         self.detail = detail
+        self.latestOutput = latestOutput
         self.timestamp = timestamp
         self.sessionId = sessionId
         self.launchId = launchId
@@ -1017,6 +1020,16 @@ public enum CoveReducer {
             let decodedSnapshot = envelope.sessionSnapshot()
             let carriesSessionState = decodedSnapshot != nil || status != nil
             var acceptedStatusSnapshot = false
+            if status == nil,
+               let latestOutput = envelope.latestAssistantOutput(),
+               var snapshot = state.session.snapshots.first(where: {
+                   $0.sessionId == envelope.sessionId
+                       && $0.originScope == envelope.originScope
+               }) {
+                snapshot.latestOutput = latestOutput
+                snapshot.timestamp = envelope.timestamp
+                acceptedStatusSnapshot = accept(snapshot: snapshot, into: &state)
+            }
             if let snapshot = decodedSnapshot {
                 acceptedStatusSnapshot = accept(
                     snapshot: snapshot,
@@ -1032,6 +1045,12 @@ public enum CoveReducer {
                             && $0.originScope == envelope.originScope
                     })?
                     .unread == true
+                let existingLatestOutput = state.session.snapshots
+                    .first(where: {
+                        $0.snapshotId == snapshotID
+                            && $0.originScope == envelope.originScope
+                    })?
+                    .latestOutput
                 let display = envelope.displayEvent()
                 acceptedStatusSnapshot = accept(
                     snapshot: CoveSessionSnapshot(
@@ -1040,6 +1059,8 @@ public enum CoveReducer {
                         priority: status.priority,
                         title: display.title,
                         detail: display.body,
+                        latestOutput: envelope.latestAssistantOutput()
+                            ?? existingLatestOutput,
                         timestamp: envelope.timestamp,
                         sessionId: envelope.sessionId,
                         launchId: envelope.launchId,
@@ -1486,10 +1507,11 @@ public enum CoveReducer {
         }) {
             return false
         }
-        if let existing = state.session.snapshots.first(where: {
+        let existing = state.session.snapshots.first(where: {
             $0.snapshotId == snapshot.snapshotId
                 && $0.originScope == snapshot.originScope
-        }), existing.timestamp > snapshot.timestamp {
+        })
+        if let existing, existing.timestamp > snapshot.timestamp {
             return false
         }
         if snapshot.sessionId != "pending", let launchID = snapshot.launchId {
@@ -1500,6 +1522,9 @@ public enum CoveReducer {
             }
         }
         var normalized = snapshot
+        if normalized.latestOutput == nil {
+            normalized.latestOutput = existing?.latestOutput
+        }
         if normalized.status == .completed {
             normalized.priority = priority(
                 for: .completed,

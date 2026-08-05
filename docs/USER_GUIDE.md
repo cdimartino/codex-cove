@@ -85,6 +85,11 @@ archives, and a Settings entry. Select a card for full details. Long task
 details, plans, questions, and approvals open in a wider focused surface;
 `Escape` returns to the queue without creating another window.
 
+When Codex exposes an assistant message for a task, its card summarizes that
+latest output instead of a generic hook or tool-event label. Selecting the card
+shows the full in-memory output. If output is unavailable, Cove keeps the
+content-free task summary and exact **Open** action.
+
 Available task actions depend on authoritative metadata:
 
 - **Open** returns to the exact registered origin when one can be proved.
@@ -169,9 +174,10 @@ The wave menu provides:
 - **Mute Sounds**
 - **Quit Codex Cove**
 
-Minimal island mode shows a small themed status cue without task text. Waiting
-approval and input counts remain visible. Restore the full island from the
-menu.
+Minimal island mode and idle auto-hide keep a small themed status cue at the
+menu-bar level instead of making Cove unreachable. Waiting approval and input
+counts remain visible. Click the cue, use **Restore Island** in the menu, or use
+the global visibility shortcut to restore the full island.
 
 ## Privacy and quiet behavior
 
@@ -216,10 +222,13 @@ calendar event, or cloud reminder.
 ## Themes and accessibility
 
 **Settings → Appearance** includes three style families, five palettes, native
-color-wheel controls for every theme color, save/import/export for custom
-themes, text scaling from 100% to 200%, opacity and blur, collapsed width,
-corner treatment, and expansion animation. Theme documents are validated
-against Cove's versioned schema before import.
+color-wheel controls for every theme color, a selectable solid fill or
+two-color gradient, live unsaved preview, save/import/export for custom themes,
+text scaling from 100% to 200%, independent collapsed/expanded tint opacity,
+native backdrop blur, collapsed width, corner treatment, and expansion
+animation. Theme documents are validated against Cove's versioned schema
+before import. Privacy mode and macOS Reduce Transparency force an opaque
+surface.
 
 **Settings → Residents** selects and previews the Dungeon/D&D, Tech Creatures,
 or Virus/Bacteria set. Cove still assigns an individual resident automatically
@@ -242,7 +251,7 @@ missing data is labeled instead of estimated.
 
 | Pane | Main controls |
 | --- | --- |
-| Appearance | Text scale, style, palette, color-wheel custom themes, width, opacity, blur, corners, animation |
+| Appearance | Text scale, style, palette, solid/gradient color-wheel themes, width, opacity, native blur, corners, animation |
 | Residents | Character set, state preview, and resident library |
 | General | Login launch, shortcuts, Glance mode, usage views, collapse, idle hide, reminder delay |
 | Notifications | Authorization, event matrix, content disclosure, live preview |

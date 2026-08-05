@@ -93,6 +93,14 @@
       },
       "additionalProperties": false
     },
+    "surfaceFill": {
+      "type": "string",
+      "enum": [
+        "solid",
+        "gradient"
+      ],
+      "default": "gradient"
+    },
     "typography": {
       "type": "object",
       "required": [

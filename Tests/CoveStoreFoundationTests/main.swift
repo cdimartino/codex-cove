@@ -219,6 +219,7 @@ private struct CoveStoreFoundationTests {
             fatalError("Metadata origin collision test failed: \(error)")
         }
         testArchiveAllCompletedSafety()
+        await testRecoverableIdleAutoHide()
         do {
             try testCustomThemeSaveAndExport()
         } catch {
@@ -365,11 +366,18 @@ private struct CoveStoreFoundationTests {
         var draft = store.state.theme
         draft.backgroundHex = "#123456"
         draft.accentHex = "#ABCDEF"
+        draft.surfaceFill = .solid
+        store.previewTheme(draft)
+        precondition(store.themePreview?.backgroundHex == "#123456")
+        precondition(store.themePreview?.surfaceFill == .solid)
+        store.endSettingsPresentation()
+        precondition(store.themePreview == nil)
         let saved = try store.saveCustomTheme(draft, named: "My Theme")
         precondition(!saved.isBuiltIn)
         precondition(saved.name == "My Theme")
         precondition(saved.backgroundHex == "#123456")
         precondition(saved.accentHex == "#ABCDEF")
+        precondition(saved.surfaceFill == .solid)
         precondition(saved.collapsedOpacity == 0.55)
         precondition(saved.expandedOpacity == 0.66)
         precondition(saved.blurStyle == .thick)
@@ -386,6 +394,7 @@ private struct CoveStoreFoundationTests {
         precondition(exported.collapsedOpacity == 0.55)
         precondition(exported.expandedOpacity == 0.66)
         precondition(exported.blur == .thick)
+        precondition(exported.surfaceFill == .solid)
 
         var updated = saved
         updated.surfaceHex = "#654321"
@@ -394,6 +403,30 @@ private struct CoveStoreFoundationTests {
         precondition(resaved.name == "My Theme 2")
         precondition(resaved.surfaceHex == "#654321")
         precondition(store.customThemes == [resaved])
+    }
+
+    static func testRecoverableIdleAutoHide() async {
+        let store = CoveStore(
+            storage: MemoryStorage(),
+            initialState: CoveState(
+                settings: CoveSettings(idleAutoHideSeconds: 0.05)
+            ),
+            persistenceWritesEnabledOverride: false,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+        store.dispatch(.boot)
+        let collapsedToCue = await waitUntil {
+            store.state.settings.minimalIslandMode
+        }
+        precondition(collapsedToCue)
+        precondition(store.state.session.isVisible)
+        precondition(!store.state.session.isExpanded)
+
+        store.dispatch(.setMinimalIslandMode(false))
+        precondition(store.state.session.isVisible)
+        precondition(!store.state.settings.minimalIslandMode)
     }
 
     static func testDirectRequestOriginRouting() {
