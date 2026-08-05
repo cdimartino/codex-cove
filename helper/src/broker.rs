@@ -2383,7 +2383,9 @@ mod tests {
         fs::write(
             &fake_codex,
             format!(
-                "#!/bin/sh\nsleep 30 &\ndescendant=$!\nprintf '%s' \"$descendant\" > '{}'\nIFS= read -r request || exit 0\nwhile :; do printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"tick\"}}'; done\n",
+                "#!/bin/sh\nsleep 30 &\ndescendant=$!\nprintf '%s' \"$descendant\" > '{}.tmp'\nmv '{}.tmp' '{}'\nIFS= read -r request || exit 0\nwhile :; do printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"tick\"}}'; done\n",
+                descendant_pid_path.display(),
+                descendant_pid_path.display(),
                 descendant_pid_path.display()
             ),
         )

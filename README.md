@@ -9,7 +9,7 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.3.0`. Check
+> **Release status:** the source tree is currently version `0.4.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
