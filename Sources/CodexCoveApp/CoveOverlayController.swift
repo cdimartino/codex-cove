@@ -45,7 +45,7 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
             let effectView = NSVisualEffectView()
             effectView.translatesAutoresizingMaskIntoConstraints = false
             effectView.blendingMode = .behindWindow
-            effectView.material = .hudWindow
+            effectView.material = .underWindowBackground
             effectView.state = .active
             effectView.wantsLayer = true
             contentView.addSubview(effectView)
@@ -255,16 +255,19 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
         if visualEffectView?.isHidden != hidesVisualEffect {
             visualEffectView?.isHidden = hidesVisualEffect
         }
-        let material: NSVisualEffectView.Material = switch state.settings.blurStyle {
-        case .off, .thin:
-            .underWindowBackground
-        case .regular:
-            .hudWindow
-        case .thick:
-            .popover
+        let materialAlpha: CGFloat = switch state.settings.blurStyle {
+        case .off: 0
+        case .thin: 0.45
+        case .regular: 0.72
+        case .thick: 1
         }
-        if visualEffectView?.material != material {
-            visualEffectView?.material = material
+        // Vary the strength of one transparent backdrop material instead of
+        // replacing it with dense HUD or popover surfaces.
+        if visualEffectView?.material != .underWindowBackground {
+            visualEffectView?.material = .underWindowBackground
+        }
+        if visualEffectView?.alphaValue != materialAlpha {
+            visualEffectView?.alphaValue = materialAlpha
         }
         if visualEffectView?.layer?.masksToBounds != true {
             visualEffectView?.layer?.masksToBounds = true

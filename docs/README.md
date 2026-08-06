@@ -32,6 +32,8 @@ Start with the guide that matches what you are trying to do.
   installation.
 - [Codex Cove 0.5.0 release notes](releases/v0.5.0.md) — live solid and gradient
   themes, native translucency, restorable idle hide, and latest task output.
+- [Codex Cove 0.5.1 release notes](releases/v0.5.1.md) — corrected native
+  backdrop transparency for the collapsed island.
 
 ## Version-specific engineering records
 

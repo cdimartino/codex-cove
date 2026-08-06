@@ -219,7 +219,7 @@ require_value remote_duplicate_count 0
 require_value wrong_scope_send_count 0
 require_value dependency_npm_vulnerability_count 0
 require_value ui_started yes
-require_value ui_pass_count 26
+require_value ui_pass_count 27
 require_value ui_fail_count 0
 require_value ui_skip_count 0
 require_value p0_open_count 0
@@ -228,17 +228,17 @@ require_value final_process_count 1
 
 require_value defect_register_schema privacy_safe_v1
 require_value defect_register_entry_count 1
-require_value supersedes_source_candidate_digest 3210a6b437607a4f5c1f13ebbaa657e802613ddfdfef2db65d18304f8102c529
-require_value superseded_candidate_receipt_sha256 e9ba48e9ee9dc81333b51c8d2437b0dfbb3c361774e51849dd6f4414e288fb26
+require_value supersedes_source_candidate_digest 14033e0851fbc89af08510c5989c2c1ad030286b2a9412c564d77fa17ca9a3cd
+require_value superseded_candidate_receipt_sha256 157e9dcf87b3bd794d1daaa5851ee822a95175379c102939d8c2d4c19d7cde5d
 require_value superseded_candidate_failure_row_count 1
 require_value superseded_candidate_owner_attempt not-run
 require_value superseded_candidate_owner_scripted_pass not-run
-require_value defect_001_ref P1-001
+require_value defect_001_ref P1-002
 require_value defect_001_severity P1
 require_value defect_001_release_row component_gate
 require_value defect_001_status resolved-automated
 require_value defect_001_current_candidate_retest_receipt component_gate
-require_value defect_001_symptom_category overlay_appearance_and_output_regressions
+require_value defect_001_symptom_category overlay_transparency_regression
 
 for timestamp_key in \
     started_at \
@@ -256,7 +256,7 @@ do
 done
 
 require_recorded defect_register_reviewed_at
-require_value source_change_reason rustfmt_correction
+require_value source_change_reason overlay_transparency_fix
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then

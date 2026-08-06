@@ -2,7 +2,7 @@
   "name": "cove-extension",
   "displayName": "Codex Cove",
   "description": "Codex-only VS Code and Cursor extension for local session registration, status, and terminal focus.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "publisher": "codex-cove-local",
   "repository": {
