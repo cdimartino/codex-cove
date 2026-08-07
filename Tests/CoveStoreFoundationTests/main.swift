@@ -213,6 +213,7 @@ private struct CoveStoreFoundationTests {
         testEditorFocusResponseContract()
         testEditorFocusSocketTransport()
         testEditorExactOriginBinding()
+        testSessionOpenFailureFeedback()
         do {
             try testMetadataOriginCollisionFailsClosed()
         } catch {
@@ -338,6 +339,62 @@ private struct CoveStoreFoundationTests {
         precondition(failureStore.decisionAttemptCount == 2)
 
         print("CoveStore foundation tests passed")
+    }
+
+    static func testSessionOpenFailureFeedback() {
+        let snapshot = CoveSessionSnapshot(
+            snapshotId: "open-feedback-snapshot",
+            status: .working,
+            priority: 40,
+            title: "Open feedback fixture",
+            timestamp: Date(timeIntervalSince1970: 1),
+            sessionId: "open-feedback-session",
+            launchId: "open-feedback-launch",
+            source: .remoteCli,
+            hostId: "fixture-remote",
+            unread: true
+        )
+        let store = CoveStore(
+            storage: MemoryStorage(),
+            decisionSender: ProbeSender(),
+            initialState: CoveState(
+                session: CoveSessionState(
+                    isExpanded: true,
+                    snapshots: [snapshot]
+                )
+            ),
+            persistenceWritesEnabledOverride: false,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+        var markedRead: [String] = []
+        store.onMarkRead = { markedRead.append($0) }
+        store.onJumpToSession = { _ in
+            CoveJumpResult(
+                focusedExactLocation: false,
+                message: "The exact originating remote terminal is not currently available."
+            )
+        }
+
+        precondition(!store.open(snapshot))
+        precondition(
+            store.sessionOpenFailureMessage
+                == "The exact originating remote terminal is not currently available."
+        )
+        precondition(store.state.session.snapshots[0].unread)
+        precondition(markedRead.isEmpty)
+
+        store.onJumpToSession = { _ in
+            CoveJumpResult(
+                focusedExactLocation: true,
+                message: "Focused the originating remote Codex terminal."
+            )
+        }
+        precondition(store.open(snapshot))
+        precondition(store.sessionOpenFailureMessage == nil)
+        precondition(!store.state.session.snapshots[0].unread)
+        precondition(markedRead == ["open-feedback-session"])
     }
 
     static func testCustomThemeSaveAndExport() throws {

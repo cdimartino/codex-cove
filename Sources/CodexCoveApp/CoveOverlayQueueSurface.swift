@@ -177,6 +177,15 @@ struct CoveQueueSurfaceView: View {
                     .stroke(Color(hex: state.theme.borderHex))
             }
 
+            if let snapshot = selectedItem?.snapshot,
+               let message = store.sessionOpenFailureMessage(for: snapshot) {
+                CoveSessionOpenFailureView(
+                    message: message,
+                    theme: state.theme,
+                    redactsSensitiveContent: redactsSensitiveContent
+                )
+            }
+
             if let warning = store.persistenceWarning {
                 Label(
                     redactsSensitiveContent
@@ -2368,6 +2377,14 @@ private struct CoveFocusedSessionView: View {
                     )
                 )
             }
+
+            if let message = store.sessionOpenFailureMessage(for: snapshot) {
+                CoveSessionOpenFailureView(
+                    message: message,
+                    theme: theme,
+                    redactsSensitiveContent: redactsSensitiveContent
+                )
+            }
         }
         .coveOpaqueCard(theme: theme)
     }
@@ -2505,6 +2522,32 @@ private struct CoveDecisionDeliveryView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+private struct CoveSessionOpenFailureView: View {
+    let message: String
+    let theme: CoveThemePalette
+    let redactsSensitiveContent: Bool
+
+    var body: some View {
+        Label(
+            displayMessage,
+            systemImage: "exclamationmark.triangle.fill"
+        )
+        .coveOverlayFont(theme, .metadata)
+        .foregroundStyle(Color(hex: theme.failedHex))
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Open in Codex failed")
+        .accessibilityValue(displayMessage)
+        .accessibilityIdentifier("cove.session-open-failure")
+    }
+
+    private var displayMessage: String {
+        redactsSensitiveContent
+            ? "The exact Codex location could not be opened."
+            : message
     }
 }
 
