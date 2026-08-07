@@ -18,7 +18,7 @@ enum CovePanelSizing {
         )
         let requested: CGSize
         if state.settings.minimalIslandMode {
-            requested = CGSize(width: 126, height: 24)
+            requested = CGSize(width: 126, height: max(24, menuBarInset))
         } else {
             requested = switch presentation {
             case .collapsed:

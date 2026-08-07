@@ -5,6 +5,15 @@ turns task activity into a small notch-aligned island, brings approvals and
 questions into an attention-first queue, and can return you to the exact
 terminal, editor window, or Codex task where work began.
 
+<p align="center">
+  <img src="docs/images/codex-cove-queue.jpg" alt="Codex Cove expanded attention queue showing active tasks and a waiting approval" width="390">
+  <img src="docs/images/codex-cove-approval.jpg" alt="Codex Cove focused command approval with one-action and current-task scopes" width="390">
+</p>
+
+<p align="center">
+  <img src="docs/images/codex-cove-appearance.jpg" alt="Codex Cove Appearance settings with custom theme colors and a live translucent preview" width="820">
+</p>
+
 Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
