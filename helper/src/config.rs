@@ -586,7 +586,6 @@ fn resolves_to_cove_helper(candidate: &Path, current: &Path) -> bool {
     let known_helpers = [
         support_directory_for_home(&home).join("bin/codex-cove"),
         user_bin_directory_for_home(&home).join("codex-cove"),
-        user_bin_directory_for_home(&home).join("codex"),
     ];
     known_helpers.into_iter().any(|path| {
         fs::canonicalize(&path)
@@ -703,6 +702,52 @@ mod tests {
         if let Some(value) = old_override {
             // SAFETY: see the note above.
             unsafe { env::set_var("CODEX_COVE_REAL_CODEX", value) };
+        }
+    }
+
+    #[test]
+    fn accepts_foreign_codex_in_user_bin_location() {
+        let _environment = ENVIRONMENT_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let user_bin = user_bin_directory_for_home(temp.path());
+        let release = temp.path().join(".codex/releases/current/bin/codex");
+        let current = temp.path().join("codex-cove");
+        fs::create_dir_all(&user_bin).unwrap();
+        fs::create_dir_all(release.parent().unwrap()).unwrap();
+        for path in [&release, &current] {
+            fs::write(path, b"binary").unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::os::unix::fs::symlink(&release, user_bin.join("codex")).unwrap();
+
+        let old_home = env::var_os("CODEX_COVE_HOME");
+        let old_path = env::var_os("PATH");
+        let old_override = env::var_os("CODEX_COVE_REAL_CODEX");
+        // SAFETY: this test serializes and restores the process environment.
+        unsafe {
+            env::set_var("CODEX_COVE_HOME", temp.path());
+            env::set_var("PATH", &user_bin);
+            env::remove_var("CODEX_COVE_REAL_CODEX");
+        }
+
+        assert_eq!(
+            find_real_codex_on_path(&current).unwrap(),
+            fs::canonicalize(release).unwrap()
+        );
+
+        for (name, value) in [
+            ("CODEX_COVE_HOME", old_home),
+            ("PATH", old_path),
+            ("CODEX_COVE_REAL_CODEX", old_override),
+        ] {
+            // SAFETY: see the note above.
+            unsafe {
+                if let Some(value) = value {
+                    env::set_var(name, value);
+                } else {
+                    env::remove_var(name);
+                }
+            }
         }
     }
 

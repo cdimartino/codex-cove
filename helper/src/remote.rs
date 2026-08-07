@@ -137,11 +137,12 @@ pub fn deploy_specs(alias: &str, artifact: &Path, checksum: &str) -> io::Result<
         ));
     }
     let version = format!("{}-{}", env!("CARGO_PKG_VERSION"), &checksum[..12]);
-    let directory = format!("~/.local/share/codex-cove/{version}");
+    let support = "~/.local/share/codex-cove";
+    let directory = format!("{support}/{version}");
     let upload = format!("{directory}/codex-cove.upload");
     let installed = format!("{directory}/codex-cove");
     let destination = format!("{alias}:{upload}");
-    let prepare = format!("mkdir -p {directory} && chmod 700 {directory}");
+    let prepare = format!("mkdir -p {directory} && chmod 700 {support} {directory}");
     let activate = format!(
         "chmod 700 {upload} && {upload} remote-install --expected-sha256 {checksum} && mv {upload} {installed} && ln -sfn {version} ~/.local/share/codex-cove/current"
     );
@@ -867,6 +868,14 @@ mod tests {
         assert_eq!(specs.len(), 3);
         assert_eq!(specs[0].program, "ssh");
         assert!(specs[0].args.contains(&"StrictHostKeyChecking=yes".into()));
+        assert!(
+            specs[0]
+                .args
+                .last()
+                .unwrap()
+                .to_string_lossy()
+                .contains("chmod 700 ~/.local/share/codex-cove ~/.local/share/codex-cove/")
+        );
         assert_eq!(specs[1].program, "scp");
         assert_eq!(specs[2].program, "ssh");
         assert!(
