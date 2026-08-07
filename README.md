@@ -6,12 +6,30 @@ questions into an attention-first queue, and can return you to the exact
 terminal, editor window, or Codex task where work began.
 
 <p align="center">
-  <img src="docs/images/codex-cove-queue.jpg" alt="Codex Cove expanded attention queue showing active tasks and a waiting approval" width="390">
-  <img src="docs/images/codex-cove-approval.jpg" alt="Codex Cove focused command approval with one-action and current-task scopes" width="390">
+  <img src="docs/images/codex-cove-island.png" alt="Codex Cove collapsed Sunset island showing four animated agent residents" width="260">
 </p>
 
 <p align="center">
-  <img src="docs/images/codex-cove-appearance.jpg" alt="Codex Cove Appearance settings with custom theme colors and a live translucent preview" width="820">
+  <strong>One glance. Every agent.</strong><br>
+  <sub>The notch-sized island keeps active, remote, waiting, and completed work visible without taking over your desktop.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/codex-cove-command-center.png" alt="Codex Cove Native Glass Ocean command center coordinating nine local, desktop, and remote agents" width="390">
+  <img src="docs/images/codex-cove-approval-retro.png" alt="Codex Cove Retro Terminal focused approval with safe one-action and current-task scopes" width="390">
+</p>
+
+<p align="center">
+  <sub><strong>Native Glass · Ocean</strong> — a live command center &nbsp;&nbsp;&nbsp; <strong>Retro Terminal · Terminal Green</strong> — approvals without context switching</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/codex-cove-remote-oled.png" alt="Codex Cove Minimal OLED Sunset queue tracking active and completed agents on two remote hosts" width="390">
+</p>
+
+<p align="center">
+  <strong>Local, desktop, and remote work—one attention layer.</strong><br>
+  <sub>Exact origins stay visible, including the selected SSH host, in Minimal OLED · Sunset.</sub>
 </p>
 
 Codex Cove is built only for Codex. It has no account system, telemetry, cloud

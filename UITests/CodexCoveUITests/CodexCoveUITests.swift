@@ -327,6 +327,30 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testOpenFailureIsVisibleAndAccessible() {
+        let app = launchFixture("open-failure")
+        let row = element(taskQueueRowIdentifier("fixture-task-1"), in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+
+        row.click()
+
+        let feedback = element("cove.session-open-failure", in: app)
+        XCTAssertTrue(
+            feedback.waitForExistence(timeout: 2),
+            "A failed exact-origin jump must explain why Open did not navigate"
+        )
+        XCTAssertTrue(
+            [feedback.label, stringValue(of: feedback)]
+                .joined(separator: " ")
+                .contains(
+                    "The exact originating Codex location is not currently available."
+                ),
+            "The visible failure must expose its explanation to accessibility"
+        )
+        XCTAssertEqual(jumpCount(in: app), 1)
+    }
+
+    @MainActor
     func testQueueSectionsCollapseReorderAndArchiveCompleted() {
         let app = launchFixture("mixed-20")
         let attentionHeader = element(

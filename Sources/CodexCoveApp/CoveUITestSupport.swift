@@ -14,6 +14,7 @@ enum CoveUITestFixture: String, CaseIterable {
     case multiQuestion = "multi-question"
     case privacyRedacted = "privacy-redacted"
     case deliveryFailure = "delivery-failure"
+    case openFailure = "open-failure"
     case archivedTasks = "archived-tasks"
     case settingsAppearance = "settings-appearance"
     case settingsResidents = "settings-residents"
@@ -388,8 +389,13 @@ final class CoveUITestDecisionRecorder: CoveDecisionSending, @unchecked Sendable
 @MainActor
 final class CoveUITestTerminalJumpService: CoveTerminalJumping {
     private let recordJump: () -> Void
+    private let failsJumps: Bool
 
-    init(recordJump: @escaping () -> Void = {}) {
+    init(
+        failsJumps: Bool = false,
+        recordJump: @escaping () -> Void = {}
+    ) {
+        self.failsJumps = failsJumps
         self.recordJump = recordJump
     }
 
@@ -404,6 +410,12 @@ final class CoveUITestTerminalJumpService: CoveTerminalJumping {
 
     func jump(to snapshot: CoveSessionSnapshot) -> CoveJumpResult {
         recordJump()
+        if failsJumps {
+            return CoveJumpResult(
+                focusedExactLocation: false,
+                message: "The exact originating Codex location is not currently available."
+            )
+        }
         return CoveJumpResult(
             focusedExactLocation: true,
             message: "Recorded fixture jump"
@@ -479,6 +491,8 @@ enum CoveUITestFixtures {
         case .deliveryFailure:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
+        case .openFailure:
+            snapshots = [snapshot(index: 1, status: .working, now: now)]
         case .archivedTasks:
             dismissed = ["archived-1", "archived-2"]
         case .settingsAppearance, .settingsResidents, .settingsGeneral,

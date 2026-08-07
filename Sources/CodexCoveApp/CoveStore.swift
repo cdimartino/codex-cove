@@ -5,7 +5,7 @@ import CoveCore
 
 @MainActor
 final class CoveStore: ObservableObject {
-    var onJumpToSession: ((CoveSessionSnapshot) -> Void)?
+    var onJumpToSession: ((CoveSessionSnapshot) -> CoveJumpResult)?
     var onOpenDirectRequest: ((CoveSessionSnapshot) -> CoveJumpResult)?
     var onMarkRead: ((String) -> Void)?
     var onDismissSession: ((String) -> Bool)?
@@ -28,6 +28,7 @@ final class CoveStore: ObservableObject {
     @Published private(set) var customThemes: [CoveThemePalette] = []
     @Published private(set) var themePreview: CoveThemePalette?
     @Published private(set) var persistenceWarning: String?
+    @Published private(set) var sessionOpenFailureMessage: String?
     @Published private(set) var selectedSessionID: String?
     @Published private(set) var reminders: [String: Date] = [:]
 
@@ -51,6 +52,7 @@ final class CoveStore: ObservableObject {
     private var isOverlayFocused = false
     private var isDirectInteractionActive = false
     private var isSettingsPresented = false
+    private var sessionOpenFailureSessionID: String?
 
     init(
         storage: CoveStateStorage,
@@ -660,10 +662,32 @@ final class CoveStore: ObservableObject {
         )
     }
 
-    func open(_ snapshot: CoveSessionSnapshot) {
-        onJumpToSession?(snapshot)
+    @discardableResult
+    func open(_ snapshot: CoveSessionSnapshot) -> Bool {
+        let result = onJumpToSession?(snapshot) ?? CoveJumpResult(
+            focusedExactLocation: false,
+            message: "The exact originating Codex location is not currently available."
+        )
+        guard result.focusedExactLocation else {
+            sessionOpenFailureSessionID = snapshot.sessionId
+                ?? snapshot.snapshotId
+            sessionOpenFailureMessage = result.message
+            return false
+        }
+        clearSessionOpenFailure()
         dispatch(.markRead(snapshot.snapshotId))
         onMarkRead?(snapshot.sessionId ?? snapshot.snapshotId)
+        return true
+    }
+
+    func sessionOpenFailureMessage(
+        for snapshot: CoveSessionSnapshot
+    ) -> String? {
+        guard sessionOpenFailureSessionID
+                == (snapshot.sessionId ?? snapshot.snapshotId) else {
+            return nil
+        }
+        return sessionOpenFailureMessage
     }
 
     func markRead(_ snapshot: CoveSessionSnapshot) {
@@ -1026,6 +1050,7 @@ final class CoveStore: ObservableObject {
 
     @discardableResult
     func openInCodex(for request: CoveDirectRequest) -> Bool {
+        clearSessionOpenFailure()
         guard let snapshot = exactOriginSnapshot(for: request) else {
             setOpenFailure(
                 request.key,
@@ -1208,6 +1233,11 @@ final class CoveStore: ObservableObject {
             focusedExactLocation: true,
             message: "Opened the exact Codex Desktop task."
         )
+    }
+
+    private func clearSessionOpenFailure() {
+        sessionOpenFailureSessionID = nil
+        sessionOpenFailureMessage = nil
     }
 
     private func exactOriginSnapshot(
