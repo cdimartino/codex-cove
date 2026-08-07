@@ -88,6 +88,21 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testCollapsedIslandTransmitsBackdrop() throws {
+        try XCTSkipIf(
+            NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+            "Reduce Transparency intentionally replaces the native backdrop"
+        )
+        let lightBackdrop = collapsedSurfaceColor(backdrop: "white")
+        let darkBackdrop = collapsedSurfaceColor(backdrop: "black")
+        XCTAssertGreaterThan(
+            colorDistance(lightBackdrop, darkBackdrop),
+            0.08,
+            "A translucent island must preserve visible contrast from content behind it"
+        )
+    }
+
+    @MainActor
     func testMinimalMenuBarCueRestoresCove() {
         let app = launchFixture("minimal-cue")
         let restore = app.buttons["cove.overlay.restore-island"].firstMatch
@@ -1448,7 +1463,8 @@ final class CodexCoveUITests: XCTestCase {
     @discardableResult
     private func launchFixture(
         _ fixture: String,
-        textScale: Double? = nil
+        textScale: Double? = nil,
+        backdrop: String? = nil
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = [
@@ -1460,9 +1476,33 @@ final class CodexCoveUITests: XCTestCase {
                 "--ui-test-text-scale", String(textScale),
             ]
         }
+        if let backdrop {
+            app.launchArguments += ["--ui-test-backdrop", backdrop]
+        }
         launchedApplications.append(app)
         app.launch()
         return app
+    }
+
+    @MainActor
+    private func collapsedSurfaceColor(
+        backdrop: String
+    ) -> (red: Double, green: Double, blue: Double) {
+        let app = launchFixture("collapsed-cue", backdrop: backdrop)
+        let expand = app.buttons["cove.overlay.expand"].firstMatch
+        let collapse = app.buttons["cove.overlay.collapse"].firstMatch
+        if collapse.waitForExistence(timeout: 2) {
+            collapse.click()
+        }
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        let color = sampledSurfaceColor(from: expand.screenshot())
+        app.terminate()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) { app.state == .notRunning },
+            "The first backdrop fixture must stop before relaunch"
+        )
+        return color
     }
 
     @MainActor
@@ -1569,15 +1609,21 @@ final class CodexCoveUITests: XCTestCase {
 
     @MainActor
     private func sampledSurfaceColor(
-        from screenshot: XCUIScreenshot
+        from screenshot: XCUIScreenshot,
+        xFractions: Range<Double> = 0.78 ..< 0.90
     ) -> (red: Double, green: Double, blue: Double) {
         guard let bitmap = NSBitmapImageRep(data: screenshot.pngRepresentation)
         else {
             XCTFail("Could not decode the surface screenshot")
             return (0, 0, 0)
         }
-        let xRange = max(0, Int(Double(bitmap.pixelsWide) * 0.78))
-            ..< max(1, Int(Double(bitmap.pixelsWide) * 0.90))
+        let xRange = max(
+            0,
+            Int(Double(bitmap.pixelsWide) * xFractions.lowerBound)
+        ) ..< max(
+            1,
+            Int(Double(bitmap.pixelsWide) * xFractions.upperBound)
+        )
         let yRange = max(0, Int(Double(bitmap.pixelsHigh) * 0.42))
             ..< max(1, Int(Double(bitmap.pixelsHigh) * 0.58))
         var red = 0.0

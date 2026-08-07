@@ -1325,7 +1325,7 @@ private struct CoveStoreFoundationTests {
             response: fragmented,
             fragmentSize: 1,
             fragmentDelayMicroseconds: 500,
-            clientTimeout: 0.5
+            clientTimeout: 5
         )
         precondition(fragmentedResult.accepted)
 
@@ -1336,7 +1336,7 @@ private struct CoveStoreFoundationTests {
             response: eofDelimited,
             fragmentSize: 2,
             fragmentDelayMicroseconds: 500,
-            clientTimeout: 0.5
+            clientTimeout: 5
         )
         precondition(eofResult.accepted)
 

@@ -38,6 +38,11 @@ enum CoveUITestFixture: String, CaseIterable {
     }
 }
 
+enum CoveUITestBackdrop: String {
+    case white
+    case black
+}
+
 struct CoveUITestConfiguration {
     static let hostBundleIdentifier = "local.chris.codexcove.uitesthost"
     static let runnerBundleIdentifier =
@@ -48,6 +53,7 @@ struct CoveUITestConfiguration {
     let stateDirectory: URL
     let decisionRecorder: CoveUITestDecisionRecorder
     let textScaleOverride: Double?
+    let backdrop: CoveUITestBackdrop?
 
     static func detect(
         arguments: [String] = ProcessInfo.processInfo.arguments,
@@ -80,6 +86,18 @@ struct CoveUITestConfiguration {
             textScaleOverride = nil
         }
 
+        let backdropFlag = "--ui-test-backdrop"
+        let backdrop: CoveUITestBackdrop?
+        if arguments.contains(backdropFlag) {
+            guard arguments.filter({ $0 == backdropFlag }).count == 1,
+                  let rawValue = value(after: backdropFlag, in: arguments),
+                  let value = CoveUITestBackdrop(rawValue: rawValue)
+            else { return nil }
+            backdrop = value
+        } else {
+            backdrop = nil
+        }
+
         let directory = URL(
             fileURLWithPath: directoryPath,
             isDirectory: true
@@ -93,7 +111,8 @@ struct CoveUITestConfiguration {
             decisionRecorder: CoveUITestDecisionRecorder(
                 failsFirstAttempt: fixture == .deliveryFailure
             ),
-            textScaleOverride: textScaleOverride
+            textScaleOverride: textScaleOverride,
+            backdrop: backdrop
         )
     }
 

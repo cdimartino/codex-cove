@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private var behaviorTimer: Timer?
     private var inFlightReminderSessionIDs = Set<String>()
     private var settingsWindowController: NSWindowController?
+    private var uiTestBackdropWindow: NSWindow?
     private var eventVisibilityPolicy = CoveEventVisibilityPolicy()
     private var completedInitialLaunch = false
     private var revealRequestedDuringLaunch = false
@@ -210,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
 
         NSApp.setActivationPolicy(.accessory)
+        if let backdrop = uiTestConfiguration?.backdrop {
+            showUITestBackdrop(backdrop)
+        }
         store.onJumpToSession = { [weak self] snapshot in
             _ = self?.terminalJumpService.jump(to: snapshot)
         }
@@ -311,6 +315,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ) -> Bool {
         showCove()
         return false
+    }
+
+    private func showUITestBackdrop(_ backdrop: CoveUITestBackdrop) {
+        guard let screen = NSScreen.main else { return }
+        let color: NSColor = backdrop == .white ? .white : .black
+        let window = NSWindow(
+            contentRect: screen.frame,
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.animationBehavior = .none
+        window.backgroundColor = color
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.isOpaque = true
+        window.level = NSWindow.Level(
+            rawValue: NSWindow.Level.statusBar.rawValue - 1
+        )
+        window.orderFrontRegardless()
+        uiTestBackdropWindow = window
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -1095,7 +1121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.5.0"
+                as? String ?? "0.5.1"
         ) else {
             return
         }
@@ -1117,7 +1143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         )
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.5.0"
+                as? String ?? "0.5.1"
         ) else {
             return
         }
