@@ -34,6 +34,8 @@ Start with the guide that matches what you are trying to do.
   themes, native translucency, restorable idle hide, and latest task output.
 - [Codex Cove 0.5.1 release notes](releases/v0.5.1.md) — corrected native
   backdrop transparency for the collapsed island.
+- [Codex Cove 0.5.2 release notes](releases/v0.5.2.md) — reliable Linux remote
+  helper setup with the standard native Codex installation path.
 
 ## Version-specific engineering records
 

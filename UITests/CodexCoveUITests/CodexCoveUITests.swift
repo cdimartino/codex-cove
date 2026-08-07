@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreGraphics
 import XCTest
 
 /// End-to-end acceptance coverage for the deterministic UI-test host.
@@ -93,6 +94,13 @@ final class CodexCoveUITests: XCTestCase {
             NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
             "Reduce Transparency intentionally replaces the native backdrop"
         )
+        let originalCursorLocation = CGEvent(source: nil)?.location
+        defer {
+            if let originalCursorLocation {
+                _ = CGWarpMouseCursorPosition(originalCursorLocation)
+            }
+        }
+        movePointerAwayFromCove()
         let lightBackdrop = collapsedSurfaceColor(backdrop: "white")
         let darkBackdrop = collapsedSurfaceColor(backdrop: "black")
         XCTAssertGreaterThan(
@@ -1515,6 +1523,20 @@ final class CodexCoveUITests: XCTestCase {
             "The first backdrop fixture must stop before relaunch"
         )
         return color
+    }
+
+    @MainActor
+    private func movePointerAwayFromCove() {
+        let bounds = CGDisplayBounds(CGMainDisplayID())
+        let safePoint = CGPoint(
+            x: bounds.minX + 20,
+            y: bounds.maxY - 20
+        )
+        XCTAssert(
+            CGWarpMouseCursorPosition(safePoint) == .success,
+            "The backdrop fixture must normalize hover state before sampling"
+        )
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
     }
 
     @MainActor
