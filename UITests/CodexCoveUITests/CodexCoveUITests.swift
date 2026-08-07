@@ -111,6 +111,18 @@ final class CodexCoveUITests: XCTestCase {
             "Minimal mode must leave a clickable menu-bar cue"
         )
         XCTAssertTrue(restore.isHittable)
+        if let screen = NSScreen.main {
+            let menuBarHeight = max(
+                screen.safeAreaInsets.top,
+                screen.frame.maxY - screen.visibleFrame.maxY
+            )
+            XCTAssertEqual(
+                restore.frame.height,
+                max(24, menuBarHeight),
+                accuracy: 1,
+                "The minimal cue must match the active display's menu-bar height"
+            )
+        }
 
         restore.click()
         XCTAssertTrue(

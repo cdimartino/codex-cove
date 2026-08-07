@@ -175,7 +175,7 @@ public enum CoveOverlayGeometry {
         topContentInset: Double = defaultTopContentInset
     ) -> (width: Double, height: Double) {
         if minimalIslandMode {
-            return (126, 24)
+            return (126, max(24, topContentInset))
         }
         if expanded {
             return (

@@ -1787,7 +1787,21 @@ struct CoveCoreSmokeTests {
             minimalIslandMode: true
         )
         precondition(minimal.width == 126)
-        precondition(minimal.height == 24)
+        precondition(minimal.height == 32)
+        let tallMenuBarMinimal = CoveOverlayGeometry.size(
+            expanded: false,
+            privacyMode: .auto,
+            minimalIslandMode: true,
+            topContentInset: 38
+        )
+        precondition(tallMenuBarMinimal.height == 38)
+        let minimalFallback = CoveOverlayGeometry.size(
+            expanded: false,
+            privacyMode: .auto,
+            minimalIslandMode: true,
+            topContentInset: 0
+        )
+        precondition(minimalFallback.height == 24)
         let expanded = CoveOverlayGeometry.size(
             expanded: true,
             privacyMode: .auto,

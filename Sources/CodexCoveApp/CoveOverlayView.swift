@@ -86,7 +86,7 @@ struct CoveOverlayRootView: View {
         .clipShape(
             CoveOverlayClipShape(
                 cornerRadius: state.settings.minimalIslandMode
-                    ? 12
+                    ? max(12, presentationMetrics.topContentInset / 2)
                     : presentation.isExpanded
                         ? state.theme.cornerRadius
                         : 16,
