@@ -257,9 +257,9 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
         }
         let materialAlpha: CGFloat = switch state.settings.blurStyle {
         case .off: 0
-        case .thin: 0.45
-        case .regular: 0.72
-        case .thick: 1
+        case .thin: 0.28
+        case .regular: 0.45
+        case .thick: 0.65
         }
         // Vary the strength of one transparent backdrop material instead of
         // replacing it with dense HUD or popover surfaces.
