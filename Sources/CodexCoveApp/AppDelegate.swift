@@ -143,7 +143,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         self.shortcuts = CoveKeyboardShortcutBroker()
         self.terminalJumpService = uiTestConfiguration == nil
             ? CoveSystemTerminalJumpService()
-            : CoveUITestTerminalJumpService { [weak store] in
+            : CoveUITestTerminalJumpService(
+                failsJumps: uiTestConfiguration?.fixture == .openFailure
+            ) { [weak store] in
                 store?.recordFixtureJump()
             }
         self.metadataBridge = CoveMetadataBridge()
@@ -215,7 +217,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             showUITestBackdrop(backdrop)
         }
         store.onJumpToSession = { [weak self] snapshot in
-            _ = self?.terminalJumpService.jump(to: snapshot)
+            self?.terminalJumpService.jump(to: snapshot)
+                ?? CoveJumpResult(
+                    focusedExactLocation: false,
+                    message: "The exact originating Codex location is not currently available."
+                )
         }
         store.onOpenDirectRequest = { [weak self] snapshot in
             self?.terminalJumpService.jump(to: snapshot)
