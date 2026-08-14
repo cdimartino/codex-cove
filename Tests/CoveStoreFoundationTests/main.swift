@@ -222,6 +222,11 @@ private struct CoveStoreFoundationTests {
         testArchiveAllCompletedSafety()
         await testRecoverableIdleAutoHide()
         do {
+            try testCustomThemeDraftPersistsWhenSettingsCloses()
+        } catch {
+            fatalError("Custom theme close persistence failed: \(error)")
+        }
+        do {
             try testCustomThemeSaveAndExport()
         } catch {
             fatalError("Custom theme save/export failed: \(error)")
@@ -427,8 +432,6 @@ private struct CoveStoreFoundationTests {
         store.previewTheme(draft)
         precondition(store.themePreview?.backgroundHex == "#123456")
         precondition(store.themePreview?.surfaceFill == .solid)
-        store.endSettingsPresentation()
-        precondition(store.themePreview == nil)
         let saved = try store.saveCustomTheme(draft, named: "My Theme")
         precondition(!saved.isBuiltIn)
         precondition(saved.name == "My Theme")
@@ -460,6 +463,55 @@ private struct CoveStoreFoundationTests {
         precondition(resaved.name == "My Theme 2")
         precondition(resaved.surfaceHex == "#654321")
         precondition(store.customThemes == [resaved])
+    }
+
+    static func testCustomThemeDraftPersistsWhenSettingsCloses() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = CoveFileStateStorage(
+            url: directory.appendingPathComponent("settings.json")
+        )
+        let themeStorage = CoveThemeFileStore(
+            directoryURL: directory.appendingPathComponent("Themes")
+        )
+        let store = CoveStore(
+            storage: storage,
+            themeStorage: themeStorage,
+            initialState: CoveState(),
+            persistenceWritesEnabledOverride: true,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+
+        var draft = store.state.theme
+        draft.name = "Close Saved Theme"
+        draft.backgroundHex = "#123456"
+        draft.surfaceFill = .solid
+        store.previewTheme(draft)
+        store.endSettingsPresentation()
+
+        precondition(store.themePreview == nil)
+        precondition(store.customThemes.count == 1)
+        let saved = store.customThemes[0]
+        precondition(saved.name == "Close Saved Theme")
+        precondition(saved.backgroundHex == "#123456")
+        precondition(saved.surfaceFill == .solid)
+        precondition(saved.identifier != draft.identifier)
+        let persistedState = try storage.load()
+        precondition(
+            persistedState?.settings.customThemeID == saved.identifier
+        )
+
+        let reloaded = CoveStore(
+            storage: storage,
+            themeStorage: themeStorage,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false
+        )
+        precondition(reloaded.state.settings.customThemeID == saved.identifier)
+        precondition(reloaded.state.theme == saved)
     }
 
     static func testRecoverableIdleAutoHide() async {

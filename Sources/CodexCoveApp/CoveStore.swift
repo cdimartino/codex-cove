@@ -198,7 +198,17 @@ final class CoveStore: ObservableObject {
 
     func endSettingsPresentation() {
         isSettingsPresented = false
-        themePreview = nil
+        guard let themePreview else {
+            return
+        }
+        do {
+            try saveCustomTheme(themePreview, named: themePreview.name)
+        } catch {
+            self.themePreview = nil
+            NSLog(
+                "Codex Cove: custom theme could not be saved when Settings closed: \(error.localizedDescription)"
+            )
+        }
     }
 
     func previewTheme(_ theme: CoveThemePalette) {
