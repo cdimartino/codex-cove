@@ -219,7 +219,7 @@ require_value remote_duplicate_count 0
 require_value wrong_scope_send_count 0
 require_value dependency_npm_vulnerability_count 0
 require_value ui_started yes
-require_value ui_pass_count 27
+require_value ui_pass_count 32
 require_value ui_fail_count 0
 require_value ui_skip_count 0
 require_value p0_open_count 0
@@ -227,18 +227,12 @@ require_value p1_open_count 0
 require_value final_process_count 1
 
 require_value defect_register_schema privacy_safe_v1
-require_value defect_register_entry_count 1
-require_value supersedes_source_candidate_digest de0b487f628d32ca7671021283055bcc3e55d6e978aefbf8177543a5b5df3d3a
-require_value superseded_candidate_receipt_sha256 972ce0cf89d7980764f5f3f4c9fd59afcbaae4c7b1e04082fdae4bca62297a4d
-require_value superseded_candidate_failure_row_count 1
-require_value superseded_candidate_owner_attempt not-run
-require_value superseded_candidate_owner_scripted_pass not-run
-require_value defect_001_ref P1-004
-require_value defect_001_severity P1
-require_value defect_001_release_row ui_gate
-require_value defect_001_status resolved-automated
-require_value defect_001_current_candidate_retest_receipt ui_gate
-require_value defect_001_symptom_category collapsed_backdrop_contrast
+require_value defect_register_entry_count 0
+require_value supersedes_source_candidate_digest none
+require_value superseded_candidate_receipt_sha256 none
+require_value superseded_candidate_failure_row_count 0
+require_value superseded_candidate_owner_attempt not-required
+require_value superseded_candidate_owner_scripted_pass not-required
 
 for timestamp_key in \
     started_at \
@@ -247,16 +241,14 @@ for timestamp_key in \
     dependency_gate_at \
     bootstrap_gate_at \
     product_build_gate_at \
-    defect_001_first_observed_at \
-    defect_register_reviewed_at \
     receipt_binding_verify_at \
     candidate_verify_final_at
 do
     require_local_timestamp "$timestamp_key"
 done
 
-require_recorded defect_register_reviewed_at
-require_value source_change_reason blur_transmission_and_hover_normalization
+require_value defect_register_reviewed_at not-required
+require_value source_change_reason workspace_dashboard_and_thread_control
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then

@@ -228,7 +228,7 @@ public struct CoveAccountUsageConfiguration: Equatable, Sendable {
         refreshInterval: TimeInterval = defaultRefreshInterval,
         requestTimeout: TimeInterval = defaultRequestTimeout,
         maximumLineBytes: Int = defaultMaximumLineBytes,
-        clientVersion: String = "0.5.2"
+        clientVersion: String = "0.6.0"
     ) {
         self.realCodexURL = realCodexURL
         self.refreshInterval = min(3_600, max(300, refreshInterval))
@@ -241,7 +241,7 @@ public struct CoveAccountUsageConfiguration: Equatable, Sendable {
         configurationURL: URL = defaultInstalledConfigurationURL(),
         refreshInterval: TimeInterval = defaultRefreshInterval,
         requestTimeout: TimeInterval = defaultRequestTimeout,
-        clientVersion: String = "0.5.2"
+        clientVersion: String = "0.6.0"
     ) throws -> Self {
         struct InstalledHelperConfiguration: Decodable {
             var realCodex: String?
@@ -336,7 +336,7 @@ public final class CoveAccountUsageHydrator {
     public convenience init(
         installedConfigurationURL: URL = CoveAccountUsageConfiguration
             .defaultInstalledConfigurationURL(),
-        clientVersion: String = "0.5.2"
+        clientVersion: String = "0.6.0"
     ) throws {
         try self.init(
             configuration: CoveAccountUsageConfiguration.installed(
