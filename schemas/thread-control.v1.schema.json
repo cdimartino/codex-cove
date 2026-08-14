@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codex-cove.local/schemas/thread-control.v1.schema.json",
+  "title": "ThreadControl",
+  "description": "Allowlisted local and remote start or steer control frames and their correlated acknowledgements.",
+  "schemaVersion": 1,
+  "type": "object",
+  "required": [
+    "schemaVersion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/localRequest"
+    },
+    {
+      "$ref": "#/$defs/remoteRequest"
+    },
+    {
+      "$ref": "#/$defs/acknowledgement"
+    }
+  ],
+  "$defs": {
+    "controlId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "opaqueId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "source",
+        "sessionId"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "localCli",
+            "remoteCli"
+          ]
+        },
+        "remoteHostId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/opaqueId"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "remoteCli"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "remoteHostId"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "remoteHostId"
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "properties": {
+            "operation": {
+              "const": "start"
+            }
+          },
+          "not": {
+            "required": [
+              "expectedTurnId"
+            ]
+          }
+        },
+        {
+          "required": [
+            "expectedTurnId"
+          ],
+          "properties": {
+            "operation": {
+              "const": "steer"
+            },
+            "expectedTurnId": {
+              "$ref": "#/$defs/opaqueId"
+            }
+          }
+        }
+      ]
+    },
+    "localRequest": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "launchId",
+        "target",
+        "operation",
+        "clientMessageId",
+        "input"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "launchId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "target": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/target"
+            },
+            {
+              "properties": {
+                "source": {
+                  "const": "localCli"
+                }
+              }
+            }
+          ]
+        },
+        "operation": {
+          "enum": [
+            "start",
+            "steer"
+          ]
+        },
+        "expectedTurnId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "clientMessageId": {
+          "$ref": "#/$defs/controlId"
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/operation"
+        }
+      ],
+      "additionalProperties": false
+    },
+    "remoteRequest": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "type",
+        "controlId",
+        "controlSocket",
+        "launchId",
+        "target",
+        "operation",
+        "clientMessageId",
+        "input"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "type": {
+          "const": "threadControl"
+        },
+        "controlId": {
+          "$ref": "#/$defs/controlId"
+        },
+        "controlSocket": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "launchId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "target": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/target"
+            },
+            {
+              "properties": {
+                "source": {
+                  "const": "remoteCli"
+                }
+              }
+            }
+          ]
+        },
+        "operation": {
+          "enum": [
+            "start",
+            "steer"
+          ]
+        },
+        "expectedTurnId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "clientMessageId": {
+          "$ref": "#/$defs/controlId"
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/operation"
+        }
+      ],
+      "additionalProperties": false
+    },
+    "acknowledgement": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "type",
+        "controlId",
+        "status"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "type": {
+          "const": "threadControlAck"
+        },
+        "controlId": {
+          "$ref": "#/$defs/controlId"
+        },
+        "status": {
+          "enum": [
+            "accepted",
+            "rejected",
+            "uncertain"
+          ]
+        },
+        "turnId": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "rejection": {
+          "enum": [
+            "unavailable",
+            "unsupported",
+            "staleRoute",
+            "wrongOrigin",
+            "pendingRequest",
+            "turnMismatch",
+            "invalidInput",
+            "serverRejected"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "rejected"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "rejection"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

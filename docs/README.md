@@ -8,6 +8,10 @@ Start with the guide that matches what you are trying to do.
   installs, macOS permissions, migration, upgrades, remote helpers, and removal.
 - [User Guide](USER_GUIDE.md) — the island, queue, decisions, exact-origin
   navigation, editor commands, privacy, notifications, and settings.
+- [Workspace Help](WORKSPACE.md) — Grid, Board, hierarchy, card metadata,
+  prompt templates, start/steer, privacy, and troubleshooting.
+- [Settings Help](SETTINGS.md) — every configuration pane, control group,
+  persistence effect, and related macOS behavior.
 - [Troubleshooting](TROUBLESHOOTING.md) — diagnostic commands and common
   Homebrew, local, editor, permission, and remote-integration failures.
 - [Security & Privacy](SECURITY.md) — data handling, trust boundaries,

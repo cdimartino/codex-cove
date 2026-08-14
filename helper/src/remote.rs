@@ -3,7 +3,7 @@ use crate::install::sha256_file;
 use crate::ipc::{bind_private_listener, read_length_frame, read_limited_line, write_length_frame};
 use crate::{CoveEvent, DEFAULT_MAX_FRAME_BYTES};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -260,6 +260,22 @@ struct RelayControl {
     decision: Value,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayThreadControl {
+    schema_version: u32,
+    #[serde(rename = "type")]
+    kind: String,
+    control_id: String,
+    control_socket: PathBuf,
+    launch_id: String,
+    target: Value,
+    operation: String,
+    expected_turn_id: Option<String>,
+    client_message_id: String,
+    input: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum RelayDecisionAckStatus {
@@ -288,9 +304,39 @@ impl RelayDecisionAck {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum RelayThreadControlAckStatus {
+    Accepted,
+    Rejected,
+    Uncertain,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RelayThreadControlAck {
+    schema_version: u32,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    control_id: String,
+    status: RelayThreadControlAckStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rejection: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum RelayAcknowledgement {
+    Decision(RelayDecisionAck),
+    ThreadControl(RelayThreadControlAck),
+}
+
 #[derive(Default)]
 struct RelayDecisionRegistry {
     requests: HashMap<PathBuf, HashSet<String>>,
+    thread_controls: HashMap<PathBuf, HashSet<(String, String)>>,
 }
 
 impl RelayDecisionRegistry {
@@ -314,6 +360,19 @@ impl RelayDecisionRegistry {
         if remove_socket {
             self.requests.remove(socket);
         }
+    }
+
+    fn advertise_thread_control(&mut self, socket: PathBuf, launch_id: String, session_id: String) {
+        self.thread_controls
+            .entry(socket)
+            .or_default()
+            .insert((launch_id, session_id));
+    }
+
+    fn contains_thread_control(&self, socket: &Path, launch_id: &str, session_id: &str) -> bool {
+        self.thread_controls
+            .get(socket)
+            .is_some_and(|routes| routes.contains(&(launch_id.to_owned(), session_id.to_owned())))
     }
 }
 
@@ -368,7 +427,7 @@ fn relay_event_loop<W: Write>(
     listener: &UnixListener,
     output: &mut W,
     registry: &Arc<Mutex<RelayDecisionRegistry>>,
-    acknowledgement_receiver: &Receiver<RelayDecisionAck>,
+    acknowledgement_receiver: &Receiver<RelayAcknowledgement>,
     running: &AtomicBool,
     max_bytes: usize,
 ) -> io::Result<()> {
@@ -398,7 +457,7 @@ fn relay_event_loop<W: Write>(
 
 fn write_pending_acknowledgements<W: Write>(
     output: &mut W,
-    receiver: &Receiver<RelayDecisionAck>,
+    receiver: &Receiver<RelayAcknowledgement>,
     max_bytes: usize,
 ) -> io::Result<()> {
     loop {
@@ -452,6 +511,14 @@ fn forward_event_line<W: Write>(
     {
         registry.lock().unwrap().advertise(socket, request_id);
     }
+    if let Some((socket, launch_id, session_id)) = advertised_thread_control(&event)
+        && validate_private_decision_socket(&socket).is_ok()
+    {
+        registry
+            .lock()
+            .unwrap()
+            .advertise_thread_control(socket, launch_id, session_id);
+    }
     write_length_frame(output, line, max_bytes)
 }
 
@@ -475,21 +542,57 @@ fn advertised_decision(event: &CoveEvent) -> Option<(PathBuf, String)> {
     Some((socket, request_id))
 }
 
+fn advertised_thread_control(event: &CoveEvent) -> Option<(PathBuf, String, String)> {
+    let mut socket = event
+        .payload
+        .get("decisionSocket")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)?;
+    socket.set_extension("c");
+    let launch_id = event.launch_id.as_ref()?.to_owned();
+    if launch_id.is_empty()
+        || event.session_id.is_empty()
+        || matches!(event.session_id.as_str(), "unknown" | "pending")
+    {
+        return None;
+    }
+    Some((socket, launch_id, event.session_id.clone()))
+}
+
 fn control_loop<R: Read>(
     input: &mut R,
     registry: &Arc<Mutex<RelayDecisionRegistry>>,
-    acknowledgement_sender: &Sender<RelayDecisionAck>,
+    acknowledgement_sender: &Sender<RelayAcknowledgement>,
     max_bytes: usize,
 ) -> io::Result<()> {
     while let Some(frame) = read_length_frame(input, max_bytes)? {
-        let control = decode_control_frame(&frame)?;
-        let control_id = control.control_id.clone();
-        let status = match forward_control(control, registry, max_bytes) {
-            Ok(()) => RelayDecisionAckStatus::Delivered,
-            Err(_) => RelayDecisionAckStatus::Failed,
+        let value: Value = serde_json::from_slice(&frame)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
+        let acknowledgement = match kind {
+            "decision" => {
+                let control = decode_control_frame(&frame)?;
+                let control_id = control.control_id.clone();
+                let status = match forward_control(control, registry, max_bytes) {
+                    Ok(()) => RelayDecisionAckStatus::Delivered,
+                    Err(_) => RelayDecisionAckStatus::Failed,
+                };
+                RelayAcknowledgement::Decision(RelayDecisionAck::new(control_id, status))
+            }
+            "threadControl" => RelayAcknowledgement::ThreadControl(forward_thread_control(
+                decode_thread_control_frame(&frame)?,
+                registry,
+                max_bytes,
+            )),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unsupported remote relay control frame",
+                ));
+            }
         };
         acknowledgement_sender
-            .send(RelayDecisionAck::new(control_id, status))
+            .send(acknowledgement)
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "relay output closed"))?;
     }
     Ok(())
@@ -521,6 +624,200 @@ fn decode_control_frame(frame: &[u8]) -> io::Result<RelayControl> {
         ));
     }
     Ok(control)
+}
+
+fn decode_thread_control_frame(frame: &[u8]) -> io::Result<RelayThreadControl> {
+    let control: RelayThreadControl = serde_json::from_slice(frame)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    if control.schema_version != 1
+        || control.kind != "threadControl"
+        || !valid_relay_control_id(&control.control_id)
+        || !valid_relay_control_id(&control.client_message_id)
+        || control.launch_id.is_empty()
+        || control.launch_id.len() > 512
+        || control.input.trim().is_empty()
+        || control.input.len() > 32 * 1_024
+        || !matches!(control.operation.as_str(), "start" | "steer")
+        || (control.operation == "steer"
+            && control
+                .expected_turn_id
+                .as_deref()
+                .is_none_or(|value| value.is_empty() || value.len() > 512))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid remote thread control frame",
+        ));
+    }
+    let target = control.target.as_object().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "thread control target missing")
+    })?;
+    if target.get("source").and_then(Value::as_str) != Some("remoteCli")
+        || target
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.is_empty() || value.len() > 512)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "thread control target origin is invalid",
+        ));
+    }
+    Ok(control)
+}
+
+fn valid_relay_control_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn forward_thread_control(
+    control: RelayThreadControl,
+    registry: &Arc<Mutex<RelayDecisionRegistry>>,
+    max_bytes: usize,
+) -> RelayThreadControlAck {
+    let control_id = control.control_id.clone();
+    let rejected = |rejection| RelayThreadControlAck {
+        schema_version: 1,
+        kind: "threadControlAck",
+        control_id: control_id.clone(),
+        status: RelayThreadControlAckStatus::Rejected,
+        turn_id: None,
+        rejection: Some(rejection),
+    };
+    let Some(session_id) = control.target.get("sessionId").and_then(Value::as_str) else {
+        return rejected("wrongOrigin");
+    };
+    let expected_response_id = format!("cove-thread-control:{}", control.client_message_id);
+    if !registry.lock().unwrap().contains_thread_control(
+        &control.control_socket,
+        &control.launch_id,
+        session_id,
+    ) {
+        return rejected("staleRoute");
+    }
+    if validate_private_decision_socket(&control.control_socket).is_err() {
+        return rejected("staleRoute");
+    }
+    let mut stream = match UnixStream::connect(&control.control_socket) {
+        Ok(stream) => stream,
+        Err(_) => return rejected("staleRoute"),
+    };
+    if stream
+        .set_write_timeout(Some(Duration::from_millis(750)))
+        .and_then(|_| stream.set_read_timeout(Some(Duration::from_secs(4))))
+        .and_then(|_| validate_decision_peer(&stream))
+        .is_err()
+    {
+        return rejected("staleRoute");
+    }
+    let mut encoded = match serde_json::to_vec(&json!({
+        "schemaVersion": 1,
+        "launchId": control.launch_id,
+        "target": control.target,
+        "operation": control.operation,
+        "expectedTurnId": control.expected_turn_id,
+        "clientMessageId": control.client_message_id,
+        "input": control.input,
+    })) {
+        Ok(encoded) => encoded,
+        Err(_) => return rejected("invalidInput"),
+    };
+    encoded.push(b'\n');
+    if encoded.len() > max_bytes || stream.write_all(&encoded).is_err() || stream.flush().is_err() {
+        return rejected("unavailable");
+    }
+    let mut reader = BufReader::new(stream);
+    let response = match read_limited_line(&mut reader, max_bytes) {
+        Ok(Some(response)) => response,
+        Ok(None) | Err(_) => {
+            return RelayThreadControlAck {
+                schema_version: 1,
+                kind: "threadControlAck",
+                control_id,
+                status: RelayThreadControlAckStatus::Uncertain,
+                turn_id: None,
+                rejection: None,
+            };
+        }
+    };
+    let value: Value = match serde_json::from_slice(&response) {
+        Ok(value) => value,
+        Err(_) => {
+            return RelayThreadControlAck {
+                schema_version: 1,
+                kind: "threadControlAck",
+                control_id,
+                status: RelayThreadControlAckStatus::Uncertain,
+                turn_id: None,
+                rejection: None,
+            };
+        }
+    };
+    if value.get("status").and_then(Value::as_str) == Some("uncertain") {
+        return RelayThreadControlAck {
+            schema_version: 1,
+            kind: "threadControlAck",
+            control_id,
+            status: RelayThreadControlAckStatus::Uncertain,
+            turn_id: None,
+            rejection: None,
+        };
+    }
+    if value.get("status").and_then(Value::as_str) == Some("rejected") {
+        let rejection = match value.get("rejection").and_then(Value::as_str) {
+            Some("unavailable") => "unavailable",
+            Some("unsupported") => "unsupported",
+            Some("staleRoute") => "staleRoute",
+            Some("wrongOrigin") => "wrongOrigin",
+            Some("pendingRequest") => "pendingRequest",
+            Some("turnMismatch") => "turnMismatch",
+            Some("invalidInput") => "invalidInput",
+            _ => "serverRejected",
+        };
+        return rejected(rejection);
+    }
+    if value.get("id").and_then(Value::as_str) != Some(expected_response_id.as_str()) {
+        return RelayThreadControlAck {
+            schema_version: 1,
+            kind: "threadControlAck",
+            control_id,
+            status: RelayThreadControlAckStatus::Uncertain,
+            turn_id: None,
+            rejection: None,
+        };
+    }
+    if let Some(error) = value.get("error").filter(|value| !value.is_null()) {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        return rejected(
+            if message.contains("turn") && message.contains("mismatch") {
+                "turnMismatch"
+            } else {
+                "serverRejected"
+            },
+        );
+    }
+    let turn_id = value
+        .pointer("/result/turn/id")
+        .or_else(|| value.pointer("/result/turnId"))
+        .or_else(|| value.pointer("/result/id"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    RelayThreadControlAck {
+        schema_version: 1,
+        kind: "threadControlAck",
+        control_id,
+        status: RelayThreadControlAckStatus::Accepted,
+        turn_id,
+        rejection: None,
+    }
 }
 
 fn forward_control(
@@ -958,6 +1255,112 @@ mod tests {
     }
 
     #[test]
+    fn relay_thread_control_requires_an_advertised_launch_and_session() {
+        let temp = tempdir().unwrap();
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let decision_path = temp.path().join("broker.d");
+        let control_path = temp.path().join("broker.c");
+        let _decision_listener = bind_private_listener(&decision_path).unwrap();
+        let control_listener = bind_private_listener(&control_path).unwrap();
+        let event = CoveEvent::new(
+            "appServer",
+            EventSource::RemoteCli,
+            "session-1",
+            Some("launch-1".to_owned()),
+            json!({"decisionSocket": decision_path, "message": {"method": "turn/started"}}),
+        );
+        let registry = Arc::new(Mutex::new(RelayDecisionRegistry::default()));
+        forward_event_line(
+            &serde_json::to_vec(&event).unwrap(),
+            &mut Vec::new(),
+            &registry,
+            1_048_576,
+        )
+        .unwrap();
+        assert!(registry.lock().unwrap().contains_thread_control(
+            &control_path,
+            "launch-1",
+            "session-1"
+        ));
+
+        let server = thread::spawn(move || {
+            let (stream, _) = control_listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["operation"], "start");
+            assert_eq!(frame["target"]["sessionId"], "session-1");
+            reader
+                .get_mut()
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"cove-thread-control:message-1\",\"result\":{\"turn\":{\"id\":\"turn-1\"}}}\n")
+                .unwrap();
+        });
+        let control = RelayThreadControl {
+            schema_version: 1,
+            kind: "threadControl".to_owned(),
+            control_id: "relay-1".to_owned(),
+            control_socket: control_path,
+            launch_id: "launch-1".to_owned(),
+            target: json!({
+                "source": "remoteCli",
+                "remoteHostId": "build-host",
+                "sessionId": "session-1"
+            }),
+            operation: "start".to_owned(),
+            expected_turn_id: None,
+            client_message_id: "message-1".to_owned(),
+            input: "Continue".to_owned(),
+        };
+        let acknowledgement = forward_thread_control(control, &registry, 1_048_576);
+        assert_eq!(
+            acknowledgement.status,
+            RelayThreadControlAckStatus::Accepted
+        );
+        assert_eq!(acknowledgement.turn_id.as_deref(), Some("turn-1"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn relay_thread_control_rejects_wrong_or_stale_targets_without_delivery() {
+        let registry = Arc::new(Mutex::new(RelayDecisionRegistry::default()));
+        let frame = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "type": "threadControl",
+            "controlId": "relay-1",
+            "controlSocket": "/tmp/not-advertised.c",
+            "launchId": "launch-1",
+            "target": {"source": "remoteCli", "sessionId": "session-1"},
+            "operation": "steer",
+            "expectedTurnId": "turn-1",
+            "clientMessageId": "message-1",
+            "input": "Continue"
+        }))
+        .unwrap();
+        let control = decode_thread_control_frame(&frame).unwrap();
+        let acknowledgement = forward_thread_control(control, &registry, 1_048_576);
+        assert_eq!(
+            acknowledgement.status,
+            RelayThreadControlAckStatus::Rejected
+        );
+        assert_eq!(acknowledgement.rejection, Some("staleRoute"));
+
+        let wrong_origin = serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "type": "threadControl",
+            "controlId": "relay-2",
+            "controlSocket": "/tmp/not-advertised.c",
+            "launchId": "launch-1",
+            "target": {"source": "localCli", "sessionId": "session-1"},
+            "operation": "start",
+            "clientMessageId": "message-2",
+            "input": "Continue"
+        }))
+        .unwrap();
+        assert!(decode_thread_control_frame(&wrong_origin).is_err());
+    }
+
+    #[test]
     fn relay_control_forwards_once_to_matching_private_socket() {
         let temp = tempdir().unwrap();
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -1054,7 +1457,9 @@ mod tests {
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
         assert!(line.ends_with('\n'));
-        let acknowledgement = receiver.recv().unwrap();
+        let RelayAcknowledgement::Decision(acknowledgement) = receiver.recv().unwrap() else {
+            panic!("expected decision acknowledgement");
+        };
         assert_eq!(acknowledgement.control_id, "control-delivered");
         assert_eq!(acknowledgement.status, RelayDecisionAckStatus::Delivered);
         assert!(!registry.lock().unwrap().contains(&decision_path, "n:42"));
@@ -1088,7 +1493,9 @@ mod tests {
 
         control_loop(&mut framed.as_slice(), &registry, &sender, 1_048_576).unwrap();
 
-        let acknowledgement = receiver.recv().unwrap();
+        let RelayAcknowledgement::Decision(acknowledgement) = receiver.recv().unwrap() else {
+            panic!("expected decision acknowledgement");
+        };
         assert_eq!(acknowledgement.control_id, "control-failed");
         assert_eq!(acknowledgement.status, RelayDecisionAckStatus::Failed);
         assert!(
@@ -1104,10 +1511,10 @@ mod tests {
     fn relay_acknowledgement_is_a_bounded_length_prefixed_frame() {
         let (sender, receiver) = mpsc::channel();
         sender
-            .send(RelayDecisionAck::new(
+            .send(RelayAcknowledgement::Decision(RelayDecisionAck::new(
                 "control-framed".to_owned(),
                 RelayDecisionAckStatus::Delivered,
-            ))
+            )))
             .unwrap();
         let mut output = Vec::new();
         write_pending_acknowledgements(&mut output, &receiver, 1_048_576).unwrap();

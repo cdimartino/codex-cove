@@ -15,6 +15,7 @@ struct CoveQueueSurfaceView: View {
 
     let state: CoveState
     let redactsSensitiveContent: Bool
+    let onOpenWorkspace: @MainActor () -> Void
     let onOpenSettings: @MainActor () -> Void
     let onRestoreArchived: @MainActor (String?) -> Void
 
@@ -271,8 +272,9 @@ struct CoveQueueSurfaceView: View {
                             theme: state.theme,
                             redactsSensitiveContent: redactsSensitiveContent,
                             isSelected: item.id == selectedID,
-                            isReminderScheduled: store.reminders[item.sessionId]
-                                != nil,
+                            isReminderScheduled: item.identity.map {
+                                store.reminders[$0] != nil
+                            } ?? false,
                             onSelect: { open(item) },
                             onFocus: { focus(item) }
                         )
@@ -411,6 +413,15 @@ struct CoveQueueSurfaceView: View {
 
             archivedSection
 
+            Button(action: onOpenWorkspace) {
+                Label("Open Workspace…", systemImage: "square.grid.2x2.fill")
+                    .coveOverlayFont(state.theme, .body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderedProminent)
+            .help("Open the Codex Cove Workspace")
+            .accessibilityIdentifier("cove.queue.workspace")
+
             Button(action: onOpenSettings) {
                 Label("Settings…", systemImage: "gearshape.fill")
                     .coveOverlayFont(state.theme, .body)
@@ -419,6 +430,15 @@ struct CoveQueueSurfaceView: View {
             .buttonStyle(.bordered)
             .help("Open Codex Cove Settings")
             .accessibilityIdentifier("cove.queue.settings")
+
+            Link(destination: CoveHelp.userGuideURL) {
+                Label("Help…", systemImage: "questionmark.circle")
+                    .coveOverlayFont(state.theme, .body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+            .help("Open the complete Codex Cove user guide")
+            .accessibilityIdentifier("cove.queue.help")
         }
     }
 
@@ -1506,7 +1526,7 @@ struct CoveFocusedSurfaceView: View {
     }
 }
 
-private struct CoveFocusedDirectRequestView: View {
+struct CoveFocusedDirectRequestView: View {
     @EnvironmentObject private var store: CoveStore
 
     let request: CoveDirectRequest
@@ -2394,11 +2414,13 @@ private struct CoveFocusedSessionView: View {
     }
 
     private var isPinned: Bool {
-        store.state.pinnedSessionIDs.contains(sessionID)
+        snapshot.sessionIdentity.map {
+            store.state.pinnedSessionIDs.contains($0.id)
+        } ?? false
     }
 
     private var isReminderScheduled: Bool {
-        store.reminders[sessionID] != nil
+        snapshot.sessionIdentity.map { store.reminders[$0] != nil } ?? false
     }
 
     private var metadata: some View {

@@ -16,6 +16,20 @@ public enum CoveSessionStatus: String, Codable, CaseIterable, Sendable {
     case interrupted
 }
 
+public extension CoveSessionStatus {
+    /// States that should become unread when they are first observed or change.
+    var requiresUnreadAcknowledgement: Bool {
+        switch self {
+        case .waitingApproval, .waitingInput, .blocked, .completed, .failed,
+             .interrupted:
+            true
+        case .idle, .listening, .active, .quiet, .hidden, .working,
+             .compacting:
+            false
+        }
+    }
+}
+
 public enum CovePrivacyScene: String, Codable, CaseIterable, Sendable {
     case normal
     case redacted
@@ -303,6 +317,13 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
     public var source: CoveWireSource?
     public var hostId: String?
     public var parentSessionId: String?
+    /// Public app-server/broker liveness, kept separate from turn status.
+    /// Nil denotes a legacy event that did not advertise liveness.
+    public var liveness: CoveSessionLiveness?
+    /// Exact active turn required by `turn/steer`; never inferred.
+    public var activeTurnId: String?
+    /// The currently authoritative route for bounded prompt control.
+    public var controlRoute: CoveThreadControlRoute?
     public var unread: Bool
 
     public init(
@@ -319,6 +340,9 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         source: CoveWireSource? = nil,
         hostId: String? = nil,
         parentSessionId: String? = nil,
+        liveness: CoveSessionLiveness? = nil,
+        activeTurnId: String? = nil,
+        controlRoute: CoveThreadControlRoute? = nil,
         unread: Bool = false
     ) {
         self.schemaVersion = schemaVersion
@@ -334,6 +358,9 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         self.source = source
         self.hostId = hostId
         self.parentSessionId = parentSessionId
+        self.liveness = liveness
+        self.activeTurnId = activeTurnId
+        self.controlRoute = controlRoute
         self.unread = unread
     }
 }
@@ -703,6 +730,22 @@ public struct CoveState: Codable, Equatable, Sendable {
     }
 }
 
+public extension CoveState {
+    /// Legacy sidecars stored raw session IDs. Count only values that now map
+    /// to more than one live/restored origin; unresolved values remain inert
+    /// but are not claimed to be ambiguous.
+    var ambiguousLegacySessionIdentityCount: Int {
+        let identities = session.snapshots.compactMap(\.sessionIdentity)
+        let scopedKeys = Set(identities.map(\.id))
+        return Set(pinnedSessionIDs + dismissedSessionIDs).reduce(0) {
+            count, value in
+            guard !scopedKeys.contains(value) else { return count }
+            return identities.lazy.filter { $0.sessionId == value }.prefix(2)
+                .count > 1 ? count + 1 : count
+        }
+    }
+}
+
 public enum CoveAction: Equatable, Sendable {
     case boot
     case toggleExpanded
@@ -751,7 +794,7 @@ public enum CoveAction: Equatable, Sendable {
     case restoreDismissedSession(String?)
     case evaluateQuiet(Date, focusedBundleIdentifier: String?)
     case restorePinnedSessionIDs([String])
-    case togglePinned(String)
+    case togglePinned(CoveSessionIdentity)
     case receivedUsage(CoveUsageSnapshot)
     case receivedEnvelope(CoveWireEnvelope)
     case receivedSnapshot(CoveSessionSnapshot)
@@ -771,9 +814,9 @@ public enum CoveAction: Equatable, Sendable {
         source: CoveWireSource,
         hostId: String?
     )
-    case markRead(String)
-    case dismissSnapshot(String)
-    case dismissSnapshots([String])
+    case markRead(CoveSessionIdentity)
+    case dismissSnapshot(CoveSessionIdentity)
+    case dismissSnapshots([CoveSessionIdentity])
     case clearRecentEvents
 }
 
@@ -916,11 +959,14 @@ public enum CoveReducer {
                 state.settings.collapsedQueueSections.remove(section)
             }
         case let .restoreDismissedSessionIDs(sessionIDs):
-            state.dismissedSessionIDs = Array(Set(sessionIDs)).sorted()
+            state.dismissedSessionIDs = migratedPersistedIdentityKeys(
+                sessionIDs,
+                snapshots: state.session.snapshots
+            )
             state.session.snapshots.removeAll { snapshot in
-                state.dismissedSessionIDs.contains(
-                    snapshot.sessionId ?? snapshot.snapshotId
-                )
+                snapshot.sessionIdentity.map {
+                    state.dismissedSessionIDs.contains($0.id)
+                } ?? false
             }
             sortSnapshots(in: &state)
             refreshActiveSnapshot(in: &state)
@@ -937,14 +983,17 @@ public enum CoveReducer {
                 focusedBundleIdentifier: focusedBundleIdentifier
             )
         case let .restorePinnedSessionIDs(sessionIDs):
-            state.pinnedSessionIDs = Array(Set(sessionIDs)).sorted()
+            state.pinnedSessionIDs = migratedPersistedIdentityKeys(
+                sessionIDs,
+                snapshots: state.session.snapshots
+            )
             sortSnapshots(in: &state)
             refreshActiveSnapshot(in: &state)
-        case let .togglePinned(sessionID):
-            if state.pinnedSessionIDs.contains(sessionID) {
-                state.pinnedSessionIDs.removeAll { $0 == sessionID }
-            } else if !sessionID.isEmpty {
-                state.pinnedSessionIDs.append(sessionID)
+        case let .togglePinned(identity):
+            if state.pinnedSessionIDs.contains(identity.id) {
+                state.pinnedSessionIDs.removeAll { $0 == identity.id }
+            } else {
+                state.pinnedSessionIDs.append(identity.id)
             }
             sortSnapshots(in: &state)
             refreshActiveSnapshot(in: &state)
@@ -1030,7 +1079,21 @@ public enum CoveReducer {
                 snapshot.timestamp = envelope.timestamp
                 acceptedStatusSnapshot = accept(snapshot: snapshot, into: &state)
             }
-            if let snapshot = decodedSnapshot {
+            if var snapshot = decodedSnapshot {
+                if snapshot.unread,
+                   let existing = state.session.snapshots.first(where: {
+                       $0.snapshotId == snapshot.snapshotId
+                           && $0.originScope == snapshot.originScope
+                   }),
+                   !existing.unread,
+                   existing.status == snapshot.status,
+                   existing.timestamp >= snapshot.timestamp
+                {
+                    // Reconciliation may repeat the same terminal snapshot.
+                    // Preserve an explicit read acknowledgement until a newer
+                    // state or timestamp arrives.
+                    snapshot.unread = false
+                }
                 acceptedStatusSnapshot = accept(
                     snapshot: snapshot,
                     into: &state
@@ -1039,18 +1102,25 @@ public enum CoveReducer {
                 let snapshotID = envelope.sessionId == "pending"
                     ? (envelope.launchId ?? envelope.eventId)
                     : envelope.sessionId
-                let existingUnread = state.session.snapshots
-                    .first(where: {
-                        $0.snapshotId == snapshotID
-                            && $0.originScope == envelope.originScope
-                    })?
-                    .unread == true
-                let existingLatestOutput = state.session.snapshots
-                    .first(where: {
-                        $0.snapshotId == snapshotID
-                            && $0.originScope == envelope.originScope
-                    })?
-                    .latestOutput
+                let existing = state.session.snapshots.first(where: {
+                    $0.snapshotId == snapshotID
+                        && $0.originScope == envelope.originScope
+                })
+                let payload = envelope.payload.objectValue ?? [:]
+                let liveness = payload["liveness"]?.stringValue.flatMap(
+                    CoveSessionLiveness.init(rawValue:)
+                ) ?? existing?.liveness
+                let controlRoute = payload["controlRoute"]?.stringValue.flatMap(
+                    CoveThreadControlRoute.init(rawValue:)
+                ) ?? existing?.controlRoute
+                let activeTurnId = envelope.endsActiveTurn
+                    ? nil
+                    : envelope.authoritativeStartedTurnID()
+                        ?? payload["activeTurnId"]?.scalarStringValue
+                        ?? existing?.activeTurnId
+                let changedSinceAcknowledgement = existing == nil
+                    || existing?.status != status.status
+                    || (existing?.timestamp ?? .distantPast) < envelope.timestamp
                 let display = envelope.displayEvent()
                 acceptedStatusSnapshot = accept(
                     snapshot: CoveSessionSnapshot(
@@ -1060,18 +1130,21 @@ public enum CoveReducer {
                         title: display.title,
                         detail: display.body,
                         latestOutput: envelope.latestAssistantOutput()
-                            ?? existingLatestOutput,
+                            ?? existing?.latestOutput,
                         timestamp: envelope.timestamp,
                         sessionId: envelope.sessionId,
                         launchId: envelope.launchId,
                         source: envelope.source,
                         hostId: envelope.hostId,
                         parentSessionId: envelope.parentSessionID(),
-                        unread: existingUnread
-                            || status.status == .waitingApproval
-                            || status.status == .waitingInput
-                            || status.status == .completed
-                            || status.status == .failed
+                        liveness: liveness,
+                        activeTurnId: activeTurnId,
+                        controlRoute: controlRoute,
+                        unread: existing?.unread == true
+                            || (
+                                status.status.requiresUnreadAcknowledgement
+                                    && changedSinceAcknowledgement
+                            )
                     ),
                     into: &state
                 )
@@ -1105,8 +1178,18 @@ public enum CoveReducer {
             // pill and recent state.
             break
         case let .restoreMetadata(records):
+            let restoredIdentities = records.compactMap(\.sessionIdentity)
+            state.dismissedSessionIDs = migratedPersistedIdentityKeys(
+                state.dismissedSessionIDs,
+                identities: restoredIdentities
+            )
+            state.pinnedSessionIDs = migratedPersistedIdentityKeys(
+                state.pinnedSessionIDs,
+                identities: restoredIdentities
+            )
             state.session.snapshots = records.compactMap { metadata in
-                guard !state.dismissedSessionIDs.contains(metadata.sessionId)
+                guard let identity = metadata.sessionIdentity,
+                      !state.dismissedSessionIDs.contains(identity.id)
                 else { return nil }
                 return CoveSessionSnapshot(
                     snapshotId: metadata.sessionId,
@@ -1193,6 +1276,10 @@ public enum CoveReducer {
         case let .forgetInternalSession(sessionID, source, hostID):
             guard let origin = CoveOriginScope(source: source, hostId: hostID)
             else { break }
+            let forgottenIdentity = CoveSessionIdentity(
+                scope: origin,
+                sessionId: sessionID
+            )
             state.session.snapshots.removeAll {
                 ($0.snapshotId == sessionID || $0.sessionId == sessionID)
                     && $0.originScope == origin
@@ -1218,23 +1305,21 @@ public enum CoveReducer {
             state.recentEvents.removeAll {
                 $0.sessionId == sessionID && $0.originScope == origin
             }
-            let stillRepresentsSession = state.session.snapshots.contains {
-                $0.snapshotId == sessionID || $0.sessionId == sessionID
-            } || state.pendingDirectRequests.contains {
-                $0.sessionId == sessionID
-            }
-            if !stillRepresentsSession {
-                // Pins and dismissals remain raw session IDs in schema v1. Only
-                // clear the shared value when no other origin still owns it.
-                state.pinnedSessionIDs.removeAll { $0 == sessionID }
-                state.dismissedSessionIDs.removeAll { $0 == sessionID }
-                state.sessionTokenMetrics.removeValue(forKey: sessionID)
+            if let forgottenIdentity {
+                state.pinnedSessionIDs.removeAll {
+                    $0 == forgottenIdentity.id
+                }
+                state.dismissedSessionIDs.removeAll {
+                    $0 == forgottenIdentity.id
+                }
             }
             state.lastEvent = state.recentEvents.first
             sortSnapshots(in: &state)
             refreshActiveSnapshot(in: &state)
-        case let .markRead(snapshotID):
-            if let index = state.session.snapshots.firstIndex(where: { $0.snapshotId == snapshotID }) {
+        case let .markRead(identity):
+            if let index = state.session.snapshots.firstIndex(where: {
+                $0.sessionIdentity == identity
+            }) {
                 state.session.snapshots[index].unread = false
                 if state.session.snapshots[index].status == .completed {
                     state.session.snapshots[index].priority = priority(
@@ -1245,10 +1330,10 @@ public enum CoveReducer {
                 sortSnapshots(in: &state)
                 refreshActiveSnapshot(in: &state)
             }
-        case let .dismissSnapshot(snapshotID):
-            dismissSnapshots(in: &state, snapshotIDs: [snapshotID])
-        case let .dismissSnapshots(snapshotIDs):
-            dismissSnapshots(in: &state, snapshotIDs: snapshotIDs)
+        case let .dismissSnapshot(identity):
+            dismissSnapshots(in: &state, identities: [identity])
+        case let .dismissSnapshots(identities):
+            dismissSnapshots(in: &state, identities: identities)
         case .clearRecentEvents:
             state.recentEvents.removeAll()
             state.lastEvent = nil
@@ -1257,25 +1342,18 @@ public enum CoveReducer {
 
     private static func dismissSnapshots(
         in state: inout CoveState,
-        snapshotIDs: [String]
+        identities: [CoveSessionIdentity]
     ) {
-        let requestedIDs = Set(snapshotIDs.filter { !$0.isEmpty })
-        guard !requestedIDs.isEmpty else { return }
-        let sessionIDs = Set<String>(
-            state.session.snapshots.compactMap { snapshot in
-                guard requestedIDs.contains(snapshot.snapshotId) else {
-                    return nil
-                }
-                return snapshot.sessionId ?? snapshot.snapshotId
-            }
-        )
+        let requested = Set(identities)
+        guard !requested.isEmpty else { return }
         state.session.snapshots.removeAll {
-            requestedIDs.contains($0.snapshotId)
+            $0.sessionIdentity.map(requested.contains) ?? false
         }
         state.dismissedSessionIDs = Array(
-            Set(state.dismissedSessionIDs).union(sessionIDs)
+            Set(state.dismissedSessionIDs).union(requested.map(\.id))
         ).sorted()
-        state.pinnedSessionIDs.removeAll { sessionIDs.contains($0) }
+        let requestedKeys = Set(requested.map(\.id))
+        state.pinnedSessionIDs.removeAll(where: requestedKeys.contains)
         sortSnapshots(in: &state)
         refreshActiveSnapshot(in: &state)
     }
@@ -1285,9 +1363,8 @@ public enum CoveReducer {
         snapshot: CoveSessionSnapshot,
         into state: inout CoveState
     ) -> Bool {
-        guard !state.dismissedSessionIDs.contains(
-            snapshot.sessionId ?? snapshot.snapshotId
-        ) else {
+        if let identity = snapshot.sessionIdentity,
+           state.dismissedSessionIDs.contains(identity.id) {
             return false
         }
         guard upsert(snapshot: snapshot, into: &state) else {
@@ -1484,29 +1561,39 @@ public enum CoveReducer {
         source == .remoteCli ? hostId : nil
     }
 
+    private static func migratedPersistedIdentityKeys(
+        _ values: [String],
+        snapshots: [CoveSessionSnapshot]
+    ) -> [String] {
+        migratedPersistedIdentityKeys(
+            values,
+            identities: snapshots.compactMap(\.sessionIdentity)
+        )
+    }
+
+    /// Schema-v1 sidecars stored raw IDs. Apply one only when exactly one
+    /// current origin owns it; ambiguous and unresolved values are retained
+    /// byte-for-byte but intentionally match no scoped task.
+    private static func migratedPersistedIdentityKeys(
+        _ values: [String],
+        identities: [CoveSessionIdentity]
+    ) -> [String] {
+        let knownKeys = Set(identities.map(\.id))
+        return Array(Set(values.map { value in
+            if knownKeys.contains(value) { return value }
+            let candidates = identities.filter { $0.sessionId == value }
+            return candidates.count == 1 ? candidates[0].id : value
+        })).sorted()
+    }
+
     @discardableResult
     private static func upsert(
         snapshot: CoveSessionSnapshot,
         into state: inout CoveState
     ) -> Bool {
-        // Snapshot IDs originate outside Cove and are only unique inside a
-        // source connection. The current presentation model still indexes
-        // cards by the raw ID, so a cross-origin collision must fail closed
-        // instead of silently replacing (and later routing through) another
-        // task's card.
-        if state.session.snapshots.contains(where: { existing in
-            let sharesSnapshotID = existing.snapshotId == snapshot.snapshotId
-            let sharesSessionID = snapshot.sessionId.map { sessionID in
-                !sessionID.isEmpty && existing.sessionId == sessionID
-            } ?? false
-            let sharesLaunchID = snapshot.launchId.map { launchID in
-                !launchID.isEmpty && existing.launchId == launchID
-            } ?? false
-            return (sharesSnapshotID || sharesSessionID || sharesLaunchID)
-                && existing.originScope != snapshot.originScope
-        }) {
-            return false
-        }
+        // Snapshot IDs are unique only within a composite source/host origin.
+        // The complete identity is now carried through every lookup, so a
+        // matching opaque ID at another origin is an independent task.
         let existing = state.session.snapshots.first(where: {
             $0.snapshotId == snapshot.snapshotId
                 && $0.originScope == snapshot.originScope
@@ -1545,12 +1632,12 @@ public enum CoveReducer {
 
     private static func sortSnapshots(in state: inout CoveState) {
         state.session.snapshots.sort { lhs, rhs in
-            let lhsPinned = state.pinnedSessionIDs.contains(
-                lhs.sessionId ?? lhs.snapshotId
-            )
-            let rhsPinned = state.pinnedSessionIDs.contains(
-                rhs.sessionId ?? rhs.snapshotId
-            )
+            let lhsPinned = lhs.sessionIdentity.map {
+                state.pinnedSessionIDs.contains($0.id)
+            } ?? false
+            let rhsPinned = rhs.sessionIdentity.map {
+                state.pinnedSessionIDs.contains($0.id)
+            } ?? false
             if lhsPinned != rhsPinned {
                 return lhsPinned
             }

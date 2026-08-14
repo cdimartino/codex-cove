@@ -28,6 +28,7 @@
 		645D7948149F31F618B0387B /* retroTerminal-sunset.json in Resources */ = {isa = PBXBuildFile; fileRef = 7BBAC09AF295EB43B82D58A4 /* retroTerminal-sunset.json */; };
 		6AB4027D3E8EAC52961CD46D /* nativeGlass-highContrast.json in Resources */ = {isa = PBXBuildFile; fileRef = 4309735B2226CC56793AB216 /* nativeGlass-highContrast.json */; };
 		6BB76A78EB3F391F38B73FB0 /* CoveThemePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0009A3A79A343873B91C911 /* CoveThemePreview.swift */; };
+		7136ED32C3CAA84796EE69BD /* CoveWorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C51E46BB1FFABDBB221637 /* CoveWorkspaceStore.swift */; };
 		71AA1E87A6BE6D0376E03577 /* minimalOLED-highContrast.json in Resources */ = {isa = PBXBuildFile; fileRef = 643AF7B0247F1A08E09453BB /* minimalOLED-highContrast.json */; };
 		780D4086CD68A00E4C81A9F3 /* task-completed.wav in Resources */ = {isa = PBXBuildFile; fileRef = B9B2E6CF506548FCC8916987 /* task-completed.wav */; };
 		788945047F9AEB79C8A7A68E /* retroTerminal-terminalGreen.json in Resources */ = {isa = PBXBuildFile; fileRef = 4E352BBF319F69B5310E0705 /* retroTerminal-terminalGreen.json */; };
@@ -42,6 +43,7 @@
 		96357437EFC0A398C52285ED /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69503F14035762B6C9CC5F10 /* AppDelegate.swift */; };
 		972B7B116F961DDCC38E2490 /* minimalOLED-graphite.json in Resources */ = {isa = PBXBuildFile; fileRef = 1F68E899B3DFF9E1D9607D05 /* minimalOLED-graphite.json */; };
 		A02241FF522471A128AF12A7 /* CoveDefaultPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0BF2C3937882020D9257D4 /* CoveDefaultPaths.swift */; };
+		A969ADEA3628D44FA1D71F98 /* CoveWorkspaceWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2621A75F9F077D8A3469DEB /* CoveWorkspaceWindowView.swift */; };
 		B4F94C720CF6969819A2BF2D /* CoveOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9520002A8EF93C04D6823F82 /* CoveOverlayView.swift */; };
 		B6EBD2A6697DF14A991E9911 /* nativeGlass-sunset.json in Resources */ = {isa = PBXBuildFile; fileRef = 3DEF3929528D3A4C36AC22F0 /* nativeGlass-sunset.json */; };
 		BC9D3678C9B675586B297A8B /* retroTerminal-ocean.json in Resources */ = {isa = PBXBuildFile; fileRef = 50D28970F95567E3501F2373 /* retroTerminal-ocean.json */; };
@@ -78,6 +80,7 @@
 /* Begin PBXFileReference section */
 		015C5D9C3A748A3FB47DD727 /* CoveColor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveColor.swift; sourceTree = "<group>"; };
 		016B5C9F216DB1BDA5F94B47 /* CoveLaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveLaunchAtLoginService.swift; sourceTree = "<group>"; };
+		02C51E46BB1FFABDBB221637 /* CoveWorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveWorkspaceStore.swift; sourceTree = "<group>"; };
 		0345BB24FFFF06745A282771 /* minimalOLED-ocean.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "minimalOLED-ocean.json"; sourceTree = "<group>"; };
 		0993AB8E1C0B3A8989758368 /* CoveNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveNotificationService.swift; sourceTree = "<group>"; };
 		0B4623C8C0D516E97322F7F4 /* CoveOverlayPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveOverlayPresentation.swift; sourceTree = "<group>"; };
@@ -128,6 +131,7 @@
 		C0009A3A79A343873B91C911 /* CoveThemePreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveThemePreview.swift; sourceTree = "<group>"; };
 		C4C6B363CC6664DF7075344D /* CoveRemoteRelayManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveRemoteRelayManager.swift; sourceTree = "<group>"; };
 		C62AFBFB725FB9DB9AAC90A7 /* CoveTerminalJumping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveTerminalJumping.swift; sourceTree = "<group>"; };
+		D2621A75F9F077D8A3469DEB /* CoveWorkspaceWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveWorkspaceWindowView.swift; sourceTree = "<group>"; };
 		D8A1ED229CD5FEF033120F6B /* retroTerminal-graphite.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "retroTerminal-graphite.json"; sourceTree = "<group>"; };
 		E67E75D3FF98E8C2B70B388B /* nativeGlass-ocean.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "nativeGlass-ocean.json"; sourceTree = "<group>"; };
 		F04DC7685F25C0E449FA1006 /* CovePixelCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CovePixelCharacterView.swift; sourceTree = "<group>"; };
@@ -253,6 +257,8 @@
 				C0009A3A79A343873B91C911 /* CoveThemePreview.swift */,
 				9C6014AFA8F99375F3E21AF4 /* CoveUITestSupport.swift */,
 				F0745AFB5BDFA77046D4EEB6 /* CoveUnixSocketBroker.swift */,
+				02C51E46BB1FFABDBB221637 /* CoveWorkspaceStore.swift */,
+				D2621A75F9F077D8A3469DEB /* CoveWorkspaceWindowView.swift */,
 				3D3147A2CE9F020F7A74F0E1 /* SettingsView.swift */,
 			);
 			name = CodexCoveApp;
@@ -416,6 +422,8 @@
 				6BB76A78EB3F391F38B73FB0 /* CoveThemePreview.swift in Sources */,
 				23B846AEFF2F150B6363120D /* CoveUITestSupport.swift in Sources */,
 				312938F2E7567561A1B3A005 /* CoveUnixSocketBroker.swift in Sources */,
+				7136ED32C3CAA84796EE69BD /* CoveWorkspaceStore.swift in Sources */,
+				A969ADEA3628D44FA1D71F98 /* CoveWorkspaceWindowView.swift in Sources */,
 				560A3ECE3BC7E3125ECA7FAB /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

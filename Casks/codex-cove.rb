@@ -46,7 +46,7 @@ cask "codex-cove" do
     Codex Cove is installed in ~/Applications so its user-local integration
     and Accessibility permission remain bound to one canonical app path.
 
-    Codex CLI 0.145.0 or newer must already be installed and available on PATH.
+    Codex CLI 0.147.0 or newer must already be installed and available on PATH.
     Add ~/bin to PATH if the codex-cove command is not available in new shells.
   EOS
 end

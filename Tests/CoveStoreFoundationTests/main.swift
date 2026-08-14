@@ -121,6 +121,7 @@ private struct CoveStoreFoundationTests {
                 title: id,
                 timestamp: now,
                 sessionId: sessionID ?? id,
+                source: .localCli,
                 unread: true
             )
         }
@@ -153,7 +154,10 @@ private struct CoveStoreFoundationTests {
                         sharedActive,
                     ]
                 ),
-                pinnedSessionIDs: ["completed-pinned", "active"]
+                pinnedSessionIDs: [
+                    pinnedCompleted.sessionIdentity!.id,
+                    active.sessionIdentity!.id,
+                ]
             ),
             persistenceWritesEnabledOverride: false,
             initialSoundPreferences: CoveSoundPreferences(),
@@ -165,16 +169,16 @@ private struct CoveStoreFoundationTests {
         var unpinned: [String] = []
         var canceledReminders: [String] = []
         store.onDismissSessions = {
-            archivedBatches.append($0)
+            archivedBatches.append($0.map(\.sessionId))
             return true
         }
         store.onSetPinned = { sessionID, pinned in
-            if !pinned { unpinned.append(sessionID) }
+            if !pinned { unpinned.append(sessionID.sessionId) }
             return true
         }
         store.onScheduleFollowUp = { _, _ in true }
         store.onCancelFollowUp = {
-            canceledReminders.append($0)
+            canceledReminders.append($0.sessionId)
             return true
         }
         store.scheduleFollowUp(remindedCompleted)
@@ -190,10 +194,15 @@ private struct CoveStoreFoundationTests {
         precondition(store.archivableCompletedCount == 0)
         precondition(
             Set(store.state.dismissedSessionIDs)
-                == ["completed-pinned", "completed-reminded"]
+                == [
+                    pinnedCompleted.sessionIdentity!.id,
+                    remindedCompleted.sessionIdentity!.id,
+                ]
         )
-        precondition(store.state.pinnedSessionIDs == ["active"])
-        precondition(store.reminders["completed-reminded"] == nil)
+        precondition(
+            store.state.pinnedSessionIDs == [active.sessionIdentity!.id]
+        )
+        precondition(store.reminders[remindedCompleted.sessionIdentity!] == nil)
         precondition(
             Set(store.state.session.snapshots.map(\.snapshotId))
                 == ["failed", "active", "shared-completed", "shared-active"]
@@ -374,7 +383,7 @@ private struct CoveStoreFoundationTests {
             initialCustomThemes: []
         )
         var markedRead: [String] = []
-        store.onMarkRead = { markedRead.append($0) }
+        store.onMarkRead = { markedRead.append($0.sessionId) }
         store.onJumpToSession = { _ in
             CoveJumpResult(
                 focusedExactLocation: false,
@@ -1271,12 +1280,28 @@ private struct CoveStoreFoundationTests {
             ),
             state: CoveState()
         )
-        let retainedLocal = try storage.metadata(
+        let localIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "shared-metadata-session"
+        )!
+        let desktopIdentity = CoveSessionIdentity(
+            source: .codexDesktop,
+            hostId: nil,
+            sessionId: "shared-metadata-session"
+        )!
+        let ambiguousLocal = try storage.metadata(
             sessionId: "shared-metadata-session"
         )
+        precondition(ambiguousLocal == nil)
+        let retainedLocal = try storage.metadata(identity: localIdentity)
         precondition(retainedLocal?.source == .localCli)
         precondition(
             retainedLocal?.updatedAt == Date(timeIntervalSince1970: 1)
+        )
+        let retainedDesktop = try storage.metadata(identity: desktopIdentity)
+        precondition(
+            retainedDesktop?.updatedAt == Date(timeIntervalSince1970: 2)
         )
 
         bridge.remove(
@@ -1318,13 +1343,29 @@ private struct CoveStoreFoundationTests {
             ),
             state: CoveState()
         )
-        let retainedRemote = try storage.metadata(
+        let remoteAIdentity = CoveSessionIdentity(
+            source: .remoteCli,
+            hostId: "remote-a",
+            sessionId: "shared-metadata-session"
+        )!
+        let remoteBIdentity = CoveSessionIdentity(
+            source: .remoteCli,
+            hostId: "remote-b",
+            sessionId: "shared-metadata-session"
+        )!
+        let ambiguousRemote = try storage.metadata(
             sessionId: "shared-metadata-session"
         )
+        precondition(ambiguousRemote == nil)
+        let retainedRemote = try storage.metadata(identity: remoteAIdentity)
         precondition(retainedRemote?.source == .remoteCli)
         precondition(retainedRemote?.hostId == "remote-a")
         precondition(
             retainedRemote?.updatedAt == Date(timeIntervalSince1970: 3)
+        )
+        let retainedRemoteB = try storage.metadata(identity: remoteBIdentity)
+        precondition(
+            retainedRemoteB?.updatedAt == Date(timeIntervalSince1970: 4)
         )
         bridge.remove(
             sessionID: "shared-metadata-session",

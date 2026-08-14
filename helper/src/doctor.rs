@@ -49,7 +49,7 @@ pub fn run(config: &Config, real_codex: Option<&Path>) -> DoctorReport {
             match version {
                 Ok(output) if output.status.success() => {
                     let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                    let status = if version_at_least(&text, 0, 145, 0) {
+                    let status = if version_at_least(&text, 0, 147, 0) {
                         CheckStatus::Pass
                     } else {
                         CheckStatus::Fail
@@ -171,10 +171,11 @@ pub fn run(config: &Config, real_codex: Option<&Path>) -> DoctorReport {
     }
 }
 
-const SCHEMA_FILES: [&str; 4] = [
+const SCHEMA_FILES: [&str; 5] = [
     "cove-event.v1.schema.json",
     "decision-frame.v1.schema.json",
     "interactive-request.v1.schema.json",
+    "thread-control.v1.schema.json",
     "theme-definition.v1.schema.json",
 ];
 
@@ -1106,10 +1107,10 @@ mod tests {
 
     #[test]
     fn parses_codex_version() {
-        assert!(version_at_least("codex-cli 0.145.0", 0, 145, 0));
-        assert!(version_at_least("codex-cli 1.0.0", 0, 145, 0));
-        assert!(!version_at_least("codex-cli 0.144.9", 0, 145, 0));
-        assert!(!version_at_least("unknown", 0, 145, 0));
+        assert!(version_at_least("codex-cli 0.147.0", 0, 147, 0));
+        assert!(version_at_least("codex-cli 1.0.0", 0, 147, 0));
+        assert!(!version_at_least("codex-cli 0.146.9", 0, 147, 0));
+        assert!(!version_at_least("unknown", 0, 147, 0));
     }
 
     #[test]
@@ -1171,7 +1172,7 @@ mod tests {
     }
 
     #[test]
-    fn fake_layout_requires_all_four_compatible_schemas() {
+    fn fake_layout_requires_all_five_compatible_schemas() {
         let temp = tempdir().unwrap();
         let schemas = temp.path().join("schemas");
         write_schema_set(&schemas);

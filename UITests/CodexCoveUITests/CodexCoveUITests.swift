@@ -447,6 +447,218 @@ final class CodexCoveUITests: XCTestCase {
         )
     }
 
+    // MARK: - Workspace window, organization, and library
+
+    @MainActor
+    func testWorkspaceGridBoardInspectorAndLibrary() {
+        let app = launchFixture("mixed-20")
+        XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
+
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(
+            window.waitForExistence(timeout: 5),
+            "The Workspace command must open one reusable native window"
+        )
+        XCTAssertGreaterThanOrEqual(window.frame.width, 900)
+        XCTAssertGreaterThanOrEqual(window.frame.height, 600)
+        XCTAssertTrue(element("cove.workspace", in: app).exists)
+        XCTAssertTrue(
+            element("cove.workspace.help", in: app).exists,
+            "Workspace must expose its help documentation from the toolbar"
+        )
+        XCTAssertEqual(
+            fixtureRunningApplication()?.activationPolicy,
+            .regular,
+            "An open Workspace must give Cove a normal Dock/App-Switcher identity"
+        )
+
+        let cards = window.buttons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.card."
+            )
+        )
+        XCTAssertGreaterThan(cards.count, 0)
+        XCTAssertGreaterThan(cards.count, 1)
+        let originalFirstCardID = cards.firstMatch.identifier
+        let originalSecondCardID = cards.element(boundBy: 1).identifier
+        cards.firstMatch.rightClick()
+        XCTAssertTrue(
+            app.menuItems["Move Later"].firstMatch.waitForExistence(timeout: 2)
+        )
+        app.typeKey("]", modifierFlags: [.command, .option])
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                cards.firstMatch.identifier == originalSecondCardID
+            },
+            "The advertised keyboard equivalent must reorder the manual Grid"
+        )
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                cards.firstMatch.identifier == originalFirstCardID
+            },
+            "Workspace reorder must participate in Undo"
+        )
+
+        let firstCard = cards.firstMatch
+        XCTAssertTrue(firstCard.isHittable)
+        firstCard.click()
+        XCTAssertTrue(
+            element("cove.workspace.inspector", in: app)
+                .waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(
+            element("cove.workspace.assignment", in: app).exists,
+            "Board placement needs a keyboard-accessible inspector control"
+        )
+
+        let alias = element("cove.workspace.alias", in: app)
+        XCTAssertTrue(alias.waitForExistence(timeout: 2))
+        alias.click()
+        alias.typeKey("a", modifierFlags: [.command])
+        alias.typeText("Release dashboard")
+        XCTAssertEqual(stringValue(of: alias), "Release dashboard")
+
+        let composer = element("cove.workspace.composer", in: app)
+        let inspectorScroll = element("cove.workspace.inspector", in: app)
+            .scrollViews.firstMatch
+        for _ in 0..<8 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(composer.waitForExistence(timeout: 2))
+        XCTAssertTrue(composer.isHittable)
+        composer.click()
+        composer.typeText("Steer the active fixture turn.")
+        let send = element("cove.workspace.send", in: app)
+        XCTAssertTrue(send.isEnabled)
+        send.click()
+        XCTAssertTrue(text("Send this prompt?", in: app).waitForExistence(timeout: 2))
+        element("cove.workspace.confirm-send", in: app).click()
+        XCTAssertTrue(
+            text("Prompt steered to the active turn.", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        XCTAssertEqual(stringValue(of: composer), "")
+
+        let board = element("cove.workspace.board", in: app)
+        XCTAssertTrue(board.waitForExistence(timeout: 2))
+        board.click()
+        for column in ["Inbox", "Doing", "Review", "Blocked"] {
+            XCTAssertTrue(text(column, in: app).waitForExistence(timeout: 2))
+        }
+
+        let columns = element("cove.workspace.columns", in: app)
+        XCTAssertTrue(columns.waitForExistence(timeout: 2))
+        columns.click()
+        XCTAssertTrue(
+            element("cove.workspace.columns.sheet", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        let newColumn = element("cove.workspace.columns.new-name", in: app)
+        newColumn.click()
+        newColumn.typeText("Ready to ship")
+        element("cove.workspace.columns.add", in: app).click()
+        XCTAssertTrue(
+            text("Ready to ship", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        element("cove.workspace.columns.done", in: app).click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                !self.element("cove.workspace.columns.sheet", in: app).exists
+            }
+        )
+
+        let library = element("cove.workspace.prompt-library", in: app)
+        XCTAssertTrue(library.waitForExistence(timeout: 2))
+        XCTAssertTrue(library.isHittable)
+        library.click()
+        XCTAssertTrue(
+            element("cove.workspace.prompt-library.sheet", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        let templateName = element("cove.workspace.template.name", in: app)
+        let templateBody = element("cove.workspace.template.body", in: app)
+        templateName.click()
+        templateName.typeText("Review changes")
+        templateBody.click()
+        templateBody.typeText("Review the current changes and report risks.")
+        element("cove.workspace.template.favorite", in: app).click()
+        element("cove.workspace.template.save", in: app).click()
+        let savedTemplate = text("Review changes", in: app)
+        XCTAssertTrue(savedTemplate.waitForExistence(timeout: 2))
+        savedTemplate.click()
+        let useTemplate = element("cove.workspace.template.use", in: app)
+        XCTAssertTrue(useTemplate.isEnabled)
+        useTemplate.click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                !self.element("cove.workspace.prompt-library.sheet", in: app).exists
+            }
+        )
+        XCTAssertEqual(
+            stringValue(of: composer),
+            "Review the current changes and report risks."
+        )
+
+        element("cove.workspace.close", in: app).click()
+        XCTAssertTrue(waitUntil(timeout: 2) { !window.exists })
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.fixtureRunningApplication()?.activationPolicy == .accessory
+            },
+            "Closing Workspace must restore Cove's menu-bar accessory identity"
+        )
+        app.activate()
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
+        XCTAssertEqual(
+            app.windows.descendants(matching: .any)
+                .matching(identifier: "cove.workspace").count,
+            1
+        )
+    }
+
+    @MainActor
+    func testWorkspacePrivacyRedactsContentAndAccessibility() {
+        let app = launchFixture("privacy-redacted")
+        XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
+
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+
+        let card = window.buttons.matching(
+            identifier: "cove.workspace.card.redacted"
+        ).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 2))
+        XCTAssertFalse(card.label.contains("Fixture attention task"))
+        XCTAssertFalse(card.label.contains("Local CLI"))
+        card.click()
+
+        XCTAssertTrue(
+            element("cove.workspace.inspector", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        XCTAssertTrue(text("Origin hidden", in: app).exists)
+        XCTAssertTrue(
+            text("Prompt drafts and templates are hidden by Privacy Mode.", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        XCTAssertFalse(element("cove.workspace.alias", in: app).exists)
+        XCTAssertFalse(element("cove.workspace.composer", in: app).exists)
+        let library = element("cove.workspace.prompt-library", in: app)
+        XCTAssertTrue(library.exists)
+        XCTAssertFalse(library.isEnabled)
+
+        element("cove.workspace.board", in: app).click()
+        XCTAssertTrue(text("Workflow column", in: app).waitForExistence(timeout: 2))
+        XCTAssertFalse(text("Inbox", in: app).exists)
+        assertNoSensitiveAccessibilityCopy(in: window)
+    }
+
     // MARK: - Approval safety and delivery lifecycle
 
     @MainActor
@@ -830,6 +1042,10 @@ final class CodexCoveUITests: XCTestCase {
                 element("settings.pane.\(pane).title", in: app)
                     .waitForExistence(timeout: 2),
                 "Settings pane \(pane) should be reachable from the sidebar"
+            )
+            XCTAssertTrue(
+                element("settings.pane.\(pane).help", in: app).exists,
+                "Settings pane \(pane) should link to its detailed help"
             )
         }
     }
@@ -1602,6 +1818,12 @@ final class CodexCoveUITests: XCTestCase {
         launchedApplications.append(app)
         app.launch()
         return app
+    }
+
+    private func fixtureRunningApplication() -> NSRunningApplication? {
+        NSRunningApplication.runningApplications(
+            withBundleIdentifier: "local.chris.codexcove.uitesthost"
+        ).first { !$0.isTerminated }
     }
 
     @MainActor
