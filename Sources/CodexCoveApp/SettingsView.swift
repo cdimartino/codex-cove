@@ -385,7 +385,7 @@ struct SettingsView: View {
         }
 
         Section("Custom theme colors") {
-            TextField("Theme name", text: $customThemeDraft.name)
+            TextField("Theme name", text: customThemeNameBinding)
                 .accessibilityIdentifier("settings.appearance.custom-theme-name")
 
             Picker("Surface fill", selection: surfaceFillBinding) {
@@ -1067,6 +1067,18 @@ struct SettingsView: View {
             set: { fill in
                 var draft = customThemeDraft
                 draft.surfaceFill = fill
+                customThemeDraft = draft
+                store.previewTheme(configuredTheme(draft))
+            }
+        )
+    }
+
+    private var customThemeNameBinding: Binding<String> {
+        Binding(
+            get: { customThemeDraft.name },
+            set: { name in
+                var draft = customThemeDraft
+                draft.name = name
                 customThemeDraft = draft
                 store.previewTheme(configuredTheme(draft))
             }

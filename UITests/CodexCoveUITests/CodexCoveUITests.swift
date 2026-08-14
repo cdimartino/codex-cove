@@ -843,6 +843,62 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testCustomThemeDraftPersistsWhenSettingsCloses() throws {
+        let app = launchFixture("settings-appearance")
+        let settingsWindow = app.windows["Codex Cove Settings"]
+        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 5))
+
+        let surfaceFill = element(
+            "settings.appearance.surface-fill",
+            in: app
+        )
+        let solidOption = surfaceFill.descendants(matching: .radioButton)[
+            "Solid"
+        ].firstMatch
+        revealAndClick(solidOption, in: app)
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                self.stringValue(of: solidOption) == "1"
+            }
+        )
+
+        let themeName = element(
+            "settings.appearance.custom-theme-name",
+            in: app
+        )
+        revealAndClick(themeName, in: app)
+        replaceText(
+            in: themeName,
+            with: "Close Saved Theme",
+            commitsWithReturn: false,
+            app: app
+        )
+
+        app.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(waitUntil(timeout: 2) { !settingsWindow.exists })
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(
+                at: stateDirectory.appendingPathComponent(
+                    "Themes",
+                    isDirectory: true
+                ),
+                includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "json" }.count,
+            1,
+            "Closing Settings must persist the edited custom theme"
+        )
+
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            stringValue(
+                of: element("settings.appearance.custom-theme", in: app)
+            ),
+            "Close Saved Theme"
+        )
+    }
+
+    @MainActor
     func testInstalledSurfaceAppliesThemeColorAndOpacity() throws {
         let app = launchFixture("settings-appearance")
         let settingsWindow = app.windows["Codex Cove Settings"]
