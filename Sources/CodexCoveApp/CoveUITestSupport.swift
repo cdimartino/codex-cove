@@ -13,6 +13,7 @@ enum CoveUITestFixture: String, CaseIterable {
     case singleQuestion = "single-question"
     case multiQuestion = "multi-question"
     case privacyRedacted = "privacy-redacted"
+    case privacyOffHiddenStatus = "privacy-off-hidden-status"
     case deliveryFailure = "delivery-failure"
     case openFailure = "open-failure"
     case archivedTasks = "archived-tasks"
@@ -488,6 +489,9 @@ enum CoveUITestFixtures {
         case .privacyRedacted:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
+        case .privacyOffHiddenStatus:
+            requests = [approval(category: .command)]
+            snapshots = [snapshot(index: 1, status: .hidden, now: now)]
         case .deliveryFailure:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
