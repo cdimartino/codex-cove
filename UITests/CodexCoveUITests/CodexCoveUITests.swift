@@ -209,6 +209,26 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testPrivacyOffDoesNotRedactForHiddenSessionStatus() {
+        let app = launchFixture("privacy-off-hidden-status")
+        let request = RequestIdentity(requestID: "fixture-approval")
+        let row = element(request.identifier("queue-row"), in: app)
+
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertEqual(
+            row.label,
+            "Waiting for approval, Review fixture command approval"
+        )
+
+        openFocusedRequest(request, in: app)
+        XCTAssertTrue(
+            element(request.identifier("consequence"), in: app)
+                .waitForExistence(timeout: 2),
+            "Privacy Off must keep approval details visible"
+        )
+    }
+
+    @MainActor
     func testQueueSelectionOpenFocusAndVisibleOverflowActions() {
         let app = launchFixture("mixed-20")
         let waitingRow = element(taskQueueRowIdentifier("fixture-task-3"), in: app)

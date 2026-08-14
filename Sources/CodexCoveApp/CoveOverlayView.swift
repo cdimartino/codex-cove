@@ -26,7 +26,6 @@ struct CoveOverlayRootView: View {
         }()
         let redactsSensitiveContent = state.settings.privacyMode == .on
             || state.privacyScene != .normal
-            || state.session.activeStatus == .hidden
         let presentation = store.overlayPresentation
         ZStack {
             if state.settings.minimalIslandMode {
