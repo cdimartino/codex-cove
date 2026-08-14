@@ -65,18 +65,13 @@ final class CoveMetadataBridge {
             : envelope.sessionId
         guard !sessionID.isEmpty && sessionID != "unknown" else { return }
         do {
-            let existing = try storage.metadata(sessionId: sessionID)
             let incomingOrigin = envelope.originScope
-            // The v1 metadata table is keyed by the externally supplied
-            // session ID. Until the on-disk schema can store the full origin
-            // tuple, never blend or overwrite a record owned by another
-            // source/remote host.
-            if let existing, existing.originScope != incomingOrigin {
-                NSLog(
-                    "Cove metadata ignored a cross-origin session-ID collision"
-                )
-                return
-            }
+            guard let identity = CoveSessionIdentity(
+                source: envelope.source,
+                hostId: envelope.hostId,
+                sessionId: sessionID
+            ) else { return }
+            let existing = try storage.metadata(identity: identity)
             let candidatePendingSessionID: String? = {
                 guard envelope.sessionId != "pending",
                       let launchID = envelope.launchId,
@@ -85,8 +80,16 @@ final class CoveMetadataBridge {
                 }
                 return launchID
             }()
-            let candidatePending = try candidatePendingSessionID.flatMap {
-                try storage.metadata(sessionId: $0)
+            let candidatePending: CoveSessionMetadata?
+            if let pendingID = candidatePendingSessionID,
+               let pendingIdentity = CoveSessionIdentity(
+                    source: envelope.source,
+                    hostId: envelope.hostId,
+                    sessionId: pendingID
+               ) {
+                candidatePending = try storage.metadata(identity: pendingIdentity)
+            } else {
+                candidatePending = nil
             }
             let pending = candidatePending?.originScope == incomingOrigin
                 ? candidatePending
@@ -96,20 +99,25 @@ final class CoveMetadataBridge {
                 : candidatePendingSessionID
             let eventIsCurrent = existing?.updatedAt ?? .distantPast
                 <= envelope.timestamp
-            let status = eventIsCurrent
-                ? envelope.sessionStatusUpdate()?.status
+            let incomingStatus = envelope.sessionSnapshot()?.status
+                ?? envelope.sessionStatusUpdate()?.status
+            let status: CoveSessionStatus
+            if eventIsCurrent {
+                status = incomingStatus
                     ?? existing?.status
                     ?? pending?.status
                     ?? state.session.activeStatus
-                : existing?.status
+            } else {
+                status = existing?.status
                     ?? pending?.status
                     ?? state.session.activeStatus
+            }
             let shouldBeUnread = existing?.unread == true
                 || pending?.unread == true
-                || status == .waitingApproval
-                || status == .waitingInput
-                || status == .completed
-                || status == .failed
+                || (
+                    eventIsCurrent
+                        && incomingStatus?.requiresUnreadAcknowledgement == true
+                )
             let startedAt = [
                 existing?.startedAt,
                 pending?.startedAt,
@@ -156,9 +164,9 @@ final class CoveMetadataBridge {
         }
     }
 
-    func markRead(sessionID: String) {
+    func markRead(identity: CoveSessionIdentity) {
         do {
-            guard var metadata = try storage.metadata(sessionId: sessionID) else { return }
+            guard var metadata = try storage.metadata(identity: identity) else { return }
             metadata.unread = false
             metadata.updatedAt = Date()
             try storage.upsert(metadata)
@@ -176,25 +184,24 @@ final class CoveMetadataBridge {
             return
         }
         do {
-            guard let existing = try storage.metadata(sessionId: sessionID),
-                  existing.originScope == origin else {
-                return
-            }
-            try storage.remove(sessionId: sessionID)
+            guard let identity = CoveSessionIdentity(
+                scope: origin,
+                sessionId: sessionID
+            ) else { return }
+            try storage.remove(identity: identity)
         } catch {
             NSLog("Cove metadata removal failed: \(error)")
         }
     }
 
     @discardableResult
-    func setPinned(sessionID: String, pinned: Bool) -> Bool {
-        guard isValidSessionID(sessionID) else { return false }
+    func setPinned(identity: CoveSessionIdentity, pinned: Bool) -> Bool {
         do {
             var sessionIDs = try loadPinnedSessionIDs()
             if pinned {
-                sessionIDs.insert(sessionID)
+                sessionIDs.insert(identity.id)
             } else {
-                sessionIDs.remove(sessionID)
+                sessionIDs.remove(identity.id)
             }
             try savePinnedSessionIDs(sessionIDs)
             return true
@@ -205,10 +212,10 @@ final class CoveMetadataBridge {
     }
 
     @discardableResult
-    func scheduleReminder(sessionID: String, at date: Date) -> Bool {
+    func scheduleReminder(identity: CoveSessionIdentity, at date: Date) -> Bool {
         do {
             guard date.timeIntervalSince1970.isFinite,
-                  var metadata = try storage.metadata(sessionId: sessionID)
+                  var metadata = try storage.metadata(identity: identity)
             else { return false }
             metadata.reminderAt = date
             try storage.upsert(metadata)
@@ -220,9 +227,9 @@ final class CoveMetadataBridge {
     }
 
     @discardableResult
-    func clearReminder(sessionID: String) -> Bool {
+    func clearReminder(identity: CoveSessionIdentity) -> Bool {
         do {
-            guard var metadata = try storage.metadata(sessionId: sessionID) else {
+            guard var metadata = try storage.metadata(identity: identity) else {
                 return false
             }
             metadata.reminderAt = nil
@@ -277,7 +284,7 @@ final class CoveMetadataBridge {
             throw CocoaError(.fileReadTooLarge)
         }
         let document = try JSONDecoder().decode(PinDocument.self, from: data)
-        guard document.schemaVersion == 1 else {
+        guard document.schemaVersion == 1 || document.schemaVersion == 2 else {
             throw CocoaError(.fileReadCorruptFile)
         }
         return Set(document.sessionIDs.prefix(1_000).filter(isValidSessionID))
@@ -291,7 +298,7 @@ final class CoveMetadataBridge {
             attributes: [.posixPermissions: 0o700]
         )
         let document = PinDocument(
-            schemaVersion: 1,
+            schemaVersion: 2,
             sessionIDs: Array(sessionIDs).sorted()
         )
         let encoder = JSONEncoder()
@@ -305,9 +312,7 @@ final class CoveMetadataBridge {
 
     private func isValidSessionID(_ value: String) -> Bool {
         !value.isEmpty
-            && value.utf8.count <= 512
-            && !value.contains("/")
-            && !value.contains("\\")
+            && value.utf8.count <= 2_048
             && !value.unicodeScalars.contains(where: {
                 CharacterSet.controlCharacters.contains($0)
             })

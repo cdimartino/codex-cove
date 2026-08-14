@@ -30,7 +30,8 @@ cookies, credentials, or UI scraping.
 The following may be displayed while Cove is running but are not written to
 Cove's durable state:
 
-- prompts, answers, responses, commands, diffs, and request detail;
+- unsaved composer text, prompts actually submitted to Codex, answers,
+  responses, commands, diffs, and request detail;
 - plan and agent-message text;
 - rate-limit values, profile token totals, and per-task token metrics; and
 - notification content assembled for a current event.
@@ -41,14 +42,26 @@ is placed in that banner.
 
 ### Persisted locally
 
-Cove stores only what it needs to restore settings and bounded task behavior:
+Cove stores only what it needs to restore settings and bounded task behavior,
+plus content the user explicitly saves in the Workspace:
 
 - versioned UI, privacy, sound, notification, quiet, and interaction settings;
 - opaque session, turn, launch, parent, source, and selected-host identifiers;
 - status, timestamps, unread, pin, reminder, and local archive state;
 - opaque TTY, pane, editor-terminal, host-bundle, and focus-socket identifiers;
-- imported theme definitions and manifest-owned audio copies; and
-- helper configuration, install checksums, and explicitly selected SSH aliases.
+- imported theme definitions and manifest-owned audio copies;
+- helper configuration, install checksums, and explicitly selected SSH aliases;
+  and
+- Workspace aliases, tags, validated HTTP(S) links, Grid/Board organization,
+  and named prompt-library templates that the user explicitly saves.
+
+Workspace content is a deliberate durable local exception to the general
+task-content rule. It is stored only in the versioned `workspace.json`, written
+atomically with mode `0600`, and validated against fixed count and size bounds.
+It is not copied to `sessions.sqlite3`, diagnostics, logs, notifications,
+fixtures, or public artifacts. Selecting a saved template copies it into a
+memory-only composer; subsequent edits do not modify the template unless the
+user explicitly saves them.
 
 Absolute editor and decision socket paths are reconstructed at runtime rather
 than stored as terminal metadata. SSH credentials and private keys are never
@@ -57,9 +70,11 @@ copied into Cove configuration.
 ### Codex-owned data
 
 Cove never deletes, archives, edits, or creates Codex tasks or transcripts.
-Mark-read, pin, reminder, and archive actions affect Cove metadata only. The
-native Codex client remains authoritative for unsupported decisions and task
-state.
+Mark-read, pin, reminder, and archive actions affect Cove metadata only.
+Workspace aliases, tags, links, and workflow columns are likewise Cove-only.
+An explicit Workspace Send may start an idle turn or steer the exact active
+turn through the public app-server, but the native Codex client remains
+authoritative for unsupported decisions and task state.
 
 ## Privacy controls
 
@@ -94,12 +109,34 @@ approval scope.
 - Unknown, malformed, stale, unsupported, auto-review, and ambiguous requests
   are suppressed or returned to native Codex.
 
+## Thread-control safety
+
+Workspace prompting is opt-in per Send and uses a separate channel from
+approval decisions.
+
+- Every request names one composite source, remote-host scope when applicable,
+  and session ID. Cove never routes by an opaque session ID alone.
+- Idle tasks allow only `turn/start`. Active tasks allow only `turn/steer` with
+  the exact currently observed turn ID.
+- A pending approval or question disables Send until it is resolved.
+- Local and remote brokers accept only bounded start/steer frames for sessions
+  and launches they observed. Clients cannot submit arbitrary app-server
+  methods or claim Cove's reserved correlation IDs.
+- A state change between preview and delivery rejects the request. Timeout or
+  disconnect is reported as uncertain, and Cove never retries a prompt
+  automatically.
+- Hook-only sessions, stale routes, ambiguous origins, unsupported servers,
+  and missing active-turn IDs keep native Codex authoritative and expose an
+  exact Open action instead.
+
 ## Filesystem and IPC protections
 
 The main private root is `~/Library/Application Support/Codex Cove`. Runtime
 and data directories are required to be real current-user directories and are
 restricted to the user. Configuration, manifests, state files, imported assets,
-and socket endpoints are written with private permissions.
+and socket endpoints are written with private permissions. Workspace content
+is a regular current-user file with mode `0600`; symlinked files or unsafe
+parents are rejected without reading or replacing their targets.
 
 Critical operations use:
 
@@ -206,6 +243,10 @@ not intentionally include task content, but it does show local installation
 and socket paths needed to explain what it inspected. Event payload redaction
 removes fields with sensitive content keys. Editor focus logs contain only
 fixed phase, boolean result, and fixed error-category fields.
+
+When the app detects legacy session metadata that cannot be assigned to exactly
+one composite origin, Doctor reports only the number of preserved, unapplied
+records. It never prints their session, host, launch, parent, or path values.
 
 Before sharing any diagnostic output, review it for usernames, paths, host
 details, opaque identifiers, and anything else you do not intend to disclose.

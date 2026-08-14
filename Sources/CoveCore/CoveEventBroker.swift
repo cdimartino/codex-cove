@@ -333,7 +333,14 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
                 launchId: launchId,
                 source: source,
                 hostId: hostId,
-                parentSessionId: parentSessionID()
+                parentSessionId: parentSessionID(),
+                liveness: object["liveness"]?.stringValue.flatMap(
+                    CoveSessionLiveness.init(rawValue:)
+                ),
+                activeTurnId: object["activeTurnId"]?.scalarStringValue,
+                controlRoute: object["controlRoute"]?.stringValue.flatMap(
+                    CoveThreadControlRoute.init(rawValue:)
+                )
             )
         }
         guard kind == .sessionSnapshot else { return nil }
@@ -351,6 +358,13 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
             source: source,
             hostId: hostId,
             parentSessionId: parentSessionID(),
+            liveness: object["liveness"]?.stringValue.flatMap(
+                CoveSessionLiveness.init(rawValue:)
+            ),
+            activeTurnId: object["activeTurnId"]?.scalarStringValue,
+            controlRoute: object["controlRoute"]?.stringValue.flatMap(
+                CoveThreadControlRoute.init(rawValue:)
+            ),
             unread: object["unread"]?.boolValue ?? false
         )
     }
@@ -539,6 +553,31 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         return params["parentThreadId"]?.scalarStringValue
             ?? params["parentSessionId"]?.scalarStringValue
             ?? params["parent_thread_id"]?.scalarStringValue
+    }
+
+    /// Returns only an ID carried by the authoritative turn-start event. Cove
+    /// never guesses the active turn from recency or a status label.
+    public func authoritativeStartedTurnID() -> String? {
+        guard effectiveMethod == "turn/started" else { return nil }
+        let params = requestParameters
+        return params["turn"]?.objectValue?["id"]?.scalarStringValue
+            ?? params["turnId"]?.scalarStringValue
+            ?? turnId
+    }
+
+    public var endsActiveTurn: Bool {
+        if let method = effectiveMethod, [
+            "turn/completed",
+            "turn/aborted",
+            "turn/interrupted",
+            "turn/failed",
+        ].contains(method) {
+            return true
+        }
+        guard effectiveMethod == "thread/status/changed" else { return false }
+        let params = requestParameters
+        return params["status"]?.objectValue?["type"]?.stringValue == "idle"
+            || params["status"]?.stringValue == "idle"
     }
 
     public func terminalLocationMetadata() -> CoveTerminalLocationMetadata? {

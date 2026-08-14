@@ -3,6 +3,14 @@ import CoveCore
 
 private let referenceDate = Date(timeIntervalSince1970: 2_000_000_000)
 
+private func identity(_ sessionID: String) -> CoveSessionIdentity {
+    CoveSessionIdentity(
+        source: .localCli,
+        hostId: nil,
+        sessionId: sessionID
+    )!
+}
+
 private func expect(
     _ condition: @autoclosure () -> Bool,
     _ message: String
@@ -27,7 +35,8 @@ private func snapshot(
         title: id,
         timestamp: referenceDate.addingTimeInterval(seconds),
         sessionId: sessionId,
-        launchId: launchId
+        launchId: launchId,
+        source: .localCli
     )
 }
 
@@ -43,6 +52,7 @@ private func approval(
             requestId: .string(id),
             launchId: launchId,
             sessionId: sessionId,
+            source: .localCli,
             title: "Allow command?",
             detail: nil,
             choices: [],
@@ -64,6 +74,7 @@ private func question(
             requestId: .string(id),
             launchId: launchId,
             sessionId: sessionId,
+            source: .localCli,
             question: "Choose one",
             options: [],
             allowsFreeform: true,
@@ -123,12 +134,12 @@ private func testQueueClassificationOrderingAndDeduplication() {
             snapshot("hidden", status: .hidden, priority: 100, seconds: 12),
         ],
         directRequests: [questionRequest, approvalRequest],
-        pinnedSessionIDs: ["pinned-task"]
+        pinnedSessionIDs: [identity("pinned-task").id]
     )
 
     expect(
         projection.needsAttention.map(\.id) == [
-            .snapshot("blocked-pinned"),
+            .snapshot(identity("pinned-task")),
             .directRequest(approvalRequest.key),
             .directRequest(questionRequest.key),
         ],
@@ -136,17 +147,17 @@ private func testQueueClassificationOrderingAndDeduplication() {
     )
     expect(
         projection.active.map(\.id) == [
-            .snapshot("active-high"),
-            .snapshot("compacting"),
-            .snapshot("working-low"),
+            .snapshot(identity("active-high")),
+            .snapshot(identity("compacting")),
+            .snapshot(identity("working-low")),
         ],
         "active rows must be ordered by descending priority"
     )
     expect(
         projection.recentlyFinished.map(\.id) == [
-            .snapshot("failed"),
-            .snapshot("interrupted"),
-            .snapshot("completed"),
+            .snapshot(identity("failed")),
+            .snapshot(identity("interrupted")),
+            .snapshot(identity("completed")),
         ],
         "finished rows must be ordered by descending priority"
     )
@@ -167,7 +178,9 @@ private func testQueueClassificationOrderingAndDeduplication() {
         "a matching request and snapshot must collapse into one enriched row"
     )
     expect(
-        !projection.allTaskItems.contains { $0.id == .snapshot(approvalSnapshot.snapshotId) },
+        !projection.allTaskItems.contains {
+            $0.id == .snapshot(identity(approvalSnapshot.sessionId!))
+        },
         "the paired approval snapshot must not remain as a duplicate row"
     )
     let questionRow = projection.needsAttention.first {

@@ -12,7 +12,7 @@ Building from source requires:
 - Swift 6.0+
 - Rust 1.85+
 - Node.js 22+ with npm
-- Codex CLI 0.145.0+
+- Codex CLI 0.147.0+
 - GNU Make
 - Apple `codesign`, `plutil`, and the Command Line Tools
 - Full Xcode 26.6+ for `make bootstrap` and `make ui-test`; a compatible Swift

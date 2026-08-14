@@ -144,6 +144,10 @@ struct CoveUITestConfiguration {
         stateDirectory.appendingPathComponent("dismissed-sessions.json")
     }
 
+    var workspaceURL: URL {
+        stateDirectory.appendingPathComponent("workspace.json")
+    }
+
     var runtimeURL: URL {
         stateDirectory.appendingPathComponent("run", isDirectory: true)
     }
@@ -558,6 +562,9 @@ enum CoveUITestFixtures {
             sessionId: "fixture-task-\(index)",
             launchId: "fixture-launch-\(index)",
             source: index.isMultiple(of: 3) ? .codexDesktop : .localCli,
+            liveness: .live,
+            activeTurnId: index == 1 ? "fixture-active-turn" : nil,
+            controlRoute: index == 1 ? .routedLocal : nil,
             unread: [.waitingApproval, .waitingInput, .failed].contains(status)
         )
     }
@@ -576,6 +583,7 @@ enum CoveUITestFixtures {
             sessionId: "fixture-session",
             launchId: "fixture-launch",
             source: .localCli,
+            liveness: .live,
             unread: true
         )
     }

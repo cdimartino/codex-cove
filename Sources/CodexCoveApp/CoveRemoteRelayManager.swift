@@ -8,10 +8,12 @@ import CoveCore
 final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
     static let maximumFrameBytes = 1_048_576
     static let decisionAcknowledgementTimeout: TimeInterval = 3
+    static let threadControlAcknowledgementTimeout: TimeInterval = 4
 
     typealias EventHandler = @Sendable (CoveWireEnvelope) -> Void
 
     private static let routePrefix = "cove-remote://"
+    private static let threadRoutePrefix = "cove-remote-thread://"
     private static let remoteCommand =
         "~/.local/share/codex-cove/current/codex-cove remote-relay-server"
 
@@ -25,7 +27,9 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
     private var hosts: [String: HostState] = [:]
     private var selectedAliases: Set<String> = []
     private var routes: [String: DecisionRoute] = [:]
+    private var threadRoutes: [String: DecisionRoute] = [:]
     private var pendingDecisions: [String: PendingDecision] = [:]
+    private var pendingThreadControls: [String: PendingThreadControl] = [:]
     private var running = false
     private var networkAvailable = true
     private var observedNetworkStatus: NWPath.Status?
@@ -70,7 +74,9 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
             self.observedNetworkStatus = nil
             self.selectedAliases.removeAll()
             self.failAllPendingDecisions(with: CoveRemoteRelayError.disconnected)
+            self.failAllPendingThreadControls()
             self.routes.removeAll()
+            self.threadRoutes.removeAll()
             for host in self.hosts.values {
                 self.stop(host)
             }
@@ -108,6 +114,39 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
                     )
                 } catch {
                     continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func sendThreadControl(
+        _ request: CoveThreadControlRequest,
+        launchId: String,
+        routePath: String
+    ) async -> CoveThreadControlResult {
+        do {
+            try request.validate()
+        } catch {
+            return .rejected(.invalidInput)
+        }
+        guard request.target.source == .remoteCli else {
+            return .rejected(.wrongOrigin)
+        }
+        return await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(returning: .rejected(.unavailable))
+                    return
+                }
+                do {
+                    try self.beginRemoteThreadControl(
+                        request,
+                        launchId: launchId,
+                        routePath: routePath,
+                        continuation: continuation
+                    )
+                } catch {
+                    continuation.resume(returning: .rejected(.staleRoute))
                 }
             }
         }
@@ -278,6 +317,22 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
             )
             return
         }
+        if let acknowledgement = try? JSONDecoder().decode(
+            CoveRemoteThreadControlAcknowledgement.self,
+            from: data
+        ) {
+            guard acknowledgement.isSupported else {
+                terminateConnection(alias: alias, generation: generation)
+                return
+            }
+            host.reconnectAttempt = 0
+            receive(
+                acknowledgement,
+                alias: alias,
+                generation: generation
+            )
+            return
+        }
 
         guard let line = String(data: data, encoding: .utf8),
               let decoded = CoveEventDecoder.decodeLine(line)
@@ -286,14 +341,14 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
             return
         }
         host.reconnectAttempt = 0
-        let envelope = routeRemoteDecisionIfNeeded(decoded, alias: alias)
+        let envelope = routeRemoteControlsIfNeeded(decoded, alias: alias)
         let handler = eventHandler
         DispatchQueue.main.async {
             handler(envelope)
         }
     }
 
-    private func routeRemoteDecisionIfNeeded(
+    private func routeRemoteControlsIfNeeded(
         _ incoming: CoveWireEnvelope,
         alias: String
     ) -> CoveWireEnvelope {
@@ -303,19 +358,39 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
 
         guard var object = envelope.payload.objectValue,
               let socketPath = object["decisionSocket"]?.stringValue,
-              !socketPath.isEmpty,
-              envelope.directRequest() != nil
+              socketPath.hasPrefix("/")
         else {
             return envelope
         }
-        let token = UUID().uuidString.lowercased()
-        routes[token] = DecisionRoute(
-            alias: alias,
-            socketPath: socketPath,
-            createdAt: Date()
-        )
+        if envelope.sessionId != "unknown",
+           envelope.sessionId != "pending",
+           envelope.launchId?.isEmpty == false {
+            let controlSocket = (socketPath as NSString)
+                .deletingPathExtension + ".c"
+            let controlToken = UUID().uuidString.lowercased()
+            threadRoutes[controlToken] = DecisionRoute(
+                alias: alias,
+                socketPath: controlSocket,
+                createdAt: Date()
+            )
+            object["threadControlSocket"] = .string(
+                Self.threadRoutePrefix + controlToken
+            )
+        }
+        if envelope.directRequest() != nil {
+            let token = UUID().uuidString.lowercased()
+            routes[token] = DecisionRoute(
+                alias: alias,
+                socketPath: socketPath,
+                createdAt: Date()
+            )
+            object["decisionSocket"] = .string(Self.routePrefix + token)
+        } else {
+            // Absolute remote runtime paths have no UI purpose and must not
+            // escape the in-memory relay layer.
+            object.removeValue(forKey: "decisionSocket")
+        }
         trimRoutesIfNeeded()
-        object["decisionSocket"] = .string(Self.routePrefix + token)
         envelope.payload = .object(object)
         return envelope
     }
@@ -390,6 +465,78 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
         }
     }
 
+    private func beginRemoteThreadControl(
+        _ request: CoveThreadControlRequest,
+        launchId: String,
+        routePath: String,
+        continuation: CheckedContinuation<CoveThreadControlResult, Never>
+    ) throws {
+        guard routePath.hasPrefix(Self.threadRoutePrefix) else {
+            throw CoveRemoteRelayError.disconnected
+        }
+        let token = String(routePath.dropFirst(Self.threadRoutePrefix.count))
+        guard !token.isEmpty,
+              let route = threadRoutes[token],
+              route.alias == request.target.remoteHostId,
+              selectedAliases.contains(route.alias),
+              let host = hosts[route.alias],
+              shouldRun(host),
+              let process = host.process,
+              process.isRunning,
+              let input = host.input,
+              let generation = host.generation
+        else { throw CoveRemoteRelayError.disconnected }
+        guard !pendingThreadControls.values.contains(where: {
+            $0.routeToken == token
+        }) else { throw CoveRemoteRelayError.decisionPending }
+
+        let controlID = UUID().uuidString.lowercased()
+        let control = CoveRemoteThreadControl(
+            controlId: controlID,
+            controlSocket: route.socketPath,
+            launchId: launchId,
+            request: request
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let payload = try encoder.encode(control)
+        guard payload.count <= Self.maximumFrameBytes else {
+            throw CoveRemoteRelayError.frameTooLarge
+        }
+        var length = UInt32(payload.count).bigEndian
+        var framed = Data(bytes: &length, count: MemoryLayout<UInt32>.size)
+        framed.append(payload)
+        let framedControl = framed
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.threadControlTimedOut(controlID: controlID)
+        }
+        pendingThreadControls[controlID] = PendingThreadControl(
+            alias: route.alias,
+            generation: generation,
+            routeToken: token,
+            continuation: continuation,
+            timeoutWorkItem: timeout
+        )
+        queue.asyncAfter(
+            deadline: .now() + Self.threadControlAcknowledgementTimeout,
+            execute: timeout
+        )
+        let alias = route.alias
+        host.writeQueue.async { [weak self] in
+            do {
+                try input.write(contentsOf: framedControl)
+            } catch {
+                self?.queue.async { [weak self] in
+                    self?.threadControlWriteFailed(
+                        controlID: controlID,
+                        alias: alias,
+                        generation: generation
+                    )
+                }
+            }
+        }
+    }
+
     private func receive(
         _ acknowledgement: CoveRemoteDecisionAcknowledgement,
         alias: String,
@@ -419,6 +566,20 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
         }
     }
 
+    private func receive(
+        _ acknowledgement: CoveRemoteThreadControlAcknowledgement,
+        alias: String,
+        generation: UUID
+    ) {
+        guard let pending = pendingThreadControls[acknowledgement.controlId],
+              pending.alias == alias,
+              pending.generation == generation
+        else { return }
+        pendingThreadControls.removeValue(forKey: acknowledgement.controlId)
+        pending.timeoutWorkItem.cancel()
+        pending.continuation.resume(returning: acknowledgement.result)
+    }
+
     private func decisionTimedOut(controlID: String) {
         guard let pending = pendingDecisions.removeValue(forKey: controlID) else {
             return
@@ -428,6 +589,12 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
         pending.continuation.resume(
             throwing: CoveRemoteRelayError.acknowledgementTimedOut
         )
+    }
+
+    private func threadControlTimedOut(controlID: String) {
+        guard let pending = pendingThreadControls.removeValue(forKey: controlID)
+        else { return }
+        pending.continuation.resume(returning: .uncertain)
     }
 
     private func controlWriteFailed(
@@ -443,6 +610,20 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
         }
         pending.timeoutWorkItem.cancel()
         pending.continuation.resume(throwing: CoveRemoteRelayError.disconnected)
+        terminateConnection(alias: alias, generation: generation)
+    }
+
+    private func threadControlWriteFailed(
+        controlID: String,
+        alias: String,
+        generation: UUID
+    ) {
+        guard let pending = pendingThreadControls.removeValue(forKey: controlID),
+              pending.alias == alias,
+              pending.generation == generation
+        else { return }
+        pending.timeoutWorkItem.cancel()
+        pending.continuation.resume(returning: .rejected(.unavailable))
         terminateConnection(alias: alias, generation: generation)
     }
 
@@ -511,6 +692,7 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
             generation: generation,
             with: CoveRemoteRelayError.disconnected
         )
+        failPendingThreadControls(for: alias, generation: generation)
         try? host.input?.close()
         try? host.output?.close()
         host.process = nil
@@ -528,6 +710,10 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
             for: host.alias,
             generation: host.generation,
             with: CoveRemoteRelayError.disconnected
+        )
+        failPendingThreadControls(
+            for: host.alias,
+            generation: host.generation
         )
         try? host.input?.close()
         if let process = host.process, process.isRunning {
@@ -558,6 +744,7 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
 
     private func removeRoutes(for alias: String) {
         routes = routes.filter { $0.value.alias != alias }
+        threadRoutes = threadRoutes.filter { $0.value.alias != alias }
     }
 
     private func failPendingDecisions(
@@ -592,11 +779,44 @@ final class CoveRemoteRelayManager: CoveDecisionSending, @unchecked Sendable {
         }
     }
 
+    private func failPendingThreadControls(
+        for alias: String,
+        generation: UUID?
+    ) {
+        let controlIDs = pendingThreadControls.compactMap { controlID, pending in
+            pending.alias == alias
+                && (generation == nil || pending.generation == generation)
+                ? controlID : nil
+        }
+        for controlID in controlIDs {
+            guard let pending = pendingThreadControls.removeValue(
+                forKey: controlID
+            ) else { continue }
+            pending.timeoutWorkItem.cancel()
+            pending.continuation.resume(returning: .rejected(.unavailable))
+        }
+    }
+
+    private func failAllPendingThreadControls() {
+        let pending = Array(pendingThreadControls.values)
+        pendingThreadControls.removeAll()
+        for control in pending {
+            control.timeoutWorkItem.cancel()
+            control.continuation.resume(returning: .rejected(.unavailable))
+        }
+    }
+
     private func trimRoutesIfNeeded() {
         while routes.count > 4_096,
               let oldest = routes.min(by: { $0.value.createdAt < $1.value.createdAt })
         {
             routes.removeValue(forKey: oldest.key)
+        }
+        while threadRoutes.count > 4_096,
+              let oldest = threadRoutes.min(by: {
+                  $0.value.createdAt < $1.value.createdAt
+              }) {
+            threadRoutes.removeValue(forKey: oldest.key)
         }
     }
 
@@ -674,6 +894,14 @@ private struct PendingDecision {
     var generation: UUID
     var routeToken: String
     var continuation: CheckedContinuation<Void, Error>
+    var timeoutWorkItem: DispatchWorkItem
+}
+
+private struct PendingThreadControl {
+    var alias: String
+    var generation: UUID
+    var routeToken: String
+    var continuation: CheckedContinuation<CoveThreadControlResult, Never>
     var timeoutWorkItem: DispatchWorkItem
 }
 

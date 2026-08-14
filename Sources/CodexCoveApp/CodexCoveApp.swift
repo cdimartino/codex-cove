@@ -15,6 +15,7 @@ struct CodexCoveApp: App {
             CoveMenuBarView(
                 store: appDelegate.store,
                 showCove: appDelegate.showCove,
+                showWorkspace: appDelegate.showWorkspace,
                 collapseToMenuBar: appDelegate.collapseToMenuBar,
                 restoreIsland: appDelegate.restoreIsland,
                 showSettings: appDelegate.showSettings,
@@ -24,6 +25,13 @@ struct CodexCoveApp: App {
             )
         }
         .commands {
+            CommandMenu("Workspace") {
+                Button("Open Workspace") {
+                    appDelegate.showWorkspace()
+                }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .accessibilityIdentifier("cove.command.workspace")
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings") {
                     appDelegate.showSettings()
@@ -32,6 +40,20 @@ struct CodexCoveApp: App {
                 .accessibilityLabel("Settings")
                 .accessibilityIdentifier("cove.command.settings")
             }
+            CommandGroup(replacing: .help) {
+                Button("Codex Cove Help") {
+                    NSWorkspace.shared.open(CoveHelp.userGuideURL)
+                }
+                .accessibilityIdentifier("cove.command.help")
+                Button("Workspace Help") {
+                    NSWorkspace.shared.open(CoveHelp.workspaceURL)
+                }
+                .accessibilityIdentifier("cove.command.workspace-help")
+                Button("Settings Help") {
+                    NSWorkspace.shared.open(CoveHelp.settingsURL)
+                }
+                .accessibilityIdentifier("cove.command.settings-help")
+            }
         }
     }
 }
@@ -39,6 +61,7 @@ struct CodexCoveApp: App {
 private struct CoveMenuBarView: View {
     @ObservedObject var store: CoveStore
     let showCove: @MainActor () -> Void
+    let showWorkspace: @MainActor () -> Void
     let collapseToMenuBar: @MainActor () -> Void
     let restoreIsland: @MainActor () -> Void
     let showSettings: @MainActor () -> Void
@@ -50,6 +73,11 @@ private struct CoveMenuBarView: View {
         Button("Show Cove", action: showCove)
             .accessibilityLabel("Show Cove")
             .accessibilityIdentifier("cove.menubar.show")
+
+        Button("Open Workspace…", action: showWorkspace)
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+            .accessibilityLabel("Open Workspace")
+            .accessibilityIdentifier("cove.menubar.workspace")
 
         if store.state.settings.minimalIslandMode {
             Button("Restore Island", action: restoreIsland)
@@ -98,6 +126,9 @@ private struct CoveMenuBarView: View {
         Button("Doctor…", action: showDoctor)
             .accessibilityLabel("Doctor")
             .accessibilityIdentifier("cove.menubar.doctor")
+        Link("Help…", destination: CoveHelp.userGuideURL)
+            .accessibilityLabel("Codex Cove Help")
+            .accessibilityIdentifier("cove.menubar.help")
         Button("About Codex Cove", action: showAbout)
             .accessibilityLabel("About Codex Cove")
             .accessibilityIdentifier("cove.menubar.about")

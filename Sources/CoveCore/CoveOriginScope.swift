@@ -22,6 +22,62 @@ public struct CoveOriginScope: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// A task identity that is safe to use across Cove's local CLI, Desktop, and
+/// explicitly configured remote origins.
+///
+/// `sessionId` alone is never an identity: Codex instances on different
+/// origins may legitimately issue the same opaque identifier. Remote
+/// identities therefore require their configured host alias, while local
+/// identities deliberately discard one.
+public struct CoveSessionIdentity: Codable, Equatable, Hashable, Sendable,
+    Identifiable, Comparable {
+    public var source: CoveWireSource
+    public var remoteHostId: String?
+    public var sessionId: String
+
+    public init?(
+        source: CoveWireSource?,
+        hostId: String?,
+        sessionId: String
+    ) {
+        guard let scope = CoveOriginScope(source: source, hostId: hostId),
+              !sessionId.isEmpty,
+              sessionId.utf8.count <= 512
+        else { return nil }
+        self.source = scope.source
+        self.remoteHostId = scope.remoteHostId
+        self.sessionId = sessionId
+    }
+
+    public init?(scope: CoveOriginScope, sessionId: String) {
+        self.init(
+            source: scope.source,
+            hostId: scope.remoteHostId,
+            sessionId: sessionId
+        )
+    }
+
+    public var id: String {
+        CoveScopedIdentityKey.session(
+            sessionId: sessionId,
+            source: source,
+            hostId: remoteHostId
+        )
+    }
+
+    public var originScope: CoveOriginScope {
+        // Construction already proves this combination is valid.
+        CoveOriginScope(source: source, hostId: remoteHostId)!
+    }
+
+    public static func < (
+        lhs: CoveSessionIdentity,
+        rhs: CoveSessionIdentity
+    ) -> Bool {
+        lhs.id < rhs.id
+    }
+}
+
 /// Collision-safe string keys for the few schema-v1 collections that still
 /// store identities as strings. Length-prefixing keeps arbitrary opaque IDs
 /// distinct without persisting content beyond the identifiers themselves.
@@ -94,6 +150,23 @@ public extension CoveSessionSnapshot {
             hostId: hostId
         )
     }
+
+    var sessionIdentity: CoveSessionIdentity? {
+        CoveSessionIdentity(
+            source: source,
+            hostId: hostId,
+            sessionId: sessionId ?? snapshotId
+        )
+    }
+
+    var parentIdentity: CoveSessionIdentity? {
+        guard let parentSessionId else { return nil }
+        return CoveSessionIdentity(
+            source: source,
+            hostId: hostId,
+            sessionId: parentSessionId
+        )
+    }
 }
 
 public extension CoveEvent {
@@ -117,10 +190,37 @@ public extension CoveSessionMetadata {
             hostId: hostId
         )
     }
+
+
+    var sessionIdentity: CoveSessionIdentity? {
+        CoveSessionIdentity(
+            source: source,
+            hostId: hostId,
+            sessionId: sessionId
+        )
+    }
+
+    var parentIdentity: CoveSessionIdentity? {
+        guard let parentSessionId else { return nil }
+        return CoveSessionIdentity(
+            source: source,
+            hostId: hostId,
+            sessionId: parentSessionId
+        )
+    }
 }
 
 public extension CoveDirectRequest {
     var originScope: CoveOriginScope? {
         CoveOriginScope(source: source, hostId: hostId)
+    }
+
+
+    var sessionIdentity: CoveSessionIdentity? {
+        CoveSessionIdentity(
+            source: source,
+            hostId: hostId,
+            sessionId: sessionId
+        )
     }
 }

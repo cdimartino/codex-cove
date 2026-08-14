@@ -7,12 +7,12 @@ import CoveCore
 final class CoveStore: ObservableObject {
     var onJumpToSession: ((CoveSessionSnapshot) -> CoveJumpResult)?
     var onOpenDirectRequest: ((CoveSessionSnapshot) -> CoveJumpResult)?
-    var onMarkRead: ((String) -> Void)?
-    var onDismissSession: ((String) -> Bool)?
-    var onDismissSessions: (([String]) -> Bool)?
-    var onSetPinned: ((String, Bool) -> Bool)?
-    var onScheduleFollowUp: ((String, Date) -> Bool)?
-    var onCancelFollowUp: ((String) -> Bool)?
+    var onMarkRead: ((CoveSessionIdentity) -> Void)?
+    var onDismissSession: ((CoveSessionIdentity) -> Bool)?
+    var onDismissSessions: (([CoveSessionIdentity]) -> Bool)?
+    var onSetPinned: ((CoveSessionIdentity, Bool) -> Bool)?
+    var onScheduleFollowUp: ((CoveSessionIdentity, Date) -> Bool)?
+    var onCancelFollowUp: ((CoveSessionIdentity) -> Bool)?
     var onDecisionAttempt: ((CoveDecisionAttempt) -> Void)?
 
     @Published private(set) var state: CoveState
@@ -29,8 +29,8 @@ final class CoveStore: ObservableObject {
     @Published private(set) var themePreview: CoveThemePalette?
     @Published private(set) var persistenceWarning: String?
     @Published private(set) var sessionOpenFailureMessage: String?
-    @Published private(set) var selectedSessionID: String?
-    @Published private(set) var reminders: [String: Date] = [:]
+    @Published private(set) var selectedSessionIdentity: CoveSessionIdentity?
+    @Published private(set) var reminders: [CoveSessionIdentity: Date] = [:]
 
     private let storage: CoveStateStorage
     private let themeStorage: CoveThemeFileStore
@@ -52,7 +52,7 @@ final class CoveStore: ObservableObject {
     private var isOverlayFocused = false
     private var isDirectInteractionActive = false
     private var isSettingsPresented = false
-    private var sessionOpenFailureSessionID: String?
+    private var sessionOpenFailureIdentity: CoveSessionIdentity?
 
     init(
         storage: CoveStateStorage,
@@ -515,7 +515,10 @@ final class CoveStore: ObservableObject {
         dispatch(.restoreMetadata(metadata))
         reminders = Dictionary(
             uniqueKeysWithValues: metadata.compactMap { record in
-                record.reminderAt.map { (record.sessionId, $0) }
+                guard let identity = record.sessionIdentity,
+                      let reminderAt = record.reminderAt
+                else { return nil }
+                return (identity, reminderAt)
             }
         )
     }
@@ -525,29 +528,29 @@ final class CoveStore: ObservableObject {
     }
 
     func togglePinned(_ snapshot: CoveSessionSnapshot) {
-        let sessionID = snapshot.sessionId ?? snapshot.snapshotId
-        let shouldPin = !state.pinnedSessionIDs.contains(sessionID)
-        guard onSetPinned?(sessionID, shouldPin) != false else { return }
-        dispatch(.togglePinned(sessionID))
+        guard let identity = snapshot.sessionIdentity else { return }
+        let shouldPin = !state.pinnedSessionIDs.contains(identity.id)
+        guard onSetPinned?(identity, shouldPin) != false else { return }
+        dispatch(.togglePinned(identity))
     }
 
     func scheduleFollowUp(_ snapshot: CoveSessionSnapshot) {
-        let sessionID = snapshot.sessionId ?? snapshot.snapshotId
+        guard let identity = snapshot.sessionIdentity else { return }
         let reminderAt = Date().addingTimeInterval(
             state.settings.followUpReminderSeconds
         )
-        guard onScheduleFollowUp?(sessionID, reminderAt) != false else { return }
-        reminders[sessionID] = reminderAt
+        guard onScheduleFollowUp?(identity, reminderAt) != false else { return }
+        reminders[identity] = reminderAt
     }
 
     func cancelFollowUp(_ snapshot: CoveSessionSnapshot) {
-        let sessionID = snapshot.sessionId ?? snapshot.snapshotId
-        guard onCancelFollowUp?(sessionID) != false else { return }
-        reminders.removeValue(forKey: sessionID)
+        guard let identity = snapshot.sessionIdentity else { return }
+        guard onCancelFollowUp?(identity) != false else { return }
+        reminders.removeValue(forKey: identity)
     }
 
-    func didDeliverFollowUp(sessionID: String) {
-        reminders.removeValue(forKey: sessionID)
+    func didDeliverFollowUp(identity: CoveSessionIdentity) {
+        reminders.removeValue(forKey: identity)
     }
 
     func forgetInternalSession(
@@ -562,15 +565,14 @@ final class CoveStore: ObservableObject {
                 hostId: hostID
             )
         )
-        let stillRepresentsSession = state.session.snapshots.contains {
-            $0.snapshotId == sessionID || $0.sessionId == sessionID
-        } || state.pendingDirectRequests.contains {
-            $0.sessionId == sessionID
-        }
-        if !stillRepresentsSession {
-            reminders.removeValue(forKey: sessionID)
-            if selectedSessionID == sessionID {
-                selectedSessionID = nil
+        if let identity = CoveSessionIdentity(
+            source: source,
+            hostId: hostID,
+            sessionId: sessionID
+        ) {
+            reminders.removeValue(forKey: identity)
+            if selectedSessionIdentity == identity {
+                selectedSessionIdentity = nil
             }
         }
     }
@@ -578,23 +580,20 @@ final class CoveStore: ObservableObject {
     func selectAdjacentSession(offset: Int) {
         let sessions = state.session.snapshots
         guard !sessions.isEmpty else {
-            selectedSessionID = nil
+            selectedSessionIdentity = nil
             return
         }
-        let currentIndex = selectedSessionID.flatMap { selected in
-            sessions.firstIndex {
-                ($0.sessionId ?? $0.snapshotId) == selected
-            }
+        let currentIndex = selectedSessionIdentity.flatMap { selected in
+            sessions.firstIndex { $0.sessionIdentity == selected }
         } ?? (offset >= 0 ? -1 : 0)
         let nextIndex = (currentIndex + offset + sessions.count) % sessions.count
-        selectedSessionID = sessions[nextIndex].sessionId
-            ?? sessions[nextIndex].snapshotId
+        selectedSessionIdentity = sessions[nextIndex].sessionIdentity
     }
 
     func openSelectedSession() {
-        guard let selectedSessionID,
+        guard let selectedSessionIdentity,
               let snapshot = state.session.snapshots.first(where: {
-                  ($0.sessionId ?? $0.snapshotId) == selectedSessionID
+                  $0.sessionIdentity == selectedSessionIdentity
               })
         else { return }
         open(snapshot)
@@ -679,43 +678,43 @@ final class CoveStore: ObservableObject {
             message: "The exact originating Codex location is not currently available."
         )
         guard result.focusedExactLocation else {
-            sessionOpenFailureSessionID = snapshot.sessionId
-                ?? snapshot.snapshotId
+            sessionOpenFailureIdentity = snapshot.sessionIdentity
             sessionOpenFailureMessage = result.message
             return false
         }
         clearSessionOpenFailure()
-        dispatch(.markRead(snapshot.snapshotId))
-        onMarkRead?(snapshot.sessionId ?? snapshot.snapshotId)
+        guard let identity = snapshot.sessionIdentity else { return true }
+        dispatch(.markRead(identity))
+        onMarkRead?(identity)
         return true
     }
 
     func sessionOpenFailureMessage(
         for snapshot: CoveSessionSnapshot
     ) -> String? {
-        guard sessionOpenFailureSessionID
-                == (snapshot.sessionId ?? snapshot.snapshotId) else {
+        guard sessionOpenFailureIdentity == snapshot.sessionIdentity else {
             return nil
         }
         return sessionOpenFailureMessage
     }
 
     func markRead(_ snapshot: CoveSessionSnapshot) {
-        dispatch(.markRead(snapshot.snapshotId))
-        onMarkRead?(snapshot.sessionId ?? snapshot.snapshotId)
+        guard let identity = snapshot.sessionIdentity else { return }
+        dispatch(.markRead(identity))
+        onMarkRead?(identity)
     }
 
     func dismiss(_ snapshot: CoveSessionSnapshot) {
-        let sessionID = snapshot.sessionId ?? snapshot.snapshotId
-        guard onDismissSession?(sessionID) != false else { return }
-        if state.pinnedSessionIDs.contains(sessionID) {
-            _ = onSetPinned?(sessionID, false)
+        guard let identity = snapshot.sessionIdentity else { return }
+        guard onDismissSession?(identity) != false else { return }
+        if state.pinnedSessionIDs.contains(identity.id) {
+            _ = onSetPinned?(identity, false)
         }
-        if reminders[sessionID] != nil {
-            _ = onCancelFollowUp?(sessionID)
-            reminders.removeValue(forKey: sessionID)
+        if reminders[identity] != nil {
+            _ = onCancelFollowUp?(identity)
+            reminders.removeValue(forKey: identity)
         }
-        dispatch(.dismissSnapshot(snapshot.snapshotId))
+        dispatch(.dismissSnapshot(identity))
     }
 
     var archivableCompletedCount: Int {
@@ -724,54 +723,49 @@ final class CoveStore: ObservableObject {
 
     func archiveAllCompleted() {
         let snapshots = archivableCompletedSnapshots
-        let sessionIDs = Array(
-            Set(snapshots.map { $0.sessionId ?? $0.snapshotId })
-        ).sorted()
-        guard !sessionIDs.isEmpty,
-              onDismissSessions?(sessionIDs) != false
+        let identities = Array(Set(snapshots.compactMap(\.sessionIdentity)))
+            .sorted()
+        guard !identities.isEmpty,
+              onDismissSessions?(identities) != false
         else { return }
 
-        for sessionID in sessionIDs {
-            if state.pinnedSessionIDs.contains(sessionID) {
-                _ = onSetPinned?(sessionID, false)
+        for identity in identities {
+            if state.pinnedSessionIDs.contains(identity.id) {
+                _ = onSetPinned?(identity, false)
             }
-            if reminders[sessionID] != nil {
-                _ = onCancelFollowUp?(sessionID)
-                reminders.removeValue(forKey: sessionID)
+            if reminders[identity] != nil {
+                _ = onCancelFollowUp?(identity)
+                reminders.removeValue(forKey: identity)
             }
         }
-        dispatch(.dismissSnapshots(snapshots.map(\.snapshotId)))
+        dispatch(.dismissSnapshots(identities))
     }
 
-    private var archivableCompletedSessionIDs: Set<String> {
-        Set(
-            archivableCompletedSnapshots.map {
-                $0.sessionId ?? $0.snapshotId
-            }
-        )
+    private var archivableCompletedSessionIDs: Set<CoveSessionIdentity> {
+        Set(archivableCompletedSnapshots.compactMap(\.sessionIdentity))
     }
 
     private var archivableCompletedSnapshots: [CoveSessionSnapshot] {
-        let pendingSessionIDs = Set(
-            state.pendingDirectRequests.map(\.sessionId)
+        let pendingIdentities = Set(
+            state.pendingDirectRequests.compactMap(\.sessionIdentity)
         )
         let snapshotsBySession = Dictionary(
-            grouping: state.session.snapshots,
-            by: { $0.sessionId ?? $0.snapshotId }
+            grouping: state.session.snapshots.compactMap { snapshot in
+                snapshot.sessionIdentity.map { ($0, snapshot) }
+            },
+            by: \.0
         )
-        let safeSessionIDs = Set<String>(
-            snapshotsBySession.compactMap { sessionID, snapshots in
-                guard !pendingSessionIDs.contains(sessionID),
-                      snapshots.allSatisfy({ $0.status == .completed })
+        let safeIdentities = Set<CoveSessionIdentity>(
+            snapshotsBySession.compactMap { identity, entries in
+                guard !pendingIdentities.contains(identity),
+                      entries.allSatisfy({ $0.1.status == .completed })
                 else { return nil }
-                return sessionID
+                return identity
             }
         )
         return state.session.snapshots.filter { snapshot in
             snapshot.status == .completed
-                && safeSessionIDs.contains(
-                    snapshot.sessionId ?? snapshot.snapshotId
-                )
+                && snapshot.sessionIdentity.map(safeIdentities.contains) == true
         }
     }
 
@@ -1246,7 +1240,7 @@ final class CoveStore: ObservableObject {
     }
 
     private func clearSessionOpenFailure() {
-        sessionOpenFailureSessionID = nil
+        sessionOpenFailureIdentity = nil
         sessionOpenFailureMessage = nil
     }
 
@@ -1454,11 +1448,11 @@ final class CoveStore: ObservableObject {
     }
 
     private func normalizeSelectedSession() {
-        guard let selectedSessionID else { return }
+        guard let selectedSessionIdentity else { return }
         if !state.session.snapshots.contains(where: {
-            ($0.sessionId ?? $0.snapshotId) == selectedSessionID
+            $0.sessionIdentity == selectedSessionIdentity
         }) {
-            self.selectedSessionID = nil
+            self.selectedSessionIdentity = nil
         }
     }
 }

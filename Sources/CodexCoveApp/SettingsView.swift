@@ -3,6 +3,48 @@ import Foundation
 import SwiftUI
 import CoveCore
 
+enum CoveHelp {
+    static let userGuideURL = URL(
+        string: "https://github.com/cdimartino/codex-cove/blob/main/docs/USER_GUIDE.md"
+    )!
+    static let workspaceURL = URL(
+        string: "https://github.com/cdimartino/codex-cove/blob/main/docs/WORKSPACE.md"
+    )!
+    static let settingsURL = URL(
+        string: "https://github.com/cdimartino/codex-cove/blob/main/docs/SETTINGS.md"
+    )!
+
+    static func settingsURL(anchor: String) -> URL {
+        URL(string: settingsURL.absoluteString + "#" + anchor)!
+    }
+}
+
+struct CoveHelpLink: View {
+    let topic: String
+    let destination: URL
+    let accessibilityIdentifier: String
+
+    init(
+        _ topic: String,
+        destination: URL,
+        accessibilityIdentifier: String
+    ) {
+        self.topic = topic
+        self.destination = destination
+        self.accessibilityIdentifier = accessibilityIdentifier
+    }
+
+    var body: some View {
+        Link(destination: destination) {
+            Image(systemName: "questionmark.circle")
+        }
+        .buttonStyle(.plain)
+        .help("Open \(topic) help")
+        .accessibilityLabel("\(topic) help")
+        .accessibilityIdentifier(accessibilityIdentifier)
+    }
+}
+
 private enum CoveSettingsPane: String, CaseIterable, Identifiable {
     case appearance
     case residents
@@ -70,6 +112,37 @@ private enum CoveSettingsPane: String, CaseIterable, Identifiable {
             "rectangle.stack"
         }
     }
+
+    var helpAnchor: String {
+        switch self {
+        case .appearance: "appearance"
+        case .residents: "residents"
+        case .general: "general"
+        case .notifications: "notifications"
+        case .sounds: "sounds"
+        case .privacyAndQuiet: "privacy-and-quiet"
+        case .sessions: "sessions-and-data"
+        }
+    }
+
+    var helpSummary: String {
+        switch self {
+        case .appearance:
+            "Configure text size, themes, surface geometry, transparency, and motion."
+        case .residents:
+            "Choose the resident set and preview how agents appear in each task state."
+        case .general:
+            "Configure startup, shortcuts, usage views, interaction timing, and reminders."
+        case .notifications:
+            "Choose which events show banners and which fields those banners may reveal."
+        case .sounds:
+            "Configure global and per-event sounds, volume, previews, and local imports."
+        case .privacyAndQuiet:
+            "Control redaction, capture-app protection, quiet hours, focus quieting, and project rules."
+        case .sessions:
+            "Control island visibility, restore archived tasks, and clear memory-only recent events."
+        }
+    }
 }
 
 struct SettingsView: View {
@@ -112,6 +185,7 @@ struct SettingsView: View {
                     Image(systemName: pane.systemImage)
                 }
                 .tag(pane)
+                .help(pane.helpSummary)
                 .accessibilityIdentifier("settings.sidebar.\(pane.rawValue)")
             }
             .listStyle(.sidebar)
@@ -197,6 +271,7 @@ struct SettingsView: View {
                     Text(set.displayName).tag(set)
                 }
             }
+            .help("Choose which resident family Cove assigns across visible tasks.")
             .accessibilityIdentifier("settings.residents.character-set")
 
             Picker("Task state", selection: $residentPreviewStatus) {
@@ -204,6 +279,7 @@ struct SettingsView: View {
                     Text(status.displayName).tag(status)
                 }
             }
+            .help("Preview the selected resident family in a representative task state.")
             .accessibilityIdentifier("settings.residents.preview-state")
             Text("Cove automatically assigns each task a resident from the selected set. The gallery previews that set; individual residents are not selected per task.")
                 .coveSystemFont(size: 12)
@@ -213,6 +289,7 @@ struct SettingsView: View {
                     ? "Active residents animate with character-specific activities."
                     : "Attention and terminal states freeze on an icon-integrated callout."
             )
+            .help("Scale text throughout the island, queue, focused actions, and Settings.")
             .coveSystemFont(size: 11)
             .foregroundStyle(.secondary)
         }
@@ -286,13 +363,21 @@ struct SettingsView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(pane.title)
-                    .coveSystemFont(size: 20, weight: .semibold)
-                    .accessibilityIdentifier("settings.pane.\(pane.rawValue).title")
-                Text(pane.subtitle)
-                    .coveSystemFont(size: 12)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(pane.title)
+                        .coveSystemFont(size: 20, weight: .semibold)
+                        .accessibilityIdentifier("settings.pane.\(pane.rawValue).title")
+                    Text(pane.subtitle)
+                        .coveSystemFont(size: 12)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                CoveHelpLink(
+                    "\(pane.rawValue) settings",
+                    destination: CoveHelp.settingsURL(anchor: pane.helpAnchor),
+                    accessibilityIdentifier: "settings.pane.\(pane.rawValue).help"
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 24)
@@ -343,6 +428,7 @@ struct SettingsView: View {
                     Text(family.rawValue).tag(family)
                 }
             }
+            .help("Choose the overall visual language before selecting a color palette.")
             .accessibilityIdentifier("settings.appearance.theme-family")
 
             Picker("Palette", selection: paletteBinding) {
@@ -350,6 +436,7 @@ struct SettingsView: View {
                     Text(palette.rawValue).tag(palette)
                 }
             }
+            .help("Choose the built-in colors used by the selected style family.")
             .accessibilityIdentifier("settings.appearance.palette")
 
             Picker("Custom theme", selection: customThemeBinding) {
@@ -360,6 +447,7 @@ struct SettingsView: View {
                         .tag(Optional(theme.identifier))
                 }
             }
+            .help("Apply a locally saved or imported custom theme instead of the built-in selection.")
             .accessibilityIdentifier("settings.appearance.custom-theme")
 
             HStack {
@@ -367,17 +455,20 @@ struct SettingsView: View {
                     importTheme()
                 }
                 .disabled(!externalSideEffectsEnabled)
+                .help("Import a validated Codex Cove theme JSON file.")
                 .accessibilityIdentifier("settings.appearance.import-theme")
                 Button("Export Selected…") {
                     exportSelectedTheme()
                 }
                 .disabled(!externalSideEffectsEnabled)
+                .help("Export the selected theme as a portable JSON file.")
                 .accessibilityIdentifier("settings.appearance.export-theme")
                 Spacer()
                 if let selectedCustomTheme {
                     Button("Remove Custom Theme", role: .destructive) {
                         removeCustomTheme(selectedCustomTheme)
                     }
+                    .help("Delete this local custom theme. Built-in themes cannot be removed.")
                     .accessibilityIdentifier("settings.appearance.remove-theme")
                 }
             }
@@ -386,6 +477,7 @@ struct SettingsView: View {
 
         Section("Custom theme colors") {
             TextField("Theme name", text: customThemeNameBinding)
+                .help("Name the local custom theme before saving it.")
                 .accessibilityIdentifier("settings.appearance.custom-theme-name")
 
             Picker("Surface fill", selection: surfaceFillBinding) {
@@ -394,6 +486,7 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .help("Use one surface color or a two-color gradient.")
             .accessibilityIdentifier("settings.appearance.surface-fill")
 
             themeColorPicker(
@@ -449,11 +542,13 @@ struct SettingsView: View {
                         .trimmingCharacters(in: .whitespacesAndNewlines)
                         .isEmpty
                 )
+                .help("Save the preview as a local custom theme.")
                 .accessibilityIdentifier("settings.appearance.save-custom-theme")
                 Button("Reset from Selected") {
                     customThemeDraft = Self.themeDraft(from: store)
                     store.clearThemePreview()
                 }
+                .help("Discard the unsaved preview and copy values from the selected theme.")
                 .accessibilityIdentifier("settings.appearance.reset-custom-theme")
             }
 
@@ -476,6 +571,7 @@ struct SettingsView: View {
                     Text(style.rawValue.capitalized).tag(style)
                 }
             }
+            .help("Choose a coordinated transparency preset; the exact opacity controls remain editable.")
             .accessibilityIdentifier("settings.appearance.opacity-preset")
 
             CovePrecisionControlRow(
@@ -486,6 +582,7 @@ struct SettingsView: View {
                 unit: "pt",
                 accessibilityIdentifier: "settings.appearance.collapsed-width"
             )
+            .help("Match the collapsed island to this Mac's notch or preferred menu-bar width.")
             Text(
                 "Match the collapsed bubble to this Mac’s physical notch width. "
                     + "Visible depth scales with the final width (about "
@@ -495,6 +592,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
             Toggle("Straight top edge", isOn: squareTopCornersBinding)
+                .help("Remove rounding along the screen edge while keeping the lower corners rounded.")
                 .accessibilityIdentifier("settings.appearance.straight-top-edge")
             Text("Removes top corner rounding so Cove meets the screen edge seamlessly. Bottom corners keep the selected theme radius.")
                 .coveSystemFont(size: 11)
@@ -509,6 +607,7 @@ struct SettingsView: View {
                 displayScale: 100,
                 accessibilityIdentifier: "settings.appearance.collapsed-opacity"
             )
+            .help("Set the tint opacity of the collapsed island.")
 
             CovePrecisionControlRow(
                 "Expanded opacity",
@@ -519,15 +618,18 @@ struct SettingsView: View {
                 displayScale: 100,
                 accessibilityIdentifier: "settings.appearance.expanded-opacity"
             )
+            .help("Set the tint opacity of the expanded queue and focused action surface.")
 
             Picker("Blur", selection: blurBinding) {
                 ForEach(CoveBlurStyle.allCases, id: \.self) { style in
                     Text(style.rawValue.capitalized).tag(style)
                 }
             }
+            .help("Choose the native macOS material behind Cove's tint.")
             .accessibilityIdentifier("settings.appearance.blur")
 
             Toggle("Animate expansion and hiding", isOn: panelAnimationBinding)
+                .help("Animate Cove sliding down to open and up to close. Reduce Motion overrides this.")
                 .accessibilityIdentifier("settings.appearance.animate-panel")
             CovePrecisionControlRow(
                 "Slide duration",
@@ -539,6 +641,7 @@ struct SettingsView: View {
                 accessibilityIdentifier: "settings.appearance.slide-duration"
             )
             .disabled(!store.state.settings.panelAnimationEnabled)
+            .help("Set the duration of Cove's slide animation.")
             Text("The top edge and width stay fixed while Cove slides open downward and closes upward. Reduce Motion disables the effect.")
                 .coveSystemFont(size: 11)
                 .foregroundStyle(.secondary)
@@ -549,25 +652,32 @@ struct SettingsView: View {
     private var generalSettings: some View {
         Section("App") {
             Toggle("Launch at login", isOn: launchAtLoginBinding)
+                .help("Register Codex Cove as a standard macOS login item.")
                 .accessibilityIdentifier("settings.general.launch-at-login")
             Toggle("Enable global shortcuts", isOn: shortcutsBinding)
+                .help("Enable Cove's system-wide shortcuts after Accessibility access is granted.")
                 .accessibilityIdentifier("settings.general.global-shortcuts")
             Toggle("Glance mode", isOn: glanceModeBinding)
+                .help("Keep Cove collapsed unless you explicitly open it.")
                 .accessibilityIdentifier("settings.general.glance-mode")
         }
 
         Section("Usage") {
             Toggle("Show account usage", isOn: showUsageBinding)
+                .help("Show public Codex account limit windows in Cove.")
                 .accessibilityIdentifier("settings.general.show-usage")
             Toggle("Show usage remaining", isOn: usageRemainingBinding)
                 .disabled(!store.state.settings.showUsage)
+                .help("Show remaining capacity instead of used capacity.")
                 .accessibilityIdentifier("settings.general.usage-remaining")
             Toggle(
                 "Show profile token usage",
                 isOn: showProfileTokenUsageBinding
             )
+            .help("Show public account token totals when the installed Codex server provides them.")
             .accessibilityIdentifier("settings.general.profile-token-usage")
             Toggle("Show per-task token metrics", isOn: showTokenMetricsBinding)
+                .help("Show memory-only token metrics reported for individual live tasks.")
                 .accessibilityIdentifier("settings.general.task-token-metrics")
             Text("Profile totals use only the public account/usage/read response. Per-task metrics use only public thread/tokenUsage/updated values. Cove labels missing or stale data and never scrapes Codex UI or private files.")
                 .coveSystemFont(size: 11)
@@ -584,6 +694,7 @@ struct SettingsView: View {
                 fractionDigits: 2,
                 accessibilityIdentifier: "settings.general.hover-delay"
             )
+            .help("Wait this long before pointer hover expands the island.")
 
             CovePrecisionControlRow(
                 "Collapse after hover leaves",
@@ -593,6 +704,7 @@ struct SettingsView: View {
                 unit: "s",
                 accessibilityIdentifier: "settings.general.collapse-delay"
             )
+            .help("Collapse only after both pointer and keyboard focus leave Cove for this long.")
             Text("The countdown starts only after the pointer and keyboard focus leave Cove. Events and requests never expand the island automatically.")
                 .coveSystemFont(size: 11)
                 .foregroundStyle(.secondary)
@@ -605,6 +717,7 @@ struct SettingsView: View {
                 unit: "s",
                 accessibilityIdentifier: "settings.general.idle-auto-hide"
             )
+            .help("Hide an idle island after this many seconds; zero keeps it visible.")
 
             Button("Reset Interaction Defaults") {
                 store.dispatch(.setHoverDelay(0.25))
@@ -620,6 +733,7 @@ struct SettingsView: View {
                 Text("30 minutes").tag(30.0 * 60)
                 Text("1 hour").tag(60.0 * 60)
             }
+            .help("Choose the delay used by each one-shot Remind Me action.")
             .accessibilityIdentifier("settings.general.follow-up-delay")
         }
     }
@@ -628,6 +742,7 @@ struct SettingsView: View {
     private var notificationSettings: some View {
         Section("System Banners") {
             Toggle("Show Codex Cove notifications", isOn: notificationsBinding)
+                .help("Allow Cove to request native macOS notification banners.")
                 .accessibilityIdentifier("settings.notifications.global-enabled")
             Text("Notifications are grouped by task and turn. Anything from before the current Cove launch is discarded; the task remains available in Cove and Codex.")
                 .coveSystemFont(size: 11)
@@ -871,11 +986,13 @@ struct SettingsView: View {
                     Text(mode.rawValue.capitalized).tag(mode)
                 }
             }
+            .help("Choose manual redaction, automatic capture-app protection, or visible content.")
             .accessibilityIdentifier("settings.privacy.mode")
             Toggle(
                 "Conservative capture-app privacy",
                 isOn: conservativeCapturePrivacyBinding
             )
+            .help("In Auto mode, redact while a known conferencing or recording app is running.")
             .accessibilityIdentifier("settings.privacy.conservative-capture")
             Text("When Privacy is Auto, redact while a known conferencing or recording app is running. This does not prove that recording is active.")
                 .coveSystemFont(size: 11)
@@ -884,6 +1001,7 @@ struct SettingsView: View {
 
         Section("Quiet Hours") {
             Toggle("Enable quiet hours", isOn: quietHoursEnabledBinding)
+                .help("Suppress matching sounds and banners during the configured daily interval.")
                 .accessibilityIdentifier("settings.privacy.quiet-hours-enabled")
             DatePicker(
                 "Starts",
@@ -891,6 +1009,7 @@ struct SettingsView: View {
                 displayedComponents: .hourAndMinute
             )
             .disabled(!store.state.settings.quietHours.enabled)
+            .help("Set when quiet hours begin.")
             .accessibilityIdentifier("settings.privacy.quiet-hours-start")
             DatePicker(
                 "Ends",
@@ -898,6 +1017,7 @@ struct SettingsView: View {
                 displayedComponents: .hourAndMinute
             )
             .disabled(!store.state.settings.quietHours.enabled)
+            .help("Set when quiet hours end; the interval may cross midnight.")
             .accessibilityIdentifier("settings.privacy.quiet-hours-end")
             Text("Quiet hours can cross midnight. Matching sounds and notifications are suppressed; approval and input cards stay visible.")
                 .coveSystemFont(size: 11)
@@ -909,6 +1029,7 @@ struct SettingsView: View {
                 "Follow focused app",
                 isOn: followFocusedAppBinding
             )
+            .help("Suppress matching sounds and banners while another app is frontmost.")
             .accessibilityIdentifier("settings.privacy.follow-focused-app")
             Text("When enabled, Cove stays quiet while another app is frontmost.")
                 .coveSystemFont(size: 11)
@@ -929,6 +1050,7 @@ struct SettingsView: View {
     private var sessionSettings: some View {
         Section("Island") {
             Toggle("Minimal island / menu-bar mode", isOn: minimalIslandBinding)
+                .help("Replace the full island with a small status cue; restore it from the menu bar.")
                 .accessibilityIdentifier("settings.sessions.minimal-island")
             Text("Shows a small themed status cue without task text. Waiting approval and input counts remain visible; restore the full island from the menu bar.")
                 .coveSystemFont(size: 11)
@@ -942,6 +1064,7 @@ struct SettingsView: View {
                 }
             }
             .disabled(store.state.settings.minimalIslandMode)
+            .help("Open or close the island queue without changing minimal mode.")
             .accessibilityIdentifier("settings.sessions.toggle-overlay")
         }
 
@@ -986,6 +1109,7 @@ struct SettingsView: View {
                 store.dispatch(.clearRecentEvents)
             }
             .disabled(store.state.recentEvents.isEmpty)
+            .help("Clear only Cove's memory-only recent event list; Codex tasks are unchanged.")
             .accessibilityIdentifier("settings.sessions.clear-recent-events")
         }
     }
