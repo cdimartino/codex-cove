@@ -43,6 +43,8 @@ Start with the guide that matches what you are trying to do.
 - [Codex Cove 0.6.0 release notes](releases/v0.6.0.md) — the Workspace task
   dashboard, thread control, origin-safe hierarchy, prompt library, and full
   inline help system.
+- [Codex Cove 0.6.1 release notes](releases/v0.6.1.md) — Workspace appearance
+  controls and clearer privacy-redaction guidance and recovery.
 
 ## Version-specific engineering records
 
