@@ -5,6 +5,20 @@ public enum CoveWorkspaceMode: String, Codable, CaseIterable, Sendable {
     case board
 }
 
+public enum CoveWorkspaceAppearance: String, Codable, CaseIterable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var displayName: String {
+        switch self {
+        case .system: "Follow System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+}
+
 public enum CoveWorkspaceSort: String, Codable, CaseIterable, Sendable {
     case manual
     case attention

@@ -258,6 +258,11 @@ and search matching. Saved user-authored Workspace content remains in its local
 private file until you edit or remove it; redaction prevents displaying or
 matching it while privacy is active.
 
+Workspace displays a content-free banner identifying whether redaction comes
+from Privacy On, automatic capture-app protection, or the macOS lock state. Its
+toolbar also offers **Follow System**, **Light**, and **Dark** appearances for
+the full window without changing the island theme.
+
 Locking the user session hides Cove and forces its locked privacy state.
 
 Change the shared helper setting from a shell if needed:

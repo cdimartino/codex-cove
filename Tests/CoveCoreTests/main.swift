@@ -1985,6 +1985,7 @@ struct CoveCoreSmokeTests {
         CoveReducer.reduce(&state, .setShowTokenMetrics(true))
         CoveReducer.reduce(&state, .setCollapsedWidth(210))
         CoveReducer.reduce(&state, .setTextScale(1.5))
+        CoveReducer.reduce(&state, .setWorkspaceAppearance(.dark))
         CoveReducer.reduce(&state, .setSquareTopCorners(false))
         CoveReducer.reduce(
             &state,
@@ -2003,6 +2004,7 @@ struct CoveCoreSmokeTests {
         precondition(state.settings.showTokenMetrics)
         precondition(state.settings.collapsedWidth == 210)
         precondition(state.settings.textScale == 1.5)
+        precondition(state.settings.workspaceAppearance == .dark)
         precondition(!state.settings.squareTopCorners)
         precondition(
             state.settings.queueSectionOrder
@@ -2042,6 +2044,14 @@ struct CoveCoreSmokeTests {
         precondition(!settings.showProfileTokenUsage)
         precondition(!settings.showTokenMetrics)
         precondition(settings.residentSet == .dungeonAndDragons)
+        precondition(settings.workspaceAppearance == .system)
+
+        let encodedSettings = try JSONEncoder().encode(state.settings)
+        let decodedSettings = try JSONDecoder().decode(
+            CoveSettings.self,
+            from: encodedSettings
+        )
+        precondition(decodedSettings.workspaceAppearance == .dark)
     }
 
     static func testDesktopThreadHydrationParsing() throws {

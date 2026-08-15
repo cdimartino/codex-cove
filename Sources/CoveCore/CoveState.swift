@@ -459,6 +459,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
     public var showTokenMetrics: Bool
     public var queueSectionOrder: [CoveQueueSection]
     public var collapsedQueueSections: Set<CoveQueueSection>
+    public var workspaceAppearance: CoveWorkspaceAppearance
 
     public init(
         themeFamily: CoveThemeFamily = .nativeGlass,
@@ -496,7 +497,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         showProfileTokenUsage: Bool = false,
         showTokenMetrics: Bool = false,
         queueSectionOrder: [CoveQueueSection] = CoveQueueSection.allCases,
-        collapsedQueueSections: Set<CoveQueueSection> = [.more]
+        collapsedQueueSections: Set<CoveQueueSection> = [.more],
+        workspaceAppearance: CoveWorkspaceAppearance = .system
     ) {
         self.themeFamily = themeFamily
         self.palette = palette
@@ -541,6 +543,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
             queueSectionOrder
         )
         self.collapsedQueueSections = collapsedQueueSections
+        self.workspaceAppearance = workspaceAppearance
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -556,6 +559,7 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         case minimalIslandMode
         case showUsage, showProfileTokenUsage, showTokenMetrics
         case queueSectionOrder, collapsedQueueSections
+        case workspaceAppearance
     }
 
     public init(from decoder: Decoder) throws {
@@ -625,7 +629,11 @@ public struct CoveSettings: Codable, Equatable, Sendable {
             collapsedQueueSections: try values.decodeIfPresent(
                 Set<CoveQueueSection>.self,
                 forKey: .collapsedQueueSections
-            ) ?? [.more]
+            ) ?? [.more],
+            workspaceAppearance: try values.decodeIfPresent(
+                CoveWorkspaceAppearance.self,
+                forKey: .workspaceAppearance
+            ) ?? .system
         )
     }
 }
@@ -761,6 +769,7 @@ public enum CoveAction: Equatable, Sendable {
     case setCollapsedOpacity(Double)
     case setExpandedOpacity(Double)
     case setTextScale(Double)
+    case setWorkspaceAppearance(CoveWorkspaceAppearance)
     case setUsageShowsRemaining(Bool)
     case setConservativeCapturePrivacy(Bool)
     case setPrivacyScene(CovePrivacyScene)
@@ -881,6 +890,8 @@ public enum CoveReducer {
             state.settings.expandedOpacity = min(1, max(0.35, value))
         case let .setTextScale(value):
             state.settings.textScale = CoveSettings.validatedTextScale(value)
+        case let .setWorkspaceAppearance(appearance):
+            state.settings.workspaceAppearance = appearance
         case let .setUsageShowsRemaining(value):
             state.settings.usageShowsRemaining = value
         case let .setConservativeCapturePrivacy(value):

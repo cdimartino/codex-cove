@@ -78,7 +78,7 @@ private enum CoveSettingsPane: String, CaseIterable, Identifiable {
     var subtitle: LocalizedStringKey {
         switch self {
         case .appearance:
-            "Theme, transparency, blur, and live preview."
+            "Workspace appearance, themes, transparency, and live preview."
         case .residents:
             "Automatically assigned visual companions, motion, and status callouts."
         case .general:
@@ -128,7 +128,7 @@ private enum CoveSettingsPane: String, CaseIterable, Identifiable {
     var helpSummary: String {
         switch self {
         case .appearance:
-            "Configure text size, themes, surface geometry, transparency, and motion."
+            "Configure Workspace appearance, text size, themes, surface geometry, transparency, and motion."
         case .residents:
             "Choose the resident set and preview how agents appear in each task state."
         case .general:
@@ -407,6 +407,20 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var appearanceSettings: some View {
+        Section("Workspace window") {
+            Picker("Appearance", selection: workspaceAppearanceBinding) {
+                ForEach(CoveWorkspaceAppearance.allCases, id: \.self) { appearance in
+                    Text(appearance.displayName).tag(appearance)
+                }
+            }
+            .help("Choose whether the full Workspace follows macOS or always uses a light or dark appearance.")
+            .accessibilityIdentifier("settings.appearance.workspace")
+
+            Text("This changes only the full Workspace window. Island themes remain independent.")
+                .coveSystemFont(size: 11)
+                .foregroundStyle(.secondary)
+        }
+
         Section("Text") {
             CovePrecisionControlRow(
                 "Text size",
@@ -1317,6 +1331,13 @@ struct SettingsView: View {
         Binding(
             get: { store.state.settings.textScale },
             set: { store.dispatch(.setTextScale($0)) }
+        )
+    }
+
+    private var workspaceAppearanceBinding: Binding<CoveWorkspaceAppearance> {
+        Binding(
+            get: { store.state.settings.workspaceAppearance },
+            set: { store.dispatch(.setWorkspaceAppearance($0)) }
         )
     }
 
