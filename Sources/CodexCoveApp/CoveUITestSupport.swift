@@ -14,6 +14,7 @@ enum CoveUITestFixture: String, CaseIterable {
     case multiQuestion = "multi-question"
     case privacyRedacted = "privacy-redacted"
     case privacyOffHiddenStatus = "privacy-off-hidden-status"
+    case privacyOffLockedWorkspace = "privacy-off-locked-workspace"
     case deliveryFailure = "delivery-failure"
     case openFailure = "open-failure"
     case archivedTasks = "archived-tasks"
@@ -496,6 +497,8 @@ enum CoveUITestFixtures {
         case .privacyOffHiddenStatus:
             requests = [approval(category: .command)]
             snapshots = [snapshot(index: 1, status: .hidden, now: now)]
+        case .privacyOffLockedWorkspace:
+            snapshots = [snapshot(index: 1, status: .working, now: now)]
         case .deliveryFailure:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
@@ -531,6 +534,8 @@ enum CoveUITestFixtures {
                 palette: settings.palette
             ),
             pendingDirectRequests: requests,
+            privacyScene: fixture == .privacyOffLockedWorkspace
+                ? .locked : .normal,
             dismissedSessionIDs: dismissed
         )
     }

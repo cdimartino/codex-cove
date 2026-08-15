@@ -10,6 +10,12 @@ control for a concise explanation.
 
 ## Appearance
 
+### Workspace window
+
+**Appearance** chooses **Follow System**, **Light**, or **Dark** for the full
+Workspace window. Follow System is the default and tracks macOS. This setting
+does not change the island's style family, palette, or custom theme.
+
 ### Text
 
 **Text size** scales Cove and Settings from 100% to 200%. The slider makes quick
@@ -137,6 +143,9 @@ privacy policies can suppress playback without rewriting these choices.
 Privacy affects the island, Workspace, Accessibility labels, search, and
 notifications. It does not delete saved local aliases, tags, links, columns, or
 templates.
+
+Workspace shows an inline banner that distinguishes explicit Privacy On,
+automatic capture-app privacy, and the temporary lock-screen privacy state.
 
 ### Quiet hours
 

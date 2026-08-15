@@ -226,6 +226,26 @@ final class CodexCoveUITests: XCTestCase {
                 .waitForExistence(timeout: 2),
             "Privacy Off must keep approval details visible"
         )
+
+        app.terminate()
+        XCTAssertTrue(waitUntil(timeout: 2) { app.state == .notRunning })
+
+        let recoveryApp = launchFixture("privacy-off-locked-workspace")
+        XCTAssertTrue(
+            element("cove.overlay", in: recoveryApp).waitForExistence(timeout: 5)
+        )
+        recoveryApp.typeKey("w", modifierFlags: [.command, .shift])
+        let workspace = recoveryApp.windows["Codex Cove Workspace"]
+        XCTAssertTrue(workspace.waitForExistence(timeout: 5))
+        let card = workspace.buttons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.card."
+            )
+        ).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 2))
+        XCTAssertTrue(card.label.contains("Fixture task 1"))
+        XCTAssertFalse(element("cove.workspace.privacy-reason", in: recoveryApp).exists)
     }
 
     @MainActor
@@ -467,6 +487,28 @@ final class CodexCoveUITests: XCTestCase {
             element("cove.workspace.help", in: app).exists,
             "Workspace must expose its help documentation from the toolbar"
         )
+        let appearance = element("cove.workspace.appearance", in: app)
+        XCTAssertTrue(appearance.exists)
+        appearance.click()
+        XCTAssertTrue(app.menuItems["Follow System"].waitForExistence(timeout: 2))
+        app.menuItems["Light"].click()
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: appearance) == "Light"
+        })
+        let lightSurface = sampledSurfaceColor(from: window.screenshot())
+        appearance.click()
+        app.menuItems["Dark"].click()
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: appearance) == "Dark"
+        })
+        let darkSurface = sampledSurfaceColor(from: window.screenshot())
+        XCTAssertGreaterThan(
+            lightSurface.red + lightSurface.green + lightSurface.blue,
+            darkSurface.red + darkSurface.green + darkSurface.blue + 0.4,
+            "Workspace Light and Dark must change the native window rendering"
+        )
+        appearance.click()
+        app.menuItems["Follow System"].click()
         XCTAssertEqual(
             fixtureRunningApplication()?.activationPolicy,
             .regular,
@@ -642,9 +684,18 @@ final class CodexCoveUITests: XCTestCase {
             element("cove.workspace.inspector", in: app)
                 .waitForExistence(timeout: 2)
         )
+        XCTAssertTrue(
+            text(
+                "Privacy Mode is On, so Workspace titles and user-authored details are hidden.",
+                in: app
+            ).waitForExistence(timeout: 2)
+        )
         XCTAssertTrue(text("Origin hidden", in: app).exists)
         XCTAssertTrue(
-            text("Prompt drafts and templates are hidden by Privacy Mode.", in: app)
+            text(
+                "Prompt drafts and templates are hidden by Cove privacy protection.",
+                in: app
+            )
                 .waitForExistence(timeout: 2)
         )
         XCTAssertFalse(element("cove.workspace.alias", in: app).exists)
@@ -1023,6 +1074,7 @@ final class CodexCoveUITests: XCTestCase {
         XCTAssertTrue(
             app.windows["Codex Cove Settings"].waitForExistence(timeout: 5)
         )
+        XCTAssertTrue(element("settings.appearance.workspace", in: app).exists)
         for pane in [
             "appearance",
             "residents",

@@ -15,6 +15,21 @@ struct CoveWorkspaceWindowView: View {
             || store.state.privacyScene != .normal
     }
 
+    private var privacyRedactionExplanation: String? {
+        guard redactsSensitiveContent else { return nil }
+        if store.state.settings.privacyMode == .on {
+            return "Privacy Mode is On, so Workspace titles and user-authored details are hidden."
+        }
+        switch store.state.privacyScene {
+        case .locked:
+            return "Cove is waiting for macOS to confirm this session is unlocked, so Workspace details are hidden."
+        case .redacted:
+            return "Automatic capture-app privacy is active, so Workspace details are hidden."
+        case .normal:
+            return nil
+        }
+    }
+
     private var projection: CoveWorkspaceProjection {
         workspace.projection(
             coveState: store.state,
@@ -78,6 +93,15 @@ struct CoveWorkspaceWindowView: View {
             }
 
             ToolbarItemGroup {
+                Picker("Appearance", selection: workspaceAppearanceBinding) {
+                    ForEach(CoveWorkspaceAppearance.allCases, id: \.self) { appearance in
+                        Text(appearance.displayName).tag(appearance)
+                    }
+                }
+                .frame(width: 140)
+                .help("Follow the macOS appearance or force Light or Dark for this Workspace window.")
+                .accessibilityIdentifier("cove.workspace.appearance")
+
                 Picker("Sort", selection: $workspace.sort) {
                     ForEach(CoveWorkspaceSort.allCases, id: \.self) { value in
                         Text(value.label).tag(value)
@@ -187,6 +211,31 @@ struct CoveWorkspaceWindowView: View {
                     destination: CoveHelp.workspaceURL,
                     accessibilityIdentifier: "cove.workspace.help"
                 )
+            }
+        }
+        .preferredColorScheme(workspaceColorScheme)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let privacyRedactionExplanation {
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "eye.slash")
+                        Text(privacyRedactionExplanation)
+                            .font(.callout)
+                        Spacer()
+                        CoveHelpLink(
+                            "Workspace privacy",
+                            destination: CoveHelp.settingsURL(
+                                anchor: "privacy-and-quiet"
+                            ),
+                            accessibilityIdentifier: "cove.workspace.privacy-help"
+                        )
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    Divider()
+                }
+                .background(Color(nsColor: .controlBackgroundColor))
+                .accessibilityIdentifier("cove.workspace.privacy-reason")
             }
         }
         .sheet(isPresented: $showsPromptLibrary) {
@@ -420,6 +469,21 @@ struct CoveWorkspaceWindowView: View {
 
     private func statusFilterBinding(_ value: CoveSessionStatus) -> Binding<Bool> {
         filterBinding(value, keyPath: \.statuses)
+    }
+
+    private var workspaceAppearanceBinding: Binding<CoveWorkspaceAppearance> {
+        Binding(
+            get: { store.state.settings.workspaceAppearance },
+            set: { store.dispatch(.setWorkspaceAppearance($0)) }
+        )
+    }
+
+    private var workspaceColorScheme: ColorScheme? {
+        switch store.state.settings.workspaceAppearance {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
     }
 
     private func sourceFilterBinding(_ value: CoveWireSource) -> Binding<Bool> {
@@ -798,7 +862,7 @@ private struct CoveWorkspaceInspector: View {
             )
             .font(.caption).foregroundStyle(.secondary)
             if redactsSensitiveContent {
-                Text("Sensitive task details are hidden by Privacy Mode.")
+                Text("Sensitive task details are hidden by Cove privacy protection.")
                     .foregroundStyle(.secondary)
             } else if let output = item.snapshot.latestOutput, !output.isEmpty {
                 Text(output).textSelection(.enabled)
@@ -898,7 +962,7 @@ private struct CoveWorkspaceInspector: View {
     private var composer: some View {
         GroupBox("Prompt") {
             if redactsSensitiveContent {
-                Text("Prompt drafts and templates are hidden by Privacy Mode.")
+                Text("Prompt drafts and templates are hidden by Cove privacy protection.")
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1077,7 +1141,7 @@ private struct CovePromptLibraryView: View {
                 ContentUnavailableView(
                     "Prompt Library Hidden",
                     systemImage: "eye.slash",
-                    description: Text("Saved prompt content is hidden by Privacy Mode.")
+                    description: Text("Saved prompt content is hidden by Cove privacy protection.")
                 )
             } else {
                 libraryContent
@@ -1203,7 +1267,7 @@ private struct CoveColumnManagerView: View {
                 ContentUnavailableView(
                     "Columns Hidden",
                     systemImage: "eye.slash",
-                    description: Text("Custom workflow names are hidden by Privacy Mode.")
+                    description: Text("Custom workflow names are hidden by Cove privacy protection.")
                 )
             } else {
                 columnContent

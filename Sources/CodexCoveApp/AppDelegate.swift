@@ -528,6 +528,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         NSApp.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+        updateCapturePrivacy(using: store.state, allowLockedExit: true)
         desktopThreadHydrator?.reconcileLoadedDesktopThreads()
         workspaceReconciliationTimer?.invalidate()
         workspaceReconciliationTimer = Timer.scheduledTimer(

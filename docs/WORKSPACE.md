@@ -42,6 +42,8 @@ exact task identity is seen again.
 The toolbar provides:
 
 - **Grid / Board** — switch the visible organization without changing tasks;
+- **Appearance** — follow the macOS appearance or force Light or Dark for the
+  full Workspace window;
 - **Search** — match visible names, tags, links, origin, status, and column;
 - **Sort** — Manual, Attention, Recent Activity, Name, or Source;
 - **Filters** — attention, status, source, host, tag, column, unread, pinned,
@@ -53,6 +55,21 @@ The toolbar provides:
 Privacy redaction removes protected names, origins, tags, links, column names,
 and templates from rendering, Accessibility, and search. Status remains visible
 so the dashboard still communicates attention safely.
+
+When redaction is active, a banner explains the reason: Privacy Mode is On,
+automatic capture-app protection is active, or Cove is waiting for macOS to
+confirm that the user session is unlocked. Opening Workspace is an explicit
+foreground action, so it also clears a stale lock state after macOS has made the
+session interactive.
+
+## Appearance
+
+Choose **Follow System**, **Light**, or **Dark** from the Workspace toolbar or
+**Settings → Appearance → Workspace window**. The choice is durable and affects
+only the full Workspace window. **Follow System** updates with the current macOS
+appearance. The island continues to use its separately configured Cove theme.
+This content-free preference is stored with Cove's normal settings, not with
+task metadata or saved prompt content.
 
 ## Grid
 
@@ -224,6 +241,13 @@ If Cove lacks the exact route or active turn ID, use **Open in Codex**.
 
 Choose **Manual** sort, clear search, and clear all filters. Keyboard and context
 menu reorder actions follow the same rule.
+
+### Workspace says details are hidden while Privacy is Off
+
+Privacy Off permits content only after Cove knows the macOS session is
+unlocked. Bring Workspace forward again; that explicit foreground action clears
+a stale lock state. If the banner instead names automatic capture-app privacy,
+choose Privacy Off or disable **Conservative capture-app privacy** in Settings.
 
 ### A column disappeared
 
