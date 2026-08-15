@@ -248,7 +248,7 @@ do
 done
 
 require_value defect_register_reviewed_at not-required
-require_value source_change_reason workspace_dashboard_and_thread_control
+require_value source_change_reason workspace_appearance_and_privacy_recovery
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then
