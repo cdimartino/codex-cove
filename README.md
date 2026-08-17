@@ -36,7 +36,7 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.6.1`. Check
+> **Release status:** the source tree is currently version `0.7.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
@@ -69,9 +69,9 @@ named suggestion; update the tap or use the source or verified manual path. See
 - An expandable queue with collapsible, reorderable sections; search; row-level
   context actions; pinning; reminders; unread state; and recoverable local or
   bulk completed-task archives.
-- A reusable Workspace window with a reorderable responsive Grid, independent
+- A Workspace-first window with a reorderable responsive Grid, independent
   custom-column Board, recursive subagent inspector, compound filters, Cove-only
-  aliases/tags/links, and a saved prompt library.
+  aliases/tags/artifacts, and a saved prompt library.
 - Exact-origin navigation for Terminal, iTerm2, tmux, WezTerm, VS Code, Cursor,
   remote CLI sessions, and Codex Desktop tasks.
 - Native Glass, Retro Terminal, and Minimal OLED styles, five built-in palettes,
@@ -157,7 +157,8 @@ releases, macOS permissions, remote helpers, upgrades, and safe removal.
 
 ## Everyday use
 
-Use the menu-bar wave icon to show Cove, open the Workspace, switch privacy,
+Launch or reopen Codex Cove to open Workspace. Use the menu-bar wave icon to
+show the ambient island, switch privacy,
 mute sounds, restore the full island, open Settings or Doctor, and restore
 locally archived tasks. The island never expands merely because an event
 arrives; it opens only during explicit interaction.
@@ -259,7 +260,7 @@ engineering evidence; they are not a substitute for the user guides above.
 
 Unsaved composer text, prompts submitted to Codex, responses, commands, diffs,
 token metrics, and request details are not written to Cove's durable store.
-Saved Workspace aliases, tags, validated HTTP(S) links, workflow organization,
+Saved Workspace aliases, tags, validated HTTP(S) and local-file artifacts, workflow organization,
 and prompt-library templates are an explicit local exception in a versioned,
 mode-`0600` `workspace.json`. When notifications are enabled, macOS
 Notification Center may retain delivered banner content according to system

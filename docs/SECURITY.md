@@ -52,7 +52,7 @@ plus content the user explicitly saves in the Workspace:
 - imported theme definitions and manifest-owned audio copies;
 - helper configuration, install checksums, and explicitly selected SSH aliases;
   and
-- Workspace aliases, tags, validated HTTP(S) links, Grid/Board organization,
+- Workspace aliases, tags, validated HTTP(S)/local-file artifacts, Grid/Board organization,
   and named prompt-library templates that the user explicitly saves.
 
 Workspace content is a deliberate durable local exception to the general
@@ -71,7 +71,7 @@ copied into Cove configuration.
 
 Cove never deletes, archives, edits, or creates Codex tasks or transcripts.
 Mark-read, pin, reminder, and archive actions affect Cove metadata only.
-Workspace aliases, tags, links, and workflow columns are likewise Cove-only.
+Workspace aliases, tags, artifacts, and workflow columns are likewise Cove-only.
 An explicit Workspace Send may start an idle turn or steer the exact active
 turn through the public app-server, but the native Codex client remains
 authoritative for unsupported decisions and task state.

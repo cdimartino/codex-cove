@@ -257,9 +257,13 @@ final class CodexCoveUITests: XCTestCase {
         XCTAssertEqual(jumpCount(in: app), 0)
         waitingRow.click()
         XCTAssertTrue(
-            waitUntil(timeout: 2) { self.jumpCount(in: app) == 1 },
-            "A primary row click must open the task's exact Codex origin"
+            app.windows["Codex Cove Workspace"].waitForExistence(timeout: 2),
+            "A primary row click must select the owning task in Workspace"
         )
+        element("cove.workspace.close", in: app).click()
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.element("cove.queue.scroll", in: app).exists
+        })
         for (identifier, label) in [
             ("cove.queue.previous", "Select previous task"),
             ("cove.queue.next", "Select next task"),
@@ -279,6 +283,7 @@ final class CodexCoveUITests: XCTestCase {
         XCTAssertTrue(actions.waitForExistence(timeout: 2))
         actions.click()
         let overflowActions = [
+            (label: "Open in Codex", control: "queue-action-open-in-codex"),
             (label: "Pin", control: "queue-action-pin"),
             (label: "Remind Me", control: "queue-action-reminder"),
             (label: "Mark Read", control: "queue-action-mark-read"),
@@ -298,6 +303,27 @@ final class CodexCoveUITests: XCTestCase {
             )
             XCTAssertEqual(menuAction.title, action.label)
         }
+        element(
+            taskControlIdentifier(
+                "fixture-task-3",
+                control: "queue-action-open-in-codex"
+            ),
+            in: app
+        ).click()
+        XCTAssertTrue(
+            waitUntil(timeout: 2) { self.jumpCount(in: app) == 1 },
+            "The explicit overflow action must retain exact Codex routing"
+        )
+        actions.click()
+        XCTAssertTrue(
+            element(
+                taskControlIdentifier(
+                    "fixture-task-3",
+                    control: "queue-action-pin"
+                ),
+                in: app
+            ).waitForExistence(timeout: 2)
+        )
         element(
             taskControlIdentifier(
                 "fixture-task-3",
@@ -372,7 +398,16 @@ final class CodexCoveUITests: XCTestCase {
         let row = element(taskQueueRowIdentifier("fixture-task-1"), in: app)
         XCTAssertTrue(row.waitForExistence(timeout: 5))
 
-        row.click()
+        row.rightClick()
+        let openInCodex = element(
+            taskControlIdentifier(
+                "fixture-task-1",
+                control: "queue-action-open-in-codex"
+            ),
+            in: app
+        )
+        XCTAssertTrue(openInCodex.waitForExistence(timeout: 2))
+        openInCodex.click()
 
         let feedback = element("cove.session-open-failure", in: app)
         XCTAssertTrue(
@@ -470,6 +505,22 @@ final class CodexCoveUITests: XCTestCase {
     // MARK: - Workspace window, organization, and library
 
     @MainActor
+    func testWorkspaceIsPrimaryOnDirectLaunch() {
+        let app = launchFixture("workspace-primary")
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(
+            window.waitForExistence(timeout: 5),
+            "A deliberate launch must open the primary Workspace window"
+        )
+        XCTAssertEqual(fixtureRunningApplication()?.activationPolicy, .regular)
+        XCTAssertEqual(
+            app.windows.descendants(matching: .any)
+                .matching(identifier: "cove.workspace").count,
+            1
+        )
+    }
+
+    @MainActor
     func testWorkspaceGridBoardInspectorAndLibrary() {
         let app = launchFixture("mixed-20")
         XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
@@ -563,9 +614,32 @@ final class CodexCoveUITests: XCTestCase {
         alias.typeText("Release dashboard")
         XCTAssertEqual(stringValue(of: alias), "Release dashboard")
 
-        let composer = element("cove.workspace.composer", in: app)
         let inspectorScroll = element("cove.workspace.inspector", in: app)
             .scrollViews.firstMatch
+        let artifactLabel = element("cove.workspace.link-label", in: app)
+        let artifactURL = element("cove.workspace.link-url", in: app)
+        for _ in 0..<8 where !artifactLabel.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(artifactLabel.isHittable)
+        artifactLabel.click()
+        artifactLabel.typeText("Release issue")
+        artifactURL.click()
+        artifactURL.typeText("https://example.com/releases/1")
+        element("cove.workspace.link-add", in: app).click()
+        XCTAssertTrue(text("example.com", in: app).waitForExistence(timeout: 2))
+        let artifactOpen = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cove.workspace.artifact.open.")
+        ).firstMatch
+        XCTAssertTrue(artifactOpen.waitForExistence(timeout: 2))
+        artifactOpen.click()
+        let artifactRemove = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cove.workspace.artifact.remove.")
+        ).firstMatch
+        XCTAssertTrue(artifactRemove.waitForExistence(timeout: 2))
+        artifactRemove.click()
+
+        let composer = element("cove.workspace.composer", in: app)
         for _ in 0..<8 where !composer.isHittable {
             inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
         }
@@ -700,6 +774,7 @@ final class CodexCoveUITests: XCTestCase {
         )
         XCTAssertFalse(element("cove.workspace.alias", in: app).exists)
         XCTAssertFalse(element("cove.workspace.composer", in: app).exists)
+        XCTAssertFalse(element("cove.workspace.artifact.choose", in: app).exists)
         let library = element("cove.workspace.prompt-library", in: app)
         XCTAssertTrue(library.exists)
         XCTAssertFalse(library.isEnabled)

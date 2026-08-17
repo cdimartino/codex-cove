@@ -7,6 +7,7 @@ enum CoveUITestFixture: String, CaseIterable {
     case collapsedCue = "collapsed-cue"
     case minimalCue = "minimal-cue"
     case mixedTasks = "mixed-20"
+    case workspacePrimary = "workspace-primary"
     case commandApproval = "command-approval"
     case fileApproval = "file-approval"
     case permissionApproval = "permission-approval"
@@ -474,7 +475,7 @@ enum CoveUITestFixtures {
                     now: now
                 )
             ]
-        case .mixedTasks:
+        case .mixedTasks, .workspacePrimary:
             snapshots = mixedSnapshots(now: now)
         case .commandApproval:
             requests = [approval(category: .command)]

@@ -82,6 +82,7 @@ struct CoveCoreSmokeTests {
         try run("SQLite metadata persistence", testSQLiteMetadataPersistence)
         try run("composite metadata identity and migration", testCompositeMetadataIdentityAndMigration)
         try run("workspace persistence bounds and permissions", testWorkspacePersistence)
+        try run("workspace v1 migration and artifact policy", testWorkspaceV2Artifacts)
         try run("workspace hierarchy search filter and membership", testWorkspaceProjection)
         try run("loaded-thread page and control validation", testLoadedThreadAndControlContracts)
         try run(
@@ -4477,11 +4478,11 @@ struct CoveCoreSmokeTests {
         precondition(preserved == state)
         var invalidLink = state
         invalidLink.setLinks([
-            .init(label: "Unsafe", url: URL(string: "file:///private/tmp/x")!),
+            .init(label: "Unsafe", url: URL(string: "https://user:pass@example.com/x")!),
         ], for: identity)
         do {
             try storage.save(invalidLink)
-            fatalError("Expected non-HTTP link rejection")
+            fatalError("Expected credential-bearing link rejection")
         } catch CovePersistenceError.invalidWorkspace {
         }
 
@@ -4549,6 +4550,103 @@ struct CoveCoreSmokeTests {
         precondition(String(decoding: preservedTarget, as: UTF8.self) == "unchanged")
     }
 
+    static func testWorkspaceV2Artifacts() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let documentURL = directory.appendingPathComponent("plan.txt")
+        try Data("plan".utf8).write(to: documentURL)
+        let executableURL = directory.appendingPathComponent("unsafe.sh")
+        try Data("#!/bin/sh".utf8).write(to: executableURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o700)],
+            ofItemAtPath: executableURL.path
+        )
+        let packageURL = directory.appendingPathComponent("Cove.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(
+                URL(string: "https://example.com/plan")!
+            ) != nil
+        )
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(documentURL) == documentURL.standardizedFileURL
+        )
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(
+                URL(string: "https://user:pass@example.com/plan")!
+            ) == nil
+        )
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(
+                URL(string: "file://other-host/private/tmp/plan")!
+            ) == nil
+        )
+        precondition(CoveWorkspaceArtifactPolicy.safeExistingFileURL(documentURL) != nil)
+        precondition(CoveWorkspaceArtifactPolicy.safeExistingFileURL(executableURL) == nil)
+        precondition(CoveWorkspaceArtifactPolicy.safeExistingFileURL(packageURL) == nil)
+
+        let root = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "root")!
+        let child = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "child")!
+        let remote = CoveSessionIdentity(source: .remoteCli, hostId: "remote", sessionId: "remote")!
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        func snapshot(
+            _ identity: CoveSessionIdentity,
+            output: String,
+            parent: String? = nil
+        ) -> CoveSessionSnapshot {
+            .init(
+                snapshotId: identity.sessionId,
+                status: .idle,
+                priority: 0,
+                title: identity.sessionId,
+                latestOutput: output,
+                timestamp: now,
+                sessionId: identity.sessionId,
+                source: identity.source,
+                hostId: identity.remoteHostId,
+                parentSessionId: parent,
+                liveness: .live
+            )
+        }
+        let suggestions = CoveWorkspaceArtifactPolicy.suggestions(
+            snapshots: [
+                snapshot(child, output: "[Build plan](\(documentURL.path):12)", parent: root.sessionId),
+                snapshot(remote, output: "\(documentURL.path) https://example.com/remote"),
+                snapshot(root, output: "\(executableURL.path)"),
+            ],
+            existingLinks: []
+        )
+        precondition(suggestions.contains {
+            $0.sourceIdentity == child && $0.link.url == documentURL.standardizedFileURL
+        })
+        precondition(suggestions.contains {
+            $0.sourceIdentity == remote && $0.link.url == URL(string: "https://example.com/remote")!
+        })
+        precondition(!suggestions.contains { $0.link.url == executableURL.standardizedFileURL })
+        precondition(!suggestions.contains { $0.sourceIdentity == remote && $0.link.url.isFileURL })
+
+        var v1 = CoveWorkspaceState(gridOrder: [root])
+        v1.setLinks([
+            .init(label: "Missing", url: directory.appendingPathComponent("missing.txt")),
+        ], for: root)
+        var json = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(v1)
+        ) as! [String: Any]
+        json["schemaVersion"] = 1
+        var cards = json["cards"] as! [[String: Any]]
+        cards[0].removeValue(forKey: "parentSessionId")
+        json["cards"] = cards
+        let v1URL = directory.appendingPathComponent("workspace-v1.json")
+        try JSONSerialization.data(withJSONObject: json).write(to: v1URL)
+        let migrated = try CoveWorkspaceFileStorage(url: v1URL).load()
+        precondition(migrated?.schemaVersion == CoveWorkspaceState.currentSchemaVersion)
+        precondition(migrated?.card(for: root)?.parentSessionId == nil)
+        precondition(migrated?.card(for: root)?.links.first?.url.isFileURL == true)
+    }
+
     static func testWorkspaceProjection() throws {
         let root = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "root")!
         let child = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "child")!
@@ -4608,8 +4706,9 @@ struct CoveCoreSmokeTests {
             query: "release",
             sort: .manual
         )
-        precondition(projection.items.map(\.identity) == [root])
-        precondition(projection.items[0].descendantAttentionCount == 1)
+        precondition(projection.roots == [root])
+        precondition(projection.item(root)?.descendantAttentionCount == 1)
+        precondition(projection.owningTaskIdentity(for: grandchild) == root)
         let complete = CoveWorkspaceProjection(
             snapshots: snapshots,
             workspace: workspace,
@@ -4625,14 +4724,14 @@ struct CoveCoreSmokeTests {
             query: "release",
             redactSensitiveContent: true
         )
-        precondition(redacted.items.isEmpty)
+        precondition(redacted.roots.isEmpty)
         let redactedHost = CoveWorkspaceProjection(
             snapshots: snapshots,
             workspace: workspace,
             query: "one",
             redactSensitiveContent: true
         )
-        precondition(redactedHost.items.isEmpty)
+        precondition(redactedHost.roots.isEmpty)
         let redactedSensitiveFilters = CoveWorkspaceProjection(
             snapshots: snapshots,
             workspace: workspace,
@@ -4657,20 +4756,20 @@ struct CoveCoreSmokeTests {
                     pinnedIdentities: pinned,
                     filter: filter,
                     sort: .manual
-                ).items.map(\.identity)
+                ).roots
             )
         }
-        precondition(identities(.init(statuses: [.waitingInput])) == [grandchild])
+        precondition(identities(.init(statuses: [.waitingInput])) == [root])
         precondition(identities(.init(sources: [.codexDesktop])) == [sameRawOtherOrigin])
         precondition(identities(.init(hosts: ["one"])) == [cycleA, cycleB])
         precondition(identities(.init(tags: ["release"])) == [root])
         precondition(identities(.init(columns: ["review"])) == [root])
-        precondition(identities(.init(unreadOnly: true)) == [grandchild])
+        precondition(identities(.init(unreadOnly: true)) == [root])
         precondition(identities(.init(pinnedOnly: true), pinned: [root]) == [root])
         precondition(identities(.init(controllableOnly: true)) == [sameRawOtherOrigin])
         precondition(
             identities(.init(attentionOnly: true))
-                == [root, child, grandchild]
+                == [root]
         )
 
         let linkSearch = CoveWorkspaceProjection(
@@ -4678,13 +4777,13 @@ struct CoveCoreSmokeTests {
             workspace: workspace,
             query: "example.com"
         )
-        precondition(linkSearch.items.map(\.identity) == [root])
+        precondition(linkSearch.roots == [root])
         let sourceSearch = CoveWorkspaceProjection(
             snapshots: snapshots,
             workspace: workspace,
             query: "codex desktop"
         )
-        precondition(sourceSearch.items.map(\.identity) == [sameRawOtherOrigin])
+        precondition(sourceSearch.roots == [sameRawOtherOrigin])
 
         let attentionSorted = CoveWorkspaceProjection(
             snapshots: snapshots,
@@ -4716,17 +4815,18 @@ struct CoveCoreSmokeTests {
             workspace: insertionWorkspace,
             sort: .manual
         )
-        precondition(insertionProjection.items.map(\.identity) == [child, orphan])
+        precondition(insertionProjection.items.map(\.identity) == [root, child, orphan])
+        precondition(insertionProjection.item(root)?.isRetainedOnly == true)
         let closed = snapshot(root, status: .completed, liveness: .closed)
         precondition(!CoveWorkspaceProjection.isWorkspaceMember(closed))
         var failed = snapshot(root, status: .failed, liveness: .closed)
         failed.unread = true
-        precondition(CoveWorkspaceProjection.isWorkspaceMember(failed))
+        precondition(!CoveWorkspaceProjection.isWorkspaceMember(failed))
         failed.unread = false
         precondition(!CoveWorkspaceProjection.isWorkspaceMember(failed))
         var interrupted = snapshot(root, status: .interrupted, liveness: .closed)
         interrupted.unread = true
-        precondition(CoveWorkspaceProjection.isWorkspaceMember(interrupted))
+        precondition(!CoveWorkspaceProjection.isWorkspaceMember(interrupted))
         var activeWithoutTurn = snapshot(
             sameRawOtherOrigin,
             status: .working,
@@ -4735,6 +4835,56 @@ struct CoveCoreSmokeTests {
         precondition(!activeWithoutTurn.canAcceptThreadControl)
         activeWithoutTurn.activeTurnId = "turn-1"
         precondition(activeWithoutTurn.canAcceptThreadControl)
+
+        let restored = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "restored")!
+        let live = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "live")!
+        var retainedWorkspace = CoveWorkspaceState(gridOrder: [root, child])
+        retainedWorkspace.setLinks([
+            .init(label: "Plan", url: URL(string: "https://example.com/plan")!),
+        ], for: child)
+        let retained = CoveWorkspaceProjection(
+            snapshots: [
+                snapshot(live, liveness: .live),
+                snapshot(restored, status: .completed, liveness: .closed),
+                .init(
+                    snapshotId: "unknown-history",
+                    status: .completed,
+                    priority: 0,
+                    title: "unknown-history",
+                    timestamp: now,
+                    sessionId: "unknown-history",
+                    source: .localCli
+                ),
+            ],
+            workspace: retainedWorkspace,
+            sort: .manual
+        )
+        precondition(retained.item(root)?.isRetainedOnly == true)
+        precondition(retained.item(child)?.isRetainedOnly == true)
+        precondition(retained.item(root)?.isControllable == false)
+        precondition(retained.item(restored) == nil)
+        precondition(retained.roots == [root, child, live])
+
+        let dismissedRoot = CoveWorkspaceProjection(
+            snapshots: [snapshot(root), snapshot(child, parent: root.sessionId)],
+            workspace: CoveWorkspaceState(gridOrder: [root, child]),
+            dismissedIdentities: [root]
+        )
+        precondition(dismissedRoot.items.isEmpty)
+        let dismissedChild = CoveWorkspaceProjection(
+            snapshots: [snapshot(root), snapshot(child, parent: root.sessionId)],
+            workspace: CoveWorkspaceState(gridOrder: [root, child]),
+            dismissedIdentities: [child]
+        )
+        precondition(dismissedChild.roots == [root])
+        precondition(dismissedChild.item(root)?.children.isEmpty == true)
+
+        var observed = CoveWorkspaceState()
+        observed.observe([
+            snapshot(live, liveness: .live),
+            snapshot(restored, status: .completed, liveness: .closed),
+        ])
+        precondition(observed.gridOrder == [live])
     }
 
     static func testLoadedThreadAndControlContracts() throws {

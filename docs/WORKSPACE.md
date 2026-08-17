@@ -1,12 +1,14 @@
 # Workspace Help
 
-Workspace is Codex Cove's full-window view for supervising many Codex tasks at
-once. It uses the same live state, privacy rules, approvals, remote relays, and
-exact-origin navigation as the island.
+Workspace is Codex Cove's primary full-window view for supervising many Codex
+tasks at once. It uses the same live state, privacy rules, approvals, remote
+relays, and exact-origin navigation as the island, which remains an ambient
+attention companion.
 
 ## Open and close Workspace
 
-Open Workspace from any of these places:
+Direct launch, Dock reopen, notification click, and a queue-row click open
+Workspace. You can also open it from:
 
 - the menu-bar wave menu: **Open Workspace…**;
 - the island queue's **More** section: **Open Workspace…**; or
@@ -29,12 +31,13 @@ Workspace shows:
 - live local CLI tasks observed through Cove's broker or public hooks; and
 - live tasks from configured remote Cove relays.
 
-Idle tasks stay visible while their Desktop or CLI session remains open. A
-closed successful task leaves Workspace. A closed failed or interrupted task
-stays visible until you mark it read or archive it.
+Authoritatively loaded or live tasks are enrolled in Workspace even while its
+window is closed. Once enrolled, a task stays visible until you archive it.
+When Cove no longer has current task state, it is marked **Retained** instead
+of being shown with a guessed status or activity time.
 
 New tasks enter the end of Grid's saved manual order and Board's **Inbox**.
-Aliases, tags, links, order, and Board placement remain available if the same
+Aliases, tags, artifacts, order, and Board placement remain available if the same
 exact task identity is seen again.
 
 ## Toolbar
@@ -143,14 +146,20 @@ Enter comma-separated tags and press Return. Tags are deduplicated
 case-insensitively and sorted for stable display. A card can hold up to 32 tags,
 each up to 64 UTF-8 bytes.
 
-### Links
+### Artifacts
 
+Artifacts are parent-task context. The inspector lists every attached web link,
+local file, and folder with its real host or path plus **Open** and **Remove**.
 Enter a short label and an absolute `http://` or `https://` URL, then choose
-**Add**. URLs with embedded user names or passwords are rejected. A card can
-hold up to 32 links, each up to 2,048 UTF-8 bytes.
+**Add Link**, or choose **Add File or Folder…** for local plans such as an
+`EXECPLAN.md`. URLs with embedded user names or passwords, remote file URLs,
+packages, apps, scripts, executables, and special files are rejected.
 
-Links are manual context only. Cove stores no Jira, Confluence, Slack, GitHub,
-GitLab, Gerrit, Grafana, or other connector credentials.
+Suggestions are confirmation-only: Cove looks only at bounded live assistant
+output from the selected parent and its authoritative agents. It never scans a
+repository, transcript, prompt, or private Codex storage, and it never opens or
+saves a suggestion until you choose **Add**. Cove stores no Jira, Confluence,
+Slack, GitHub, GitLab, Gerrit, Grafana, or other connector credentials.
 
 ## Prompt library
 
@@ -197,8 +206,8 @@ the task in Codex before deciding whether to try again.
 
 ## Read, pin, remind, and archive
 
-- **Mark Read** acknowledges Cove's unread state. A closed failed or
-  interrupted task then leaves Workspace.
+- **Mark Read** acknowledges Cove's unread state without removing a retained
+  task from Workspace.
 - **Pin** affects Cove ordering only.
 - **Remind Me** schedules one local, one-shot notification using the delay from
   **Settings → General**.
@@ -210,7 +219,7 @@ the task in Codex before deciding whether to try again.
 
 The following explicitly user-authored Workspace content is durable:
 
-- aliases, tags, and validated links;
+- aliases, tags, and validated web/local artifacts;
 - Grid order, Board columns, and assignments;
 - saved prompt templates; and
 - the last selected Grid or Board view.

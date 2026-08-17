@@ -65,7 +65,7 @@ struct CoveWorkspaceWindowView: View {
         .searchable(
             text: $workspace.query,
             placement: .toolbar,
-            prompt: "Search tasks, tags, links, and origins"
+            prompt: "Search tasks, tags, artifacts, and origins"
         )
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
@@ -441,6 +441,11 @@ struct CoveWorkspaceWindowView: View {
                         ? identity : nil
                 }
             ),
+            dismissedIdentities: Set(
+                workspace.state.gridOrder.filter {
+                    store.state.dismissedSessionIDs.contains($0.id)
+                }
+            ),
             redactSensitiveContent: redactsSensitiveContent
         )
     }
@@ -450,7 +455,7 @@ struct CoveWorkspaceWindowView: View {
     }
 
     private func identity(withKey key: String) -> CoveSessionIdentity? {
-        store.state.session.snapshots.compactMap(\.sessionIdentity).first {
+        workspace.state.gridOrder.first {
             $0.id == key
         }
     }
@@ -549,6 +554,8 @@ struct CoveWorkspaceWindowView: View {
         }
         showsPromptLibrary = false
         showsColumnManager = false
+        workspace.clearArtifactSuggestions()
+        workspace.clearMessage()
     }
 }
 
@@ -624,13 +631,15 @@ private struct CoveWorkspaceCard: View {
     private var statusRow: some View {
         HStack(spacing: 7) {
             Label(
-                item.snapshot.status.displayName,
-                systemImage: item.snapshot.status.workspaceIcon
+                item.isRetainedOnly ? "Retained" : item.snapshot.status.displayName,
+                systemImage: item.isRetainedOnly ? "archivebox" : item.snapshot.status.workspaceIcon
             )
-            .foregroundStyle(item.snapshot.status.workspaceColor)
+            .foregroundStyle(item.isRetainedOnly ? .secondary : item.snapshot.status.workspaceColor)
             Spacer()
-            Text(item.snapshot.timestamp, style: .relative)
-                .foregroundStyle(.secondary)
+            if !item.isRetainedOnly {
+                Text(item.snapshot.timestamp, style: .relative)
+                    .foregroundStyle(.secondary)
+            }
         }
         .font(.caption)
     }
@@ -768,7 +777,7 @@ private struct CoveWorkspaceBadges: View {
                     .background(.quaternary, in: Capsule())
             }
             ForEach(Array(links.prefix(3))) { link in
-                Image(systemName: "link")
+                Image(systemName: link.url.isFileURL ? "doc" : "link")
                     .help(link.label)
                     .accessibilityLabel(link.serviceLabel)
             }
@@ -804,32 +813,47 @@ private struct CoveWorkspaceInspector: View {
                 VStack(alignment: .leading, spacing: 16) {
                     header
                     hierarchy
-                    if let request = pendingRequest {
+                    ForEach(pendingRequests, id: \.key) { request in
                         CoveFocusedDirectRequestView(
                             request: request,
-                            matchingSnapshot: item.snapshot,
+                            matchingSnapshot: request.sessionIdentity.flatMap {
+                                projection.item($0)?.snapshot
+                            }
+                                ?? item.snapshot,
                             theme: store.state.theme,
                             redactsSensitiveContent: redactsSensitiveContent
                         )
                         .environmentObject(store)
                     }
                     metadataEditor
+                    artifactShelf
                     composer
                     actions
                 }
                 .padding()
             }
         }
-        .onAppear { tagsText = item.tags.joined(separator: ", ") }
+        .onAppear {
+            tagsText = item.tags.joined(separator: ", ")
+            refreshArtifactSuggestions()
+        }
         .onChange(of: item.identity) { _, _ in
             tagsText = item.tags.joined(separator: ", ")
             linkLabel = ""
             linkURL = ""
             preparedSend = nil
+            refreshArtifactSuggestions()
         }
         .onChange(of: redactsSensitiveContent) { _, redacts in
-            if redacts { preparedSend = nil }
+            if redacts {
+                preparedSend = nil
+                workspace.clearArtifactSuggestions()
+                workspace.clearMessage()
+            } else {
+                refreshArtifactSuggestions()
+            }
         }
+        .onChange(of: projection.items) { _, _ in refreshArtifactSuggestions() }
         .confirmationDialog(
             "Send this prompt?",
             isPresented: Binding(
@@ -852,8 +876,11 @@ private struct CoveWorkspaceInspector: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(redactsSensitiveContent ? "Codex task" : item.displayName)
                 .font(.title2.weight(.semibold))
-            Label(item.snapshot.status.displayName, systemImage: item.snapshot.status.workspaceIcon)
-                .foregroundStyle(item.snapshot.status.workspaceColor)
+            Label(
+                item.isRetainedOnly ? "Retained" : item.snapshot.status.displayName,
+                systemImage: item.isRetainedOnly ? "archivebox" : item.snapshot.status.workspaceIcon
+            )
+            .foregroundStyle(item.isRetainedOnly ? .secondary : item.snapshot.status.workspaceColor)
             Text(
                 redactsSensitiveContent
                     ? "Origin hidden"
@@ -863,6 +890,9 @@ private struct CoveWorkspaceInspector: View {
             .font(.caption).foregroundStyle(.secondary)
             if redactsSensitiveContent {
                 Text("Sensitive task details are hidden by Cove privacy protection.")
+                    .foregroundStyle(.secondary)
+            } else if item.isRetainedOnly {
+                Text("This task is retained locally and is not currently observed by Codex.")
                     .foregroundStyle(.secondary)
             } else if let output = item.snapshot.latestOutput, !output.isEmpty {
                 Text(output).textSelection(.enabled)
@@ -919,16 +949,6 @@ private struct CoveWorkspaceInspector: View {
                         .onSubmit {
                             workspace.setTags(tagsText.split(separator: ",").map(String.init), for: item.identity)
                         }
-                    ForEach(item.links) { link in
-                        HStack {
-                            Link(link.label, destination: link.url)
-                            Spacer()
-                            Button(role: .destructive) {
-                                workspace.setLinks(item.links.filter { $0.id != link.id }, for: item.identity)
-                            } label: { Image(systemName: "trash") }
-                            .help("Remove this link from the Cove Workspace card.")
-                        }
-                    }
                     Picker(
                         "Board column",
                         selection: Binding(
@@ -942,17 +962,76 @@ private struct CoveWorkspaceInspector: View {
                     }
                     .help("Move this card without changing the task's live Codex status.")
                     .accessibilityIdentifier("cove.workspace.assignment")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var artifactShelf: some View {
+        if !redactsSensitiveContent {
+            GroupBox("Artifacts") {
+                VStack(alignment: .leading, spacing: 10) {
+                    if artifacts.isEmpty {
+                        Text("Attach a web link, local plan, file, or folder.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(artifacts) { artifact in
+                        HStack(spacing: 8) {
+                            Image(systemName: artifact.link.url.isFileURL ? "doc" : "link")
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(artifact.link.label)
+                                Text(artifactDestination(artifact.link.url))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button("Open") { workspace.openArtifact(artifact) }
+                                .accessibilityIdentifier("cove.workspace.artifact.open.\(artifact.id)")
+                            Button(role: .destructive) {
+                                workspace.removeArtifact(artifact)
+                            } label: { Image(systemName: "trash") }
+                            .accessibilityIdentifier("cove.workspace.artifact.remove.\(artifact.id)")
+                        }
+                    }
+                    if !workspace.artifactSuggestions.isEmpty {
+                        Divider()
+                        Text("Suggested from live agent output")
+                            .font(.caption.weight(.semibold))
+                        ForEach(workspace.artifactSuggestions) { suggestion in
+                            HStack(spacing: 8) {
+                                Image(systemName: suggestion.link.url.isFileURL ? "doc.badge.plus" : "link.badge.plus")
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(suggestion.link.label)
+                                    Text(artifactDestination(suggestion.link.url))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("Add") {
+                                    workspace.addArtifact(
+                                        label: suggestion.link.label,
+                                        url: suggestion.link.url,
+                                        to: item.identity,
+                                        requireExistingLocalFile: suggestion.link.url.isFileURL
+                                    )
+                                    refreshArtifactSuggestions()
+                                }
+                            }
+                        }
+                    }
                     HStack {
-                        TextField("Link label", text: $linkLabel)
-                            .help("Enter the short label shown on this card.")
+                        TextField("Artifact label", text: $linkLabel)
                             .accessibilityIdentifier("cove.workspace.link-label")
                         TextField("https://…", text: $linkURL)
-                            .help("Only HTTP and HTTPS links without embedded credentials are accepted.")
                             .accessibilityIdentifier("cove.workspace.link-url")
-                        Button("Add") { addLink() }
+                        Button("Add Link") { addLink() }
                             .disabled(candidateLinkURL == nil)
-                            .help("Add this validated link to the Cove-only card metadata.")
                             .accessibilityIdentifier("cove.workspace.link-add")
+                        Button("Add File or Folder…") { addFilesAndDirectories() }
+                            .accessibilityIdentifier("cove.workspace.artifact.choose")
                     }
                 }
             }
@@ -963,6 +1042,9 @@ private struct CoveWorkspaceInspector: View {
         GroupBox("Prompt") {
             if redactsSensitiveContent {
                 Text("Prompt drafts and templates are hidden by Cove privacy protection.")
+                    .foregroundStyle(.secondary)
+            } else if item.isRetainedOnly {
+                Text("This retained task cannot receive a prompt until Codex observes it again.")
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1008,55 +1090,96 @@ private struct CoveWorkspaceInspector: View {
     }
 
     private var actions: some View {
-        HStack {
-            Button("Open in Codex") { store.open(item.snapshot) }
-                .buttonStyle(.borderedProminent)
-                .help("Open this exact task at its originating Codex location.")
-            Button(item.isPinned ? "Unpin" : "Pin") { store.togglePinned(item.snapshot) }
-                .help("Keep or remove this task at the front of Cove's queue ordering.")
-            Button("Mark Read") { store.markRead(item.snapshot) }
-                .disabled(!item.snapshot.unread)
-                .help("Acknowledge this task without opening it.")
-            Menu("More") {
-                Button("Remind Me") { store.scheduleFollowUp(item.snapshot) }
-                Button("Archive", role: .destructive) { store.dismiss(item.snapshot) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button("Open in Codex") { store.open(item.snapshot) }
+                    .buttonStyle(.borderedProminent)
+                    .help("Open this exact task at its originating Codex location.")
+                Button(item.isPinned ? "Unpin" : "Pin") { store.togglePinned(item.snapshot) }
+                    .help("Keep or remove this task at the front of Cove's queue ordering.")
+                Button("Mark Read") { store.markRead(item.snapshot) }
+                    .disabled(item.isRetainedOnly || !item.snapshot.unread)
+                    .help("Acknowledge this task without opening it.")
+                Menu("More") {
+                    Button("Remind Me") { store.scheduleFollowUp(item.snapshot) }
+                        .disabled(item.isRetainedOnly)
+                    Button("Archive", role: .destructive) { store.dismiss(item.snapshot) }
+                }
+            }
+            if let failure = store.sessionOpenFailureMessage(for: item.snapshot) {
+                Text(failure).font(.caption).foregroundStyle(.red)
             }
         }
     }
 
-    private var pendingRequest: CoveDirectRequest? {
-        store.state.pendingDirectRequests.first { $0.sessionIdentity == item.identity }
+    private var pendingRequests: [CoveDirectRequest] {
+        let identities = Set(descendantIdentities)
+        return store.state.pendingDirectRequests.filter {
+            $0.sessionIdentity.map(identities.contains) == true
+        }.sorted {
+            ($0.sessionIdentity == workspace.attentionIdentity ? 0 : 1)
+                < ($1.sessionIdentity == workspace.attentionIdentity ? 0 : 1)
+        }
     }
 
     private func addLink() {
         guard let url = candidateLinkURL else { return }
-        var links = item.links
-        links.append(
-            .init(
-                label: linkLabel.trimmingCharacters(
-                    in: .whitespacesAndNewlines
-                ),
-                url: url
-            )
+        workspace.addArtifact(
+            label: linkLabel,
+            url: url,
+            to: item.identity
         )
-        workspace.setLinks(links, for: item.identity)
         linkLabel = ""
         linkURL = ""
+        refreshArtifactSuggestions()
     }
 
     private var candidateLinkURL: URL? {
         guard let url = URL(string: linkURL),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              url.host != nil,
-              url.user == nil,
-              url.password == nil,
-              url.absoluteString.utf8.count <= CoveWorkspaceLimits.linkURLBytes,
+              let canonical = CoveWorkspaceArtifactPolicy.canonicalPersistentURL(url),
+              !canonical.isFileURL,
               !linkLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               linkLabel.utf8.count <= CoveWorkspaceLimits.linkLabelBytes,
-              item.links.count < CoveWorkspaceLimits.linksPerCard
+              artifacts.count < CoveWorkspaceLimits.linksPerCard
         else { return nil }
-        return url
+        return canonical
+    }
+
+    private var artifacts: [CoveWorkspaceStore.ArtifactReference] {
+        workspace.artifacts(for: item.identity, projection: projection)
+    }
+
+    private var descendantIdentities: [CoveSessionIdentity] {
+        var result = [item.identity]
+        var index = 0
+        while index < result.count {
+            for child in projection.item(result[index])?.children ?? [] where !result.contains(child) {
+                result.append(child)
+            }
+            index += 1
+        }
+        return result
+    }
+
+    private func refreshArtifactSuggestions() {
+        guard !redactsSensitiveContent else { return }
+        workspace.refreshArtifactSuggestions(for: item.identity, projection: projection)
+    }
+
+    private func addFilesAndDirectories() {
+        for url in CoveWorkspaceArtifactPanels.chooseFilesAndDirectories() {
+            workspace.addArtifact(
+                label: url.lastPathComponent,
+                url: url,
+                to: item.identity,
+                requireExistingLocalFile: true
+            )
+        }
+        refreshArtifactSuggestions()
+    }
+
+    private func artifactDestination(_ url: URL) -> String {
+        url.isFileURL ? url.path : (url.host ?? url.absoluteString)
     }
 
     private func confirmPreparedSend() {
