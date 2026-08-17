@@ -47,6 +47,8 @@ Start with the guide that matches what you are trying to do.
   controls and clearer privacy-redaction guidance and recovery.
 - [Codex Cove 0.7.0 release notes](releases/v0.7.0.md) — Workspace-first
   supervision, retained tasks, and parent-owned artifacts.
+- [Codex Cove 0.7.1 release notes](releases/v0.7.1.md) — prompting for
+  completed and idle hook-observed local CLI tasks.
 
 ## Version-specific engineering records
 

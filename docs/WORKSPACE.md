@@ -193,14 +193,23 @@ prompt once. It does not retry automatically.
 Send is unavailable when:
 
 - an approval or question is pending for the task;
-- the task is hook-only;
 - the route or exact origin is stale;
 - an active turn lacks its authoritative turn ID;
 - the server does not support the required public operation; or
 - another send is already in progress.
 
+For a completed or idle local CLI task observed only through hooks, Cove first
+uses the public local Codex app-server to read that exact thread without turns,
+then resumes it without returning turn history. Only exact matching, idle state
+enables **Start Turn**. An active hook-only task remains unavailable because
+Cove will not guess its current turn identifier; open it in Codex or launch
+future CLI tasks with `codex-cove launch` for exact steering.
+
 Cove rechecks the target, operation, route, turn ID, pending requests, and
 composer text at confirmation time. If anything changed, Send fails visibly.
+The public Codex `turn/start` operation has no atomic idle precondition, so a
+different client starting that same task in the final delivery race can cause
+Codex itself to treat the submitted input as a steer.
 An uncertain result means the transport may have delivered the prompt; inspect
 the task in Codex before deciding whether to try again.
 

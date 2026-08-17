@@ -118,6 +118,14 @@ approval decisions.
   and session ID. Cove never routes by an opaque session ID alone.
 - Idle tasks allow only `turn/start`. Active tasks allow only `turn/steer` with
   the exact currently observed turn ID.
+- A completed or idle hook-only local task may use `turn/start` only after a
+  no-turn public `thread/read` returns the exact selected thread ID in a safe
+  state, followed by an exact `thread/resume` with turns excluded. Missing,
+  mismatched, or non-idle tasks fail closed; active hook-only tasks are never
+  sent through Cove's explicit steer operation without an exact owned turn ID.
+  Codex's public `turn/start` has no idle compare-and-swap: an external client
+  starting the same thread in the final delivery race may cause Codex itself to
+  treat the submitted input as a steer.
 - A pending approval or question disables Send until it is resolved.
 - Local and remote brokers accept only bounded start/steer frames for sessions
   and launches they observed. Clients cannot submit arbitrary app-server
@@ -125,9 +133,9 @@ approval decisions.
 - A state change between preview and delivery rejects the request. Timeout or
   disconnect is reported as uncertain, and Cove never retries a prompt
   automatically.
-- Hook-only sessions, stale routes, ambiguous origins, unsupported servers,
-  and missing active-turn IDs keep native Codex authoritative and expose an
-  exact Open action instead.
+- Active hook-only sessions, stale routes, ambiguous origins, unsupported
+  servers, and missing active-turn IDs keep native Codex authoritative and
+  expose an exact Open action instead.
 
 ## Filesystem and IPC protections
 

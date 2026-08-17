@@ -131,6 +131,13 @@ unique client message ID, and the expected turn ID for steer. Composer text is
 never included in a Cove event or durable metadata store. The UI disables Send
 while the target has a pending approval or question.
 
+A completed or idle hook-observed `localCli` target without a routed control
+socket may use the app's runtime-only local app-server route. Before
+`turn/start`, Cove requires an exact no-turn `thread/read` result with
+`source=cli` and a safe state, then an exact `thread/resume` response with
+`excludeTurns=true` and idle state. An active local target can use that route
+only when the same client owns its exact observed turn ID.
+
 For a routed CLI launch, the app writes one line to the launch's private control
 socket:
 

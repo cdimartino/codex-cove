@@ -94,6 +94,7 @@ struct CoveCoreSmokeTests {
         try run("persistent remote SSH safety", testPersistentRemoteSSHSafety)
         try run("fixture decoding", testFixtureDecoding)
         try await run("Desktop owned turn decision bridge", testDesktopOwnedTurnDecisionBridge)
+        try await run("local app-server turn decision bridge", testLocalAppServerTurnDecisionBridge)
         try await run("thread control socket delivery", testThreadControlSocketDelivery)
         try await run("decision socket delivery", testDecisionSocketDelivery)
         try await run("decision socket bounds and privacy", testDecisionSocketBoundsAndPrivacy)
@@ -5565,6 +5566,176 @@ struct CoveCoreSmokeTests {
         precondition(received?["id"] as? Int == 42)
         let receivedResult = received?["result"] as? [String: Any]
         precondition(receivedResult?["decision"] as? String == "accept")
+    }
+
+    static func testLocalAppServerTurnDecisionBridge() async throws {
+        let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(
+                "cc-local-owned-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let receipt = directory.appendingPathComponent("decision.json")
+        let fixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r thread_read || exit 1
+            thread_read_id=$(printf '%s' "$thread_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"cli","status":{"type":"notLoaded"}}}}\\n' "$thread_read_id"
+            IFS= read -r thread_resume || exit 1
+            printf '%s' "$thread_resume" | /usr/bin/grep -q '"excludeTurns":true' || exit 1
+            thread_resume_id=$(printf '%s' "$thread_resume" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"cli","status":{"type":"idle"}}}}\\n' "$thread_resume_id"
+            IFS= read -r control || exit 1
+            control_id=$(printf '%s' "$control" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turn":{"id":"turn-local"}}}\\n' "$control_id"
+            printf '%s\\n' '{"jsonrpc":"2.0","id":43,"method":"item/commandExecution/requestApproval","params":{"threadId":"local-task","turnId":"turn-local","availableDecisions":["accept","decline"]}}'
+            IFS= read -r decision || exit 1
+            printf '%s' "$decision" > '\(receipt.path)'
+            IFS= read -r steer || exit 1
+            printf '%s' "$steer" | /usr/bin/grep -q '"method":"turn/steer"' || exit 1
+            steer_id=$(printf '%s' "$steer" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turn":{"id":"turn-local"}}}\\n' "$steer_id"
+            sleep 1
+            """
+        )
+        defer { fixture.close() }
+        let events = OwnedDesktopEventBox()
+        let controller = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: fixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "runtime",
+                isDirectory: true
+            )
+        )
+        defer { controller.stop() }
+        controller.setEventHandler { events.receive($0) }
+        let identity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "local-task"
+        )!
+        let result = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-local",
+                input: "Continue"
+            )
+        )
+        precondition(result == .accepted(turnId: "turn-local"))
+        for _ in 0..<200 where events.value() == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard let event = events.value(),
+              case let .approval(approval)? = event.directRequest(),
+              let decisionSocket = approval.decisionSocket
+        else { fatalError("Expected owned local app-server approval event") }
+        precondition(event.source == .localCli)
+        precondition(event.sessionId == identity.sessionId)
+        precondition(
+            event.payload.objectValue?["controlRoute"]?.stringValue
+                == CoveThreadControlRoute.localAppServer.rawValue
+        )
+        let blocked = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .steer,
+                expectedTurnId: "turn-local",
+                clientMessageId: "message-blocked-local",
+                input: "Do not send while approval is pending"
+            )
+        )
+        precondition(blocked == .rejected(.pendingRequest))
+        try await CoveDecisionSocketClient().send(
+            .init(
+                launchId: approval.launchId,
+                requestId: approval.requestId,
+                result: .approval(decision: .accept)
+            ),
+            to: decisionSocket
+        )
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: receipt.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let received = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)
+        ) as? [String: Any]
+        precondition(received?["id"] as? Int == 43)
+
+        let steered = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .steer,
+                expectedTurnId: "turn-local",
+                clientMessageId: "message-steer-local",
+                input: "One more detail"
+            )
+        )
+        precondition(steered == .accepted(turnId: "turn-local"))
+
+        let wrongSourceFixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r thread_read || exit 1
+            thread_read_id=$(printf '%s' "$thread_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"vscode","status":{"type":"notLoaded"}}}}\\n' "$thread_read_id"
+            IFS= read -r missing_read || exit 1
+            missing_read_id=$(printf '%s' "$missing_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","error":{"message":"missing"}}\\n' "$missing_read_id"
+            sleep 1
+            """
+        )
+        defer { wrongSourceFixture.close() }
+        let wrongSourceController = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: wrongSourceFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "missing-runtime",
+                isDirectory: true
+            )
+        )
+        defer { wrongSourceController.stop() }
+        let wrongSource = await wrongSourceController.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-missing",
+                input: "Continue"
+            )
+        )
+        precondition(wrongSource == .rejected(.wrongOrigin))
+        let missing = await wrongSourceController.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-missing",
+                input: "Continue"
+            )
+        )
+        precondition(missing == .rejected(.wrongOrigin))
     }
 
     static func testDecisionSocketBoundsAndPrivacy() async throws {

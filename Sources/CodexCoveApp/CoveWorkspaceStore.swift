@@ -5,7 +5,8 @@ import CoveCore
 @MainActor
 final class CoveWorkspaceStore: ObservableObject {
     typealias ControlHandler = @Sendable (
-        CoveThreadControlRequest
+        CoveThreadControlRequest,
+        CoveThreadControlRoute
     ) async -> CoveThreadControlResult
 
     @Published private(set) var state: CoveWorkspaceState
@@ -413,11 +414,12 @@ final class CoveWorkspaceStore: ObservableObject {
         to snapshot: CoveSessionSnapshot,
         pendingRequests: [CoveDirectRequest]
     ) -> Bool {
-        !isSending
-            && snapshot.canAcceptThreadControl
-            && snapshot.sessionIdentity == selectedIdentity
+        let target = promptTarget(for: snapshot)
+        return !isSending
+            && target.canAcceptThreadControl
+            && target.sessionIdentity == selectedIdentity
             && pendingRequests.allSatisfy({
-                $0.sessionIdentity != snapshot.sessionIdentity
+                $0.sessionIdentity != target.sessionIdentity
             })
             && !composerText.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -428,19 +430,20 @@ final class CoveWorkspaceStore: ObservableObject {
         to snapshot: CoveSessionSnapshot,
         pendingRequests: [CoveDirectRequest]
     ) -> PreparedThreadControl? {
+        let target = promptTarget(for: snapshot)
         guard canPrepareSend(
-            to: snapshot,
+            to: target,
             pendingRequests: pendingRequests
         ),
-              let identity = snapshot.sessionIdentity,
-              let route = snapshot.controlRoute
+              let identity = target.sessionIdentity,
+              let route = target.controlRoute
         else {
             message = "This task cannot accept a prompt here. Open it in Codex to continue."
             return nil
         }
         let operation: CoveThreadControlOperation
         let expectedTurnID: String?
-        if let activeTurnID = snapshot.activeTurnId {
+        if let activeTurnID = target.activeTurnId {
             operation = .steer
             expectedTurnID = activeTurnID
         } else {
@@ -468,12 +471,16 @@ final class CoveWorkspaceStore: ObservableObject {
         currentSnapshots: [CoveSessionSnapshot],
         pendingRequests: [CoveDirectRequest]
     ) {
+        guard let current = currentSnapshots.first(where: {
+            $0.sessionIdentity == prepared.request.target
+        }) else {
+            message = "The task changed before Send. Review its current state and try again."
+            return
+        }
+        let snapshot = promptTarget(for: current)
         guard !isSending,
               selectedIdentity == prepared.request.target,
               composerText == prepared.request.input,
-              let snapshot = currentSnapshots.first(where: {
-                  $0.sessionIdentity == prepared.request.target
-              }),
               snapshot.controlRoute == prepared.route,
               snapshot.canAcceptThreadControl,
               pendingRequests.allSatisfy({
@@ -495,7 +502,7 @@ final class CoveWorkspaceStore: ObservableObject {
         isSending = true
         message = nil
         Task {
-            let result = await onControl(prepared.request)
+            let result = await onControl(prepared.request, prepared.route)
             guard self.selectedIdentity == prepared.request.target else {
                 self.isSending = false
                 return
@@ -515,6 +522,16 @@ final class CoveWorkspaceStore: ObservableObject {
     }
 
     func clearMessage() { message = nil }
+
+    func promptTarget(for snapshot: CoveSessionSnapshot) -> CoveSessionSnapshot {
+        guard snapshot.controlRoute == nil,
+              snapshot.source == .localCli,
+              snapshot.activeTurnId == nil
+        else { return snapshot }
+        var target = snapshot
+        target.controlRoute = .localAppServer
+        return target
+    }
 
     private func mutate(_ body: (inout CoveWorkspaceState) -> Void) {
         var candidate = state
