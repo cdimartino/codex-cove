@@ -137,7 +137,7 @@ removes protected fields from the visible UI, Accessibility tree, and search.
 Selecting a card opens the right-side inspector without marking it read. It
 contains the authoritative recursive subagent hierarchy, per-agent exact Open
 action, latest memory-only output, existing approval/question controls,
-Cove-only alias/tags/HTTP(S) links, reminders, pin/read/archive actions, and the
+Cove-only alias/tags/artifacts, reminders, pin/read/archive actions, and the
 prompt composer. Parent links are accepted only within the same origin; missing
 parents and cycles appear under **Unattached agents** rather than being guessed.
 
@@ -160,7 +160,7 @@ missing, or delivery is unsupported, Cove rejects the Send and offers exact
 the native task before deciding what to do next. Hook-only tasks remain
 read-only in Cove.
 
-Aliases, tags, links, Board columns, and saved templates are stored locally in
+Aliases, tags, artifacts, Board columns, and saved templates are stored locally in
 the private `workspace.json`. Unsaved composer text, prompts actually submitted,
 outputs, approvals, commands, and transcripts remain memory-only. Links and
 tags are manual context only; Cove stores no Jira, Slack, GitHub, Grafana, or

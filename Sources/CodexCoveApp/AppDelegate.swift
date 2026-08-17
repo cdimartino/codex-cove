@@ -161,7 +161,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             ),
             initialState: uiTestConfiguration == nil
                 ? nil : CoveWorkspaceState(),
-            writesEnabled: uiTestConfiguration == nil
+            writesEnabled: uiTestConfiguration == nil,
+            openArtifactURL: uiTestConfiguration == nil
+                ? { NSWorkspace.shared.open($0) }
+                : { _ in true }
         )
         self.overlayController = CoveOverlayController()
         self.broker = CoveUnixSocketBroker(socketPath: CoveDefaultPaths.socketPath)
@@ -200,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             Task { @MainActor in
                 guard let self else { return }
                 if self.completedInitialLaunch {
-                    self.showCove()
+                    self.showWorkspace()
                 } else {
                     self.revealRequestedDuringLaunch = true
                 }
@@ -292,8 +295,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         overlayController.attach(
             store: store,
-            onOpenWorkspace: { [weak self] in
-                self?.showWorkspace()
+            onOpenWorkspace: { [weak self] identity in
+                self?.showWorkspace(selecting: identity, attention: identity)
             },
             onOpenSettings: { [weak self] in
                 self?.showSettings()
@@ -307,6 +310,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         store.$state
             .sink { [weak self] state in
                 self?.overlayController.update(with: state)
+            }
+            .store(in: &cancellables)
+
+        store.$state
+            .map(\.session.snapshots)
+            .removeDuplicates()
+            .sink { [weak self] snapshots in
+                self?.workspaceStore.reconcileMembership(with: snapshots)
             }
             .store(in: &cancellables)
 
@@ -333,9 +344,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // use applicationShouldHandleReopen below.
             overlayController.show()
         } else {
-            // Direct launch is deliberate interaction: reveal Cove long
-            // enough to be discoverable, then honor normal collapse/hide.
-            showCove()
+            // Direct launch is deliberate interaction. Workspace is the
+            // primary task surface; the island remains an ambient companion.
+            if uiTestConfiguration == nil
+                || uiTestConfiguration?.fixture == .workspacePrimary {
+                showWorkspace()
+            } else {
+                showCove()
+            }
         }
         completedInitialLaunch = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
@@ -347,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        showCove()
+        showWorkspace()
         return false
     }
 
@@ -455,6 +471,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func showWorkspace() {
+        showWorkspace(selecting: nil, attention: nil)
+    }
+
+    func showWorkspace(
+        selecting identity: CoveSessionIdentity?,
+        attention: CoveSessionIdentity?
+    ) {
+        workspaceStore.reconcileMembership(with: store.state.session.snapshots)
+        let rootIdentity = identity.flatMap {
+            workspaceStore.owningTaskIdentity(for: $0, coveState: store.state)
+        }
+        if identity != nil || attention != nil {
+            workspaceStore.select(
+                rootIdentity,
+                attention: attention ?? (rootIdentity == identity ? nil : identity)
+            )
+        }
         if let controller = workspaceWindowController,
            let window = controller.window {
             presentWorkspaceWindow(window, controller: controller)
@@ -623,7 +656,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         withReplyEvent replyEvent: NSAppleEventDescriptor
     ) {
         guard completedInitialLaunch else { return }
-        showCove()
+        showWorkspace()
     }
 
     func collapseToMenuBar() {
@@ -788,8 +821,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         startUsageHydration()
         startDesktopThreadHydration(restoredMetadata: restoredMetadata)
 
-        shortcuts.onToggleOverlay = { [weak self] in
-            self?.toggleOverlay()
+        shortcuts.onOpenWorkspace = { [weak self] in
+            self?.showWorkspace()
         }
         shortcuts.onToggleExpanded = { [weak self] in
             guard let self else { return }
@@ -838,7 +871,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 hostID: hostID,
                 in: self.store.state.session.snapshots
             ) {
-                _ = self.terminalJumpService.jump(to: snapshot)
+                self.showWorkspace(
+                    selecting: snapshot.sessionIdentity,
+                    attention: snapshot.sessionIdentity
+                )
+            } else if let source,
+                      let identity = CoveSessionIdentity(
+                        source: source,
+                        hostId: hostID,
+                        sessionId: sessionID
+                      ) {
+                self.showWorkspace(selecting: identity, attention: identity)
+            } else {
+                self.showWorkspace()
             }
             if let turnID, let source {
                 service.resolveAttention(
@@ -1318,7 +1363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.6.1"
+                as? String ?? "0.7.0"
         ) else {
             return
         }
@@ -1335,7 +1380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ) {
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.6.1"
+                as? String ?? "0.7.0"
         ) else {
             return
         }
@@ -1741,14 +1786,18 @@ private struct CoveDismissedSessionStore {
             throw CocoaError(.fileReadInvalidFileName)
         }
         let data = try Data(contentsOf: url)
-        guard data.count <= 256 * 1_024 else {
+        guard data.count <= CoveWorkspaceLimits.fileBytes else {
             throw CocoaError(.fileReadCorruptFile)
         }
         let document = try JSONDecoder().decode(Document.self, from: data)
         guard document.schemaVersion == 1 || document.schemaVersion == 2 else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        return Set(document.sessionIDs.prefix(1_000).filter(isValid))
+        return Set(
+            document.sessionIDs
+                .prefix(CoveWorkspaceLimits.storedIdentities)
+                .filter(isValid)
+        )
     }
 
     func save(_ sessionIDs: Set<String>) throws {
@@ -1764,7 +1813,11 @@ private struct CoveDismissedSessionStore {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(document).write(to: url, options: .atomic)
+        let data = try encoder.encode(document)
+        guard data.count <= CoveWorkspaceLimits.fileBytes else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: url.path

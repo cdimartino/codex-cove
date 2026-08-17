@@ -25,6 +25,7 @@
 		560A3ECE3BC7E3125ECA7FAB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D3147A2CE9F020F7A74F0E1 /* SettingsView.swift */; };
 		5F10ADFD59FAB98EE2B8C3C7 /* CoveStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F68AE2511845CF2CA4718341 /* CoveStore.swift */; };
 		629B4FA61247987CB458A2CD /* minimalOLED-sunset.json in Resources */ = {isa = PBXBuildFile; fileRef = 63CDC603EE79EE6C1A009720 /* minimalOLED-sunset.json */; };
+		637931AE7C6C37D439569FC8 /* CoveWorkspaceArtifactPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECDDE5D51B2086E3E1C00BC4 /* CoveWorkspaceArtifactPanels.swift */; };
 		645D7948149F31F618B0387B /* retroTerminal-sunset.json in Resources */ = {isa = PBXBuildFile; fileRef = 7BBAC09AF295EB43B82D58A4 /* retroTerminal-sunset.json */; };
 		6AB4027D3E8EAC52961CD46D /* nativeGlass-highContrast.json in Resources */ = {isa = PBXBuildFile; fileRef = 4309735B2226CC56793AB216 /* nativeGlass-highContrast.json */; };
 		6BB76A78EB3F391F38B73FB0 /* CoveThemePreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0009A3A79A343873B91C911 /* CoveThemePreview.swift */; };
@@ -134,6 +135,7 @@
 		D2621A75F9F077D8A3469DEB /* CoveWorkspaceWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveWorkspaceWindowView.swift; sourceTree = "<group>"; };
 		D8A1ED229CD5FEF033120F6B /* retroTerminal-graphite.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "retroTerminal-graphite.json"; sourceTree = "<group>"; };
 		E67E75D3FF98E8C2B70B388B /* nativeGlass-ocean.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "nativeGlass-ocean.json"; sourceTree = "<group>"; };
+		ECDDE5D51B2086E3E1C00BC4 /* CoveWorkspaceArtifactPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveWorkspaceArtifactPanels.swift; sourceTree = "<group>"; };
 		F04DC7685F25C0E449FA1006 /* CovePixelCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CovePixelCharacterView.swift; sourceTree = "<group>"; };
 		F0745AFB5BDFA77046D4EEB6 /* CoveUnixSocketBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveUnixSocketBroker.swift; sourceTree = "<group>"; };
 		F68AE2511845CF2CA4718341 /* CoveStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoveStore.swift; sourceTree = "<group>"; };
@@ -257,6 +259,7 @@
 				C0009A3A79A343873B91C911 /* CoveThemePreview.swift */,
 				9C6014AFA8F99375F3E21AF4 /* CoveUITestSupport.swift */,
 				F0745AFB5BDFA77046D4EEB6 /* CoveUnixSocketBroker.swift */,
+				ECDDE5D51B2086E3E1C00BC4 /* CoveWorkspaceArtifactPanels.swift */,
 				02C51E46BB1FFABDBB221637 /* CoveWorkspaceStore.swift */,
 				D2621A75F9F077D8A3469DEB /* CoveWorkspaceWindowView.swift */,
 				3D3147A2CE9F020F7A74F0E1 /* SettingsView.swift */,
@@ -422,6 +425,7 @@
 				6BB76A78EB3F391F38B73FB0 /* CoveThemePreview.swift in Sources */,
 				23B846AEFF2F150B6363120D /* CoveUITestSupport.swift in Sources */,
 				312938F2E7567561A1B3A005 /* CoveUnixSocketBroker.swift in Sources */,
+				637931AE7C6C37D439569FC8 /* CoveWorkspaceArtifactPanels.swift in Sources */,
 				7136ED32C3CAA84796EE69BD /* CoveWorkspaceStore.swift in Sources */,
 				A969ADEA3628D44FA1D71F98 /* CoveWorkspaceWindowView.swift in Sources */,
 				560A3ECE3BC7E3125ECA7FAB /* SettingsView.swift in Sources */,
@@ -508,7 +512,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Codex Cove UI Test Host";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -517,7 +521,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.1;
+				MARKETING_VERSION = 0.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = local.chris.codexcove.uitesthost;
 				PRODUCT_NAME = "Codex Cove UI Test Host";
 				SDKROOT = macosx;
@@ -592,7 +596,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 9;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "Codex Cove UI Test Host";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -601,7 +605,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.6.1;
+				MARKETING_VERSION = 0.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = local.chris.codexcove.uitesthost;
 				PRODUCT_NAME = "Codex Cove UI Test Host";
 				SDKROOT = macosx;

@@ -3,7 +3,7 @@ import ApplicationServices
 
 @MainActor
 final class CoveKeyboardShortcutBroker {
-    var onToggleOverlay: (() -> Void)?
+    var onOpenWorkspace: (() -> Void)?
     var onToggleExpanded: (() -> Void)?
     var onJumpToTerminal: ((String) -> Void)?
 
@@ -42,7 +42,7 @@ final class CoveKeyboardShortcutBroker {
 
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "o":
-            onToggleOverlay?()
+            onOpenWorkspace?()
         case "e":
             onToggleExpanded?()
         case "t":

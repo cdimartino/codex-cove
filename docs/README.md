@@ -45,6 +45,8 @@ Start with the guide that matches what you are trying to do.
   inline help system.
 - [Codex Cove 0.6.1 release notes](releases/v0.6.1.md) — Workspace appearance
   controls and clearer privacy-redaction guidance and recovery.
+- [Codex Cove 0.7.0 release notes](releases/v0.7.0.md) — Workspace-first
+  supervision, retained tasks, and parent-owned artifacts.
 
 ## Version-specific engineering records
 

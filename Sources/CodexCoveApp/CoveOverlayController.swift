@@ -25,7 +25,7 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
 
     func attach(
         store: CoveStore,
-        onOpenWorkspace: @escaping @MainActor () -> Void,
+        onOpenWorkspace: @escaping @MainActor (CoveSessionIdentity?) -> Void,
         onOpenSettings: @escaping @MainActor () -> Void,
         onRestoreArchived: @escaping @MainActor (String?) -> Void,
         fixtureStateDirectory: String? = nil

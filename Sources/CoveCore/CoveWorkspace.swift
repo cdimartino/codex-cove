@@ -73,6 +73,9 @@ public struct CoveWorkspaceCardState: Codable, Equatable, Sendable,
     public var alias: String?
     public var tags: [String]
     public var links: [CoveWorkspaceLink]
+    /// Opaque, same-origin parent identity retained without task content so a
+    /// closed child remains grouped under its Workspace owner after restart.
+    public var parentSessionId: String?
 
     public var id: CoveSessionIdentity { identity }
 
@@ -80,12 +83,36 @@ public struct CoveWorkspaceCardState: Codable, Equatable, Sendable,
         identity: CoveSessionIdentity,
         alias: String? = nil,
         tags: [String] = [],
-        links: [CoveWorkspaceLink] = []
+        links: [CoveWorkspaceLink] = [],
+        parentSessionId: String? = nil
     ) {
         self.identity = identity
         self.alias = alias
         self.tags = tags
         self.links = links
+        self.parentSessionId = parentSessionId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case identity, alias, tags, links, parentSessionId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        identity = try container.decode(CoveSessionIdentity.self, forKey: .identity)
+        alias = try container.decodeIfPresent(String.self, forKey: .alias)
+        tags = try container.decode([String].self, forKey: .tags)
+        links = try container.decode([CoveWorkspaceLink].self, forKey: .links)
+        parentSessionId = try container.decodeIfPresent(String.self, forKey: .parentSessionId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(identity, forKey: .identity)
+        try container.encodeIfPresent(alias, forKey: .alias)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(links, forKey: .links)
+        try container.encodeIfPresent(parentSessionId, forKey: .parentSessionId)
     }
 }
 
@@ -129,7 +156,7 @@ public struct CovePromptTemplate: Codable, Equatable, Sendable, Identifiable {
 /// this file may contain the local aliases, organizational metadata, and saved
 /// prompt templates the user chose to retain.
 public struct CoveWorkspaceState: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
     public static let inboxColumnID = "inbox"
 
     public var schemaVersion: Int
@@ -178,6 +205,21 @@ public struct CoveWorkspaceState: Codable, Equatable, Sendable {
         var known = Set(gridOrder)
         for identity in identities where known.insert(identity).inserted {
             gridOrder.append(identity)
+        }
+    }
+
+    public mutating func observe(_ snapshots: [CoveSessionSnapshot]) {
+        let observed = snapshots.compactMap { snapshot -> (CoveSessionIdentity, String?)? in
+            guard CoveWorkspaceProjection.isWorkspaceMember(snapshot),
+                  let identity = snapshot.sessionIdentity
+            else { return nil }
+            return (identity, snapshot.parentSessionId)
+        }
+        ensureMembership(observed.map(\.0))
+        for (identity, parentSessionId) in observed {
+            mutateCard(identity) { card in
+                card.parentSessionId = parentSessionId
+            }
         }
     }
 
@@ -282,7 +324,7 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
-        let state = try decoder.decode(
+        var state = try decoder.decode(
             CoveWorkspaceState.self,
             from: Data(contentsOf: url)
         )
@@ -291,6 +333,11 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
                 found: state.schemaVersion,
                 supported: CoveWorkspaceState.currentSchemaVersion
             )
+        }
+        if state.schemaVersion == 1 {
+            // v2 retains the same document shape and simply permits local,
+            // explicitly user-authored file artifacts plus parent metadata.
+            state.schemaVersion = CoveWorkspaceState.currentSchemaVersion
         }
         try Self.validate(state)
         try CoveSecureFilesystem.enforcePermissions(
@@ -392,6 +439,13 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
             if let alias = card.alias {
                 try validateText(alias, field: "cards.alias", max: CoveWorkspaceLimits.aliasBytes)
             }
+            if let parentSessionId = card.parentSessionId {
+                try validateText(
+                    parentSessionId,
+                    field: "cards.parentSessionId",
+                    max: CoveWorkspaceLimits.opaqueIDBytes
+                )
+            }
             guard card.tags.count <= CoveWorkspaceLimits.tagsPerCard,
                   card.links.count <= CoveWorkspaceLimits.linksPerCard
             else { throw CovePersistenceError.invalidWorkspace(field: "cards.metadata") }
@@ -403,13 +457,7 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
             for link in card.links {
                 try validateText(link.id, field: "cards.links.id", max: CoveWorkspaceLimits.opaqueIDBytes)
                 try validateText(link.label, field: "cards.links.label", max: CoveWorkspaceLimits.linkLabelBytes)
-                let absolute = link.url.absoluteString
-                guard absolute.utf8.count <= CoveWorkspaceLimits.linkURLBytes,
-                      let scheme = link.url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https",
-                      link.url.host != nil,
-                      link.url.user == nil,
-                      link.url.password == nil
+                guard CoveWorkspaceArtifactPolicy.canonicalPersistentURL(link.url) != nil
                 else { throw CovePersistenceError.invalidWorkspace(field: "cards.links.url") }
             }
         }
@@ -504,12 +552,13 @@ public struct CoveWorkspaceItem: Equatable, Sendable, Identifiable {
     public var links: [CoveWorkspaceLink]
     public var columnID: String
     public var isPinned: Bool
+    public var isRetainedOnly: Bool
     public var descendantAttentionCount: Int
     public var children: [CoveSessionIdentity]
 
     public var id: CoveSessionIdentity { identity }
     public var displayName: String { alias ?? snapshot.title }
-    public var isControllable: Bool { snapshot.canAcceptThreadControl }
+    public var isControllable: Bool { !isRetainedOnly && snapshot.canAcceptThreadControl }
 }
 
 /// Pure, origin-safe dashboard membership and hierarchy projection.
@@ -517,20 +566,23 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
     public var items: [CoveWorkspaceItem]
     public var roots: [CoveSessionIdentity]
     public var unattachedAgents: [CoveSessionIdentity]
+    private var owners: [CoveSessionIdentity: CoveSessionIdentity]
 
     public init(
         snapshots: [CoveSessionSnapshot],
         workspace: CoveWorkspaceState,
         pinnedIdentities: Set<CoveSessionIdentity> = [],
+        dismissedIdentities: Set<CoveSessionIdentity> = [],
         query: String = "",
         filter: CoveWorkspaceFilter = .init(),
         sort: CoveWorkspaceSort = .manual,
         redactSensitiveContent: Bool = false
     ) {
-        let latest = Dictionary(
+        var latest = Dictionary(
             snapshots.compactMap { snapshot -> (CoveSessionIdentity, CoveSessionSnapshot)? in
                 guard let identity = snapshot.sessionIdentity,
-                      Self.isWorkspaceMember(snapshot)
+                      workspace.gridOrder.contains(identity)
+                        || Self.isWorkspaceMember(snapshot)
                 else { return nil }
                 return (identity, snapshot)
             },
@@ -538,10 +590,27 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 lhs.timestamp >= rhs.timestamp ? lhs : rhs
             }
         )
+        var retained = Set<CoveSessionIdentity>()
+        for identity in workspace.gridOrder where latest[identity] == nil {
+            latest[identity] = Self.retainedSnapshot(
+                identity,
+                parentSessionId: workspace.card(for: identity)?.parentSessionId
+            )
+            retained.insert(identity)
+        }
         let identities = Set(latest.keys)
-        let requestedParent = Dictionary(
-            uniqueKeysWithValues: latest.compactMap { identity, snapshot in
-                snapshot.parentIdentity.map { (identity, $0) }
+        let requestedParent: [CoveSessionIdentity: CoveSessionIdentity] = Dictionary(
+            uniqueKeysWithValues: latest.compactMap { identity, snapshot -> (CoveSessionIdentity, CoveSessionIdentity)? in
+                let parentSessionId = snapshot.parentSessionId
+                    ?? workspace.card(for: identity)?.parentSessionId
+                guard let parentSessionId,
+                      let parent = CoveSessionIdentity(
+                        source: identity.source,
+                        hostId: identity.remoteHostId,
+                        sessionId: parentSessionId
+                      )
+                else { return nil }
+                return (identity, parent)
             }
         )
         var validParent: [CoveSessionIdentity: CoveSessionIdentity] = [:]
@@ -555,18 +624,46 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
             }
             validParent[child] = parent
         }
+        func owner(of identity: CoveSessionIdentity) -> CoveSessionIdentity {
+            var cursor = identity
+            var visited = Set<CoveSessionIdentity>()
+            while let parent = validParent[cursor], visited.insert(cursor).inserted {
+                cursor = parent
+            }
+            return cursor
+        }
+        let ownerByIdentity = Dictionary(
+            uniqueKeysWithValues: identities.map { ($0, owner(of: $0)) }
+        )
+        func isSuppressed(_ identity: CoveSessionIdentity) -> Bool {
+            var cursor: CoveSessionIdentity? = identity
+            var visited = Set<CoveSessionIdentity>()
+            while let current = cursor, visited.insert(current).inserted {
+                if dismissedIdentities.contains(current) { return true }
+                cursor = validParent[current]
+            }
+            return false
+        }
+        let visibleIdentities = identities.filter { !isSuppressed($0) }
+        let visibleSet = Set(visibleIdentities)
         var children: [CoveSessionIdentity: [CoveSessionIdentity]] = [:]
-        for (child, parent) in validParent {
+        for (child, parent) in validParent
+        where visibleSet.contains(child) && visibleSet.contains(parent) {
             children[parent, default: []].append(child)
         }
-        let attention = Self.descendantAttention(latest: latest, children: children)
+        let visibleLatest = Dictionary(
+            uniqueKeysWithValues: visibleIdentities.compactMap { identity in
+                latest[identity].map { (identity, $0) }
+            }
+        )
+        let attention = Self.descendantAttention(latest: visibleLatest, children: children)
         let columnNames = Dictionary(uniqueKeysWithValues: workspace.columns.map { ($0.id, $0.name) })
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let order = Dictionary(uniqueKeysWithValues: workspace.gridOrder.enumerated().map { ($1, $0) })
-        var projected = latest.compactMap { identity, snapshot -> CoveWorkspaceItem? in
+        var projected = visibleLatest.compactMap { identity, snapshot -> CoveWorkspaceItem? in
             let card = workspace.card(for: identity)
             let columnID = workspace.columnID(for: identity)
-            let item = CoveWorkspaceItem(
+            return CoveWorkspaceItem(
                 identity: identity,
                 snapshot: snapshot,
                 alias: card?.alias,
@@ -574,17 +671,10 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 links: card?.links ?? [],
                 columnID: columnID,
                 isPinned: pinnedIdentities.contains(identity),
+                isRetainedOnly: retained.contains(identity),
                 descendantAttentionCount: attention[identity] ?? 0,
                 children: (children[identity] ?? []).sorted()
             )
-            guard Self.matches(
-                item,
-                query: normalizedQuery,
-                filter: filter,
-                columnName: columnNames[columnID],
-                redact: redactSensitiveContent
-            ) else { return nil }
-            return item
         }
         projected.sort { lhs, rhs in
             switch sort {
@@ -616,29 +706,65 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 return left == right ? lhs.identity < rhs.identity : left < right
             }
         }
-        let visible = Set(projected.map(\.identity))
-        self.items = projected
-        self.roots = projected.map(\.identity).filter {
-            validParent[$0].map { !visible.contains($0) } ?? true
+        let itemsByIdentity = Dictionary(
+            uniqueKeysWithValues: projected.map { ($0.identity, $0) }
+        )
+        let rootCandidates = projected.map(\.identity).filter {
+            validParent[$0].map { !visibleSet.contains($0) } ?? true
         }
-        self.unattachedAgents = unattached.intersection(visible).sorted()
+        let visibleRoots = rootCandidates.filter { root in
+            projected.contains { item in
+                ownerByIdentity[item.identity] == root
+                    && Self.matches(
+                        item,
+                        query: normalizedQuery,
+                        filter: filter,
+                        columnName: columnNames[item.columnID],
+                        redact: redactSensitiveContent
+                    )
+            }
+        }
+        self.items = projected
+        self.roots = visibleRoots
+        self.unattachedAgents = unattached.intersection(visibleSet).sorted()
+        self.owners = ownerByIdentity.filter { itemsByIdentity[$0.key] != nil }
     }
 
     public func item(_ identity: CoveSessionIdentity) -> CoveWorkspaceItem? {
         items.first { $0.identity == identity }
     }
 
+    public func owningTaskIdentity(
+        for identity: CoveSessionIdentity
+    ) -> CoveSessionIdentity? {
+        owners[identity]
+    }
+
     public static func isWorkspaceMember(_ snapshot: CoveSessionSnapshot) -> Bool {
         switch snapshot.liveness {
         case .loaded, .live:
             return true
-        case .closed:
-            return snapshot.unread
-                && (snapshot.status == .failed || snapshot.status == .interrupted)
-        case nil:
-            return snapshot.unread
-                && (snapshot.status == .failed || snapshot.status == .interrupted)
+        case .closed, nil:
+            return false
         }
+    }
+
+    private static func retainedSnapshot(
+        _ identity: CoveSessionIdentity,
+        parentSessionId: String?
+    ) -> CoveSessionSnapshot {
+        CoveSessionSnapshot(
+            snapshotId: identity.sessionId,
+            status: .hidden,
+            priority: 0,
+            title: "Codex task",
+            timestamp: .distantPast,
+            sessionId: identity.sessionId,
+            source: identity.source,
+            hostId: identity.remoteHostId,
+            parentSessionId: parentSessionId,
+            liveness: .closed
+        )
     }
 
     private static func createsCycle(
@@ -680,7 +806,10 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
         redact: Bool
     ) -> Bool {
         let snapshot = item.snapshot
-        if !filter.statuses.isEmpty && !filter.statuses.contains(snapshot.status) { return false }
+        if !filter.statuses.isEmpty
+            && (item.isRetainedOnly || !filter.statuses.contains(snapshot.status)) {
+            return false
+        }
         if filter.unreadOnly && !snapshot.unread { return false }
         if filter.pinnedOnly && !item.isPinned { return false }
         if filter.controllableOnly && !item.isControllable { return false }
@@ -694,7 +823,7 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
             if !filter.tags.isEmpty && !filter.tags.map({ $0.lowercased() }).allSatisfy(itemTags.contains) { return false }
         }
         guard !query.isEmpty else { return true }
-        var values = [snapshot.status.rawValue]
+        var values = item.isRetainedOnly ? ["retained"] : [snapshot.status.rawValue]
         if !redact {
             values.append(contentsOf: [
                 item.identity.source.rawValue,
@@ -703,7 +832,9 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 columnName ?? "",
                 item.displayName,
             ] + item.tags)
-            values.append(contentsOf: item.links.flatMap { [$0.label, $0.url.host ?? ""] })
+            values.append(contentsOf: item.links.flatMap {
+                [$0.label, $0.url.host ?? $0.url.lastPathComponent]
+            })
         }
         return values.contains { $0.lowercased().contains(query) }
     }

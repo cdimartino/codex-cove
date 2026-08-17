@@ -6,7 +6,7 @@ struct CoveOverlayRootView: View {
     @EnvironmentObject private var presentationMetrics: CoveOverlayPresentationMetrics
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    let onOpenWorkspace: @MainActor () -> Void
+    let onOpenWorkspace: @MainActor (CoveSessionIdentity?) -> Void
     let onOpenSettings: @MainActor () -> Void
     let onRestoreArchived: @MainActor (String?) -> Void
     let fixtureStateDirectory: String?
