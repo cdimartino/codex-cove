@@ -178,16 +178,22 @@ with `thread/read` and `includeTurns=false`. Cove optionally requests a bounded
 `thread/turns/list` summary so the card inspector can show the latest assistant
 output. Responses are correlated by JSON-RPC ID and may arrive out of order.
 The authoritative `parentThreadId`, loaded state, active turn, and source are
-preserved through reduction. Exact navigation uses the public Codex deep link,
-and assistant output remains in memory only.
+preserved through reduction. Spawned-agent provenance may arrive in
+`source.subAgent.thread_spawn`; Cove follows at most 32 non-cyclic public
+`thread/read` ancestors and accepts the task only when the root matches the
+expected Desktop or CLI origin. Conflicts and internal review/compact sources
+fail closed. Exact Desktop navigation uses the public Codex deep link, and
+assistant output remains in memory only.
 
 Workspace turns use a persistent bounded public app-server client. An idle
 Desktop task maps to `turn/start`; an active task maps to `turn/steer` with its
 exact observed turn ID. For an idle or completed hook-observed local CLI task,
 the same client validates its exact public CLI source and state with a no-turn
 read, installs an origin-owned route, and resumes it with turns excluded before
-`turn/start`. Active local steering requires the exact turn owned by that
-route. The client forwards authoritative approval and question requests for
+`turn/start`. Active local tasks and spawned agents additionally require a
+bounded `thread/turns/list` result whose sole in-progress turn matches
+`expectedTurnId` immediately before `turn/steer`. The client forwards
+authoritative approval and question requests for
 turns Cove starts through a private in-memory decision route to the existing
 decision UI. State changes, pending requests, timeouts, and disconnects fail
 visibly and are never retried automatically.
@@ -232,6 +238,12 @@ provide equivalent undoable actions. Board column assignment is independent
 from live Codex status. Search, filters, sorts, aliases, tags, and links do not
 change upstream Codex data.
 
+Selecting an agent keeps its owning root card highlighted while the inspector,
+Open action, and composer bind to the exact selected composite identity. Artifact
+labels and a Workspace-global manual rank remain Cove-only; filtering that rank
+to a parent hierarchy allows parent and child artifacts to interleave without
+changing ownership.
+
 ## Persistence model
 
 Cove separates transient task content from durable metadata.
@@ -240,7 +252,7 @@ Cove separates transient task content from durable metadata.
 | --- | --- | --- |
 | `settings.json` | Versioned user settings only | Sessions, prompts, task text |
 | `sessions.sqlite3` | Opaque IDs, source, status, unread/reminder state, bounded timestamps, opaque terminal-location metadata | Prompts, responses, commands, diffs, token values, absolute socket paths |
-| `workspace.json` | User-authored aliases, tags, HTTP(S) links, Grid/Board organization, and saved prompt templates | Unsaved composer text, submitted prompts, output, transcripts, approvals, commands, absolute socket paths |
+| `workspace.json` | User-authored aliases, tags, HTTP(S) links and global artifact order, Grid/Board organization, and saved prompt templates | Favicons, unsaved composer text, submitted prompts, output, transcripts, approvals, commands, absolute socket paths |
 | `session-pins.json` | Composite opaque pinned session identities | Task content |
 | `dismissed-sessions.json` | Composite opaque locally archived session identities | Codex archive state or transcript data |
 | `Themes/` | Validated imported theme JSON | Codex content |

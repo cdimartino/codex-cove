@@ -77,11 +77,20 @@ npm --prefix extension run build
 sh -n scripts/*.sh Tests/*.sh
 ```
 
-The UI test target requires full Xcode 26.6+ and an unlocked console. The Make
-target keeps the Mac awake during the run and refuses to start when it cannot
-prove the console is unlocked. Timing assertions that describe an in-app action
-must start after `XCUIApplication.launch()` returns so cold XCTest and
-Accessibility bootstrap time is not attributed to the product.
+The UI test target requires full Xcode 26.6+ and an unlocked console. Use
+`make ui-test-build` for a safe compile-only check while Codex/ChatGPT is open.
+Run `make ui-test` only after quitting Codex/ChatGPT or on a separate unlocked
+macOS VM/Mac: macOS XCTest Automation Mode can enroll and crash the running
+Codex app during teardown. The Make target enforces both this boundary and the
+unlocked-console requirement. If Codex must remain open on the validated Xcode
+26.6 build `17F113`, the explicit `make ui-test-legacy-ax` fallback patches only
+a temporary `.xctestrun` with Xcode's private `XCTDisableAutomationSession`
+runner argument and deletes it afterward. It fails closed on every other Xcode
+build. The switch disables in-process automation sessions for every app in the
+runner and uses legacy Accessibility; it is not a public or per-app exclusion
+and must remain opt-in. Timing assertions that describe an in-app action must
+start after `XCUIApplication.launch()` returns so cold XCTest and Accessibility
+bootstrap time is not attributed to the product.
 
 `make remote-artifacts` builds both macOS helper binaries and invokes
 `cargo zigbuild --all-targets` for each Linux-musl architecture before copying

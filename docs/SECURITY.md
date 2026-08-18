@@ -52,7 +52,8 @@ plus content the user explicitly saves in the Workspace:
 - imported theme definitions and manifest-owned audio copies;
 - helper configuration, install checksums, and explicitly selected SSH aliases;
   and
-- Workspace aliases, tags, validated HTTP(S)/local-file artifacts, Grid/Board organization,
+- Workspace aliases, tags, validated HTTP(S)/local-file artifacts and their
+  global manual order, Grid/Board organization,
   and named prompt-library templates that the user explicitly saves.
 
 Workspace content is a deliberate durable local exception to the general
@@ -231,11 +232,21 @@ service, or Cove-hosted backend. Public account usage is read through the local
 Codex app-server; Codex itself remains responsible for its own authenticated
 network traffic.
 
-The only Cove-initiated network transport is SSH to aliases explicitly stored
-with `codex-cove remote add`. Relay commands use strict host-key checking,
+The only Cove-initiated network transports are SSH to aliases explicitly stored
+with `codex-cove remote add` and favicon requests for web links the user saved
+in Workspace. Relay commands use strict host-key checking,
 `BatchMode=yes`, a bounded connection timeout, and bounded keepalive probes. No
 password prompt is hidden behind the app, and Cove does not enumerate SSH
 configuration.
+
+Favicon requests use only `https://<saved-host>/favicon.ico`; artifact paths,
+queries, fragments, cookies, credentials, redirects, IP literals, and local or
+single-label hostnames are excluded. Transfers use an ephemeral session, a
+five-second timeout, a 256 KiB cap, bounded ImageIO decoding, and a 128-entry
+memory-only cache. Suggestions and privacy-redacted views do not initiate these
+requests. Displaying non-redacted cards or the artifact inspector can expose the
+user's IP address and request timing to saved-link hosts; Cove uses no favicon
+proxy or hosted service.
 
 Homebrew and a web browser may separately contact GitHub to obtain a tap or
 release. That package-manager download is not runtime network behavior by the

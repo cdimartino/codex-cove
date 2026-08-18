@@ -57,7 +57,7 @@ public struct CoveDesktopThreadHydrationConfiguration: Equatable, Sendable {
         realCodexURL: URL,
         requestTimeout: TimeInterval = defaultRequestTimeout,
         maximumLineBytes: Int = defaultMaximumLineBytes,
-        clientVersion: String = "0.7.1"
+        clientVersion: String = "0.8.0"
     ) {
         self.realCodexURL = realCodexURL
         self.requestTimeout = min(30, max(0.25, requestTimeout))
@@ -68,7 +68,7 @@ public struct CoveDesktopThreadHydrationConfiguration: Equatable, Sendable {
     public static func installed(
         configurationURL: URL = defaultInstalledConfigurationURL(),
         requestTimeout: TimeInterval = defaultRequestTimeout,
-        clientVersion: String = "0.7.1"
+        clientVersion: String = "0.8.0"
     ) throws -> Self {
         struct InstalledHelperConfiguration: Decodable {
             var realCodex: String?
@@ -330,8 +330,34 @@ public enum CoveDesktopThreadSnapshotParser {
         _ data: Data,
         expectedID: String,
         expectedThreadID: String,
-        capturedAt: Date
+        capturedAt: Date,
+        acceptingTrustedThreadSpawn: Bool = false
     ) throws -> CoveSessionSnapshot {
+        let thread = try self.thread(
+            fromResponse: data,
+            expectedID: expectedID,
+            expectedThreadID: expectedThreadID
+        )
+        guard !isHiddenInternalThread(thread) else {
+            throw CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread
+        }
+        guard isConfidentlyDesktopOpenable(thread)
+                || (acceptingTrustedThreadSpawn
+                    && CoveThreadProvenance.isThreadSpawnAgent(thread)) else {
+            throw CoveDesktopThreadHydrationFailure.threadUnavailable
+        }
+        return try snapshot(
+            fromThread: thread,
+            expectedThreadID: expectedThreadID,
+            capturedAt: capturedAt
+        )
+    }
+
+    static func thread(
+        fromResponse data: Data,
+        expectedID: String,
+        expectedThreadID: String
+    ) throws -> [String: CoveJSONValue] {
         let value: CoveJSONValue
         do {
             value = try JSONDecoder().decode(CoveJSONValue.self, from: data)
@@ -351,18 +377,7 @@ public enum CoveDesktopThreadSnapshotParser {
               threadID == expectedThreadID else {
             throw CoveDesktopThreadHydrationFailure.threadUnavailable
         }
-        guard !isApprovalReviewThread(thread) else {
-            throw CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread
-        }
-        guard isConfidentlyDesktopOpenable(thread) else {
-            throw CoveDesktopThreadHydrationFailure.threadUnavailable
-        }
-
-        return try snapshot(
-            fromThread: thread,
-            expectedThreadID: expectedThreadID,
-            capturedAt: capturedAt
-        )
+        return thread
     }
 
     public static func latestOutput(
@@ -489,7 +504,7 @@ public enum CoveDesktopThreadSnapshotParser {
         var hiddenApprovalReviewThreadIDs: [String] = []
         for row in rows {
             guard let thread = row.objectValue else { continue }
-            if isApprovalReviewThread(thread) {
+            if isHiddenInternalThread(thread) {
                 if let id = thread["id"]?.scalarStringValue,
                    CoveDesktopThreadClient.isSafeThreadIdentifier(id),
                    !hiddenApprovalReviewThreadIDs.contains(id) {
@@ -522,7 +537,7 @@ public enum CoveDesktopThreadSnapshotParser {
               threadID == expectedThreadID else {
             throw CoveDesktopThreadHydrationFailure.threadUnavailable
         }
-        guard !isApprovalReviewThread(thread) else {
+        guard !isHiddenInternalThread(thread) else {
             throw CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread
         }
         let status = status(from: thread)
@@ -545,8 +560,9 @@ public enum CoveDesktopThreadSnapshotParser {
             timestamp: timestamp,
             sessionId: threadID,
             source: .codexDesktop,
-            parentSessionId: thread["parentThreadId"]?.scalarStringValue
-                ?? thread["parentSessionId"]?.scalarStringValue,
+            parentSessionId: CoveThreadProvenance.parentID(in: thread),
+            parentProvenanceConflict: CoveThreadProvenance
+                .hasConflictingParentID(in: thread),
             liveness: .loaded,
             activeTurnId: activeTurnID(from: thread),
             controlRoute: .desktop,
@@ -635,17 +651,13 @@ public enum CoveDesktopThreadSnapshotParser {
         }
     }
 
-    private static func isApprovalReviewThread(
+    private static func isHiddenInternalThread(
         _ thread: [String: CoveJSONValue]
     ) -> Bool {
         if thread["model"]?.scalarStringValue == "codex-auto-review" {
             return true
         }
-        guard let source = thread["source"]?.objectValue else { return false }
-        let subagent = source["subAgent"]?.objectValue
-            ?? source["subagent"]?.objectValue
-            ?? source["sub_agent"]?.objectValue
-        return subagent?["other"]?.scalarStringValue == "guardian"
+        return CoveThreadProvenance.isExcludedAgent(thread)
     }
 
     private static func isDesktopDiscoveryCandidate(
@@ -654,9 +666,16 @@ public enum CoveDesktopThreadSnapshotParser {
         isConfidentlyDesktopOpenable(thread)
     }
 
-    private static func isConfidentlyDesktopOpenable(
+    static func isConfidentlyDesktopOpenable(
         _ thread: [String: CoveJSONValue]
     ) -> Bool {
+        let authoritativeSource = thread["source"]?.scalarStringValue?
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        if authoritativeSource == "vscode" || authoritativeSource == "appserver" {
+            return true
+        }
         let candidates = scalarStrings(thread["source"])
             + scalarStrings(thread["sourceKind"])
             + scalarStrings(thread["sourceKinds"])
@@ -1008,12 +1027,26 @@ private enum CoveAppServerThreadQuery {
                         responses: &responses,
                         deadline: deadline
                     )
+                    let thread = try CoveDesktopThreadSnapshotParser.thread(
+                        fromResponse: threadResponse,
+                        expectedID: expectedID,
+                        expectedThreadID: threadID
+                    )
+                    guard try hasTrustedDesktopRoot(
+                        for: thread,
+                        expectedThreadID: threadID,
+                        reader: &reader,
+                        responses: &responses,
+                        input: input.fileDescriptor,
+                        deadline: deadline
+                    ) else { continue }
                     batchSnapshots.append(
                         try CoveDesktopThreadSnapshotParser.parseResponse(
                             threadResponse,
                             expectedID: expectedID,
                             expectedThreadID: threadID,
-                            capturedAt: capturedAt
+                            capturedAt: capturedAt,
+                            acceptingTrustedThreadSpawn: true
                         )
                     )
                 } catch CoveDesktopThreadHydrationFailure
@@ -1081,6 +1114,57 @@ private enum CoveAppServerThreadQuery {
             loadedThreadIDs: operation.loadedThreadIDs(fallback: threadIDs),
             loadedThreadSetIsComplete: loadedThreadSetIsComplete
         )
+    }
+
+    private static func hasTrustedDesktopRoot(
+        for initial: [String: CoveJSONValue],
+        expectedThreadID: String,
+        reader: inout CoveDesktopBoundedLineReader,
+        responses: inout CoveDesktopResponseBuffer,
+        input: Int32,
+        deadline: UInt64
+    ) throws -> Bool {
+        var thread = initial
+        var expected = expectedThreadID
+        var visited = Set<String>()
+        for _ in 0..<32 {
+            guard thread["id"]?.scalarStringValue == expected,
+                  visited.insert(expected).inserted,
+                  !CoveThreadProvenance.hasConflictingParentID(in: thread),
+                  !CoveThreadProvenance.isExcludedAgent(thread)
+            else { return false }
+            if !CoveThreadProvenance.isThreadSpawnAgent(thread) {
+                return CoveDesktopThreadSnapshotParser
+                    .isConfidentlyDesktopOpenable(thread)
+            }
+            guard
+                  let parent = CoveThreadProvenance.parentID(in: thread),
+                  CoveDesktopThreadClient.isSafeThreadIdentifier(parent),
+                  !visited.contains(parent)
+            else { return false }
+            let requestID = "cove-desktop-thread-root-\(UUID().uuidString.lowercased())"
+            try writeJSON(
+                [
+                    "id": requestID,
+                    "method": "thread/read",
+                    "params": ["threadId": parent, "includeTurns": false],
+                ],
+                to: input
+            )
+            let data = try response(
+                withID: requestID,
+                reader: &reader,
+                responses: &responses,
+                deadline: deadline
+            )
+            thread = try CoveDesktopThreadSnapshotParser.thread(
+                fromResponse: data,
+                expectedID: requestID,
+                expectedThreadID: parent
+            )
+            expected = parent
+        }
+        return false
     }
 
     private static func requestTimeout(

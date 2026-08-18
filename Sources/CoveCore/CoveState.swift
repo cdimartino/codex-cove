@@ -317,6 +317,9 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
     public var source: CoveWireSource?
     public var hostId: String?
     public var parentSessionId: String?
+    /// `true` means the event made conflicting parent claims; never inherit a
+    /// previous relationship in that case.
+    public var parentProvenanceConflict: Bool?
     /// Public app-server/broker liveness, kept separate from turn status.
     /// Nil denotes a legacy event that did not advertise liveness.
     public var liveness: CoveSessionLiveness?
@@ -340,6 +343,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         source: CoveWireSource? = nil,
         hostId: String? = nil,
         parentSessionId: String? = nil,
+        parentProvenanceConflict: Bool? = nil,
         liveness: CoveSessionLiveness? = nil,
         activeTurnId: String? = nil,
         controlRoute: CoveThreadControlRoute? = nil,
@@ -358,6 +362,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         self.source = source
         self.hostId = hostId
         self.parentSessionId = parentSessionId
+        self.parentProvenanceConflict = parentProvenanceConflict
         self.liveness = liveness
         self.activeTurnId = activeTurnId
         self.controlRoute = controlRoute
@@ -1088,7 +1093,20 @@ public enum CoveReducer {
                }) {
                 snapshot.latestOutput = latestOutput
                 snapshot.timestamp = envelope.timestamp
-                acceptedStatusSnapshot = accept(snapshot: snapshot, into: &state)
+                if envelope.advertisesLaunchID {
+                    snapshot.launchId = envelope.launchId
+                }
+                if envelope.advertisesParentSessionID {
+                    snapshot.parentSessionId = envelope.parentSessionID()
+                    snapshot.parentProvenanceConflict = envelope
+                        .hasConflictingParentSessionID
+                }
+                acceptedStatusSnapshot = accept(
+                    snapshot: snapshot,
+                    into: &state,
+                    preserveOmittedLaunchID: !envelope.advertisesLaunchID,
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID
+                )
             }
             if var snapshot = decodedSnapshot {
                 if snapshot.unread,
@@ -1107,7 +1125,9 @@ public enum CoveReducer {
                 }
                 acceptedStatusSnapshot = accept(
                     snapshot: snapshot,
-                    into: &state
+                    into: &state,
+                    preserveOmittedLaunchID: !envelope.advertisesLaunchID,
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID
                 )
             } else if let status {
                 let snapshotID = envelope.sessionId == "pending"
@@ -1120,15 +1140,14 @@ public enum CoveReducer {
                 let payload = envelope.payload.objectValue ?? [:]
                 let liveness = payload["liveness"]?.stringValue.flatMap(
                     CoveSessionLiveness.init(rawValue:)
-                ) ?? existing?.liveness
+                )
                 let controlRoute = payload["controlRoute"]?.stringValue.flatMap(
                     CoveThreadControlRoute.init(rawValue:)
-                ) ?? existing?.controlRoute
+                )
                 let activeTurnId = envelope.endsActiveTurn
                     ? nil
                     : envelope.authoritativeStartedTurnID()
                         ?? payload["activeTurnId"]?.scalarStringValue
-                        ?? existing?.activeTurnId
                 let changedSinceAcknowledgement = existing == nil
                     || existing?.status != status.status
                     || (existing?.timestamp ?? .distantPast) < envelope.timestamp
@@ -1148,6 +1167,8 @@ public enum CoveReducer {
                         source: envelope.source,
                         hostId: envelope.hostId,
                         parentSessionId: envelope.parentSessionID(),
+                        parentProvenanceConflict: envelope
+                            .hasConflictingParentSessionID,
                         liveness: liveness,
                         activeTurnId: activeTurnId,
                         controlRoute: controlRoute,
@@ -1157,7 +1178,9 @@ public enum CoveReducer {
                                     && changedSinceAcknowledgement
                             )
                     ),
-                    into: &state
+                    into: &state,
+                    preserveOmittedLaunchID: !envelope.advertisesLaunchID,
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID
                 )
             }
 
@@ -1372,13 +1395,20 @@ public enum CoveReducer {
     @discardableResult
     private static func accept(
         snapshot: CoveSessionSnapshot,
-        into state: inout CoveState
+        into state: inout CoveState,
+        preserveOmittedLaunchID: Bool = true,
+        preserveOmittedParentID: Bool = true
     ) -> Bool {
         if let identity = snapshot.sessionIdentity,
            state.dismissedSessionIDs.contains(identity.id) {
             return false
         }
-        guard upsert(snapshot: snapshot, into: &state) else {
+        guard upsert(
+            snapshot: snapshot,
+            into: &state,
+            preserveOmittedLaunchID: preserveOmittedLaunchID,
+            preserveOmittedParentID: preserveOmittedParentID
+        ) else {
             return false
         }
         refreshActiveSnapshot(in: &state)
@@ -1600,7 +1630,9 @@ public enum CoveReducer {
     @discardableResult
     private static func upsert(
         snapshot: CoveSessionSnapshot,
-        into state: inout CoveState
+        into state: inout CoveState,
+        preserveOmittedLaunchID: Bool,
+        preserveOmittedParentID: Bool
     ) -> Bool {
         // Snapshot IDs are unique only within a composite source/host origin.
         // The complete identity is now carried through every lookup, so a
@@ -1620,6 +1652,17 @@ public enum CoveReducer {
             }
         }
         var normalized = snapshot
+        if let existing,
+           normalized.sessionIdentity == existing.sessionIdentity {
+            if normalized.launchId == nil, preserveOmittedLaunchID {
+                normalized.launchId = existing.launchId
+            }
+            if normalized.parentSessionId == nil,
+               preserveOmittedParentID,
+               normalized.parentProvenanceConflict != true {
+                normalized.parentSessionId = existing.parentSessionId
+            }
+        }
         if normalized.latestOutput == nil {
             normalized.latestOutput = existing?.latestOutput
         }

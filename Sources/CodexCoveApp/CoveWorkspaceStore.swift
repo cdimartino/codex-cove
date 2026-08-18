@@ -17,11 +17,13 @@ final class CoveWorkspaceStore: ObservableObject {
     @Published var filter = CoveWorkspaceFilter()
     @Published var composerText = ""
     @Published private(set) var isSending = false
+    @Published private(set) var refreshingControlIdentity: CoveSessionIdentity?
     @Published private(set) var message: String?
     @Published private(set) var artifactSuggestions: [CoveWorkspaceArtifactSuggestion] = []
 
     var onControl: ControlHandler?
     var onReconcileRequested: (() -> Void)?
+    var onTargetRefreshRequested: ((CoveSessionIdentity) -> Void)?
 
     private let storage: any CoveWorkspaceStorage
     private let writesEnabled: Bool
@@ -92,6 +94,23 @@ final class CoveWorkspaceStore: ObservableObject {
         selectedIdentity = identity
         self.attentionIdentity = attentionIdentity
         clearArtifactSuggestions()
+        refreshSelectedControlTarget()
+    }
+
+    func refreshSelectedControlTarget() {
+        guard let identity = selectedIdentity,
+              let onTargetRefreshRequested else {
+            refreshingControlIdentity = nil
+            return
+        }
+        refreshingControlIdentity = identity
+        onTargetRefreshRequested(identity)
+    }
+
+    func finishControlRefresh(for identity: CoveSessionIdentity) {
+        if refreshingControlIdentity == identity {
+            refreshingControlIdentity = nil
+        }
     }
 
     func owningTaskIdentity(
@@ -158,11 +177,7 @@ final class CoveWorkspaceStore: ObservableObject {
             }
             index += 1
         }
-        return identities.flatMap { identity in
-            (state.card(for: identity)?.links ?? []).map {
-                ArtifactReference(ownerIdentity: identity, link: $0)
-            }
-        }
+        return allArtifacts.filter { identities.contains($0.ownerIdentity) }
     }
 
     func addArtifact(
@@ -191,7 +206,11 @@ final class CoveWorkspaceStore: ObservableObject {
             message = "That artifact is already attached to this task."
             return
         }
-        links.append(.init(label: label.trimmingCharacters(in: .whitespacesAndNewlines), url: canonical))
+        links.append(.init(
+            label: label.trimmingCharacters(in: .whitespacesAndNewlines),
+            url: canonical,
+            manualOrder: state.artifactOrderIDs().count
+        ))
         setLinks(links, for: rootIdentity)
     }
 
@@ -200,6 +219,74 @@ final class CoveWorkspaceStore: ObservableObject {
             $0.id != artifact.link.id
         }
         setLinks(links, for: artifact.ownerIdentity)
+    }
+
+    func renameArtifact(_ artifact: ArtifactReference, label: String) {
+        let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              normalized.utf8.count <= CoveWorkspaceLimits.linkLabelBytes
+        else {
+            message = "An artifact label must be nonempty and at most \(CoveWorkspaceLimits.linkLabelBytes) bytes."
+            return
+        }
+        mutate { workspace in
+            guard let cardIndex = workspace.cards.firstIndex(where: {
+                $0.identity == artifact.ownerIdentity
+            }), let linkIndex = workspace.cards[cardIndex].links.firstIndex(where: {
+                $0.id == artifact.link.id
+            }) else { return }
+            workspace.cards[cardIndex].links[linkIndex].label = normalized
+        }
+    }
+
+    func moveArtifact(_ artifact: ArtifactReference, relativeOffset: Int) {
+        let ordered = allArtifacts
+        guard let index = ordered.firstIndex(where: { $0.id == artifact.id }) else {
+            return
+        }
+        let destination = min(max(0, index + relativeOffset), ordered.count - 1)
+        guard destination != index else { return }
+        var reordered = ordered
+        reordered.insert(reordered.remove(at: index), at: destination)
+        restoreArtifactOrder(reordered)
+    }
+
+    func moveArtifact(
+        _ artifact: ArtifactReference,
+        before destination: ArtifactReference
+    ) {
+        guard artifact.id != destination.id else { return }
+        var reordered = allArtifacts
+        guard let sourceIndex = reordered.firstIndex(where: { $0.id == artifact.id }),
+              let destinationIndex = reordered.firstIndex(where: { $0.id == destination.id })
+        else { return }
+        let moved = reordered.remove(at: sourceIndex)
+        reordered.insert(moved, at: sourceIndex < destinationIndex
+            ? destinationIndex - 1 : destinationIndex)
+        restoreArtifactOrder(reordered)
+    }
+
+    func moveArtifact(
+        _ artifact: ArtifactReference,
+        after destination: ArtifactReference
+    ) {
+        guard artifact.id != destination.id else { return }
+        var reordered = allArtifacts
+        guard let sourceIndex = reordered.firstIndex(where: { $0.id == artifact.id })
+        else { return }
+        let moved = reordered.remove(at: sourceIndex)
+        guard let destinationIndex = reordered.firstIndex(where: {
+            $0.id == destination.id
+        }) else { return }
+        reordered.insert(moved, at: destinationIndex + 1)
+        restoreArtifactOrder(reordered)
+    }
+
+    func restoreArtifactOrder(_ order: [ArtifactReference]) {
+        guard order.count == allArtifacts.count,
+              Set(order.map(\.id)) == Set(allArtifacts.map(\.id))
+        else { return }
+        mutate { $0.restoreArtifactOrder(order.map(\.id)) }
     }
 
     func openArtifact(_ artifact: ArtifactReference) {
@@ -221,6 +308,16 @@ final class CoveWorkspaceStore: ObservableObject {
             message = "macOS could not open this artifact."
             return
         }
+    }
+
+    var artifactOrder: [ArtifactReference] { allArtifacts }
+
+    private var allArtifacts: [ArtifactReference] {
+        let references = state.cards.flatMap { card in
+            card.links.map { ArtifactReference(ownerIdentity: card.identity, link: $0) }
+        }
+        let byID = Dictionary(uniqueKeysWithValues: references.map { ($0.id, $0) })
+        return state.artifactOrderIDs().compactMap { byID[$0] }
     }
 
     func refreshArtifactSuggestions(
@@ -416,6 +513,7 @@ final class CoveWorkspaceStore: ObservableObject {
     ) -> Bool {
         let target = promptTarget(for: snapshot)
         return !isSending
+            && refreshingControlIdentity != target.sessionIdentity
             && target.canAcceptThreadControl
             && target.sessionIdentity == selectedIdentity
             && pendingRequests.allSatisfy({
@@ -479,6 +577,7 @@ final class CoveWorkspaceStore: ObservableObject {
         }
         let snapshot = promptTarget(for: current)
         guard !isSending,
+              refreshingControlIdentity != prepared.request.target,
               selectedIdentity == prepared.request.target,
               composerText == prepared.request.input,
               snapshot.controlRoute == prepared.route,

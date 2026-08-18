@@ -36,7 +36,7 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.7.1`. Check
+> **Release status:** the source tree is currently version `0.8.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
@@ -205,6 +205,7 @@ make bootstrap  # read-only toolchain and dependency checks
 make build      # Swift app, Rust helper, TypeScript extension
 make test       # Swift foundations, Rust tests, extension tests
 make ui-test    # XCUITest; full Xcode and an unlocked console required
+make ui-test-legacy-ax # private Xcode 26.6 (17F113) fallback with Codex open
 make run        # uninstalled development app only
 ```
 
@@ -269,9 +270,10 @@ opaque task and launch identifiers, status, unread and reminder state,
 timestamps, source, and opaque terminal-location identifiers. Local runtime
 directories and files are current-user only. Event diagnostics redact sensitive
 payload fields; Doctor may show the local paths it inspected, so review its
-output before sharing. Cove contacts no service of its own; remote transport is
-opened only to SSH aliases you explicitly add, while Codex continues to use its
-own network services.
+output before sharing. Cove has no telemetry or hosted service. Runtime network
+access is limited to SSH aliases you explicitly add and bounded, credential-free
+HTTPS favicon requests to hosts from saved Workspace links; Codex continues to
+use its own network services.
 
 ## License
 
