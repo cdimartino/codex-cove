@@ -183,10 +183,14 @@ and assistant output remains in memory only.
 
 Workspace turns use a persistent bounded public app-server client. An idle
 Desktop task maps to `turn/start`; an active task maps to `turn/steer` with its
-exact observed turn ID. The client retains ownership only for turns Cove
-starts, forwarding their authoritative approval and question requests through
-a private in-memory decision route to the existing decision UI. State changes,
-timeouts, and disconnects fail visibly and are never retried automatically.
+exact observed turn ID. For an idle or completed hook-observed local CLI task,
+the same client validates its exact public CLI source and state with a no-turn
+read, installs an origin-owned route, and resumes it with turns excluded before
+`turn/start`. Active local steering requires the exact turn owned by that
+route. The client forwards authoritative approval and question requests for
+turns Cove starts through a private in-memory decision route to the existing
+decision UI. State changes, pending requests, timeouts, and disconnects fail
+visibly and are never retried automatically.
 
 When Codex Desktop is already the primary durable client, Cove does not start,
 restart, or manage its daemon.

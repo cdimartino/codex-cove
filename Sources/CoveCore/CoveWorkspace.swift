@@ -35,6 +35,7 @@ public enum CoveSessionLiveness: String, Codable, Sendable {
 
 public enum CoveThreadControlRoute: String, Codable, Sendable {
     case desktop
+    case localAppServer
     case routedLocal
     case routedRemote
 }

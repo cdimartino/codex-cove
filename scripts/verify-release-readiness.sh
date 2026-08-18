@@ -219,7 +219,7 @@ require_value remote_duplicate_count 0
 require_value wrong_scope_send_count 0
 require_value dependency_npm_vulnerability_count 0
 require_value ui_started yes
-require_value ui_pass_count 33
+require_value ui_pass_count 34
 require_value ui_fail_count 0
 require_value ui_skip_count 0
 require_value p0_open_count 0
@@ -248,7 +248,7 @@ do
 done
 
 require_value defect_register_reviewed_at not-required
-require_value source_change_reason workspace_first_artifacts
+require_value source_change_reason local_app_server_prompting
 require_value notes release_candidate_complete
 
 if [ "${CODEX_COVE_REQUIRE_RECORDED_STRICT_VERIFY:-0}" = "1" ]; then

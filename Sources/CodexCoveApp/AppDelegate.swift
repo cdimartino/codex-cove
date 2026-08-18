@@ -777,7 +777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // Codex, login-item, notification, sound, broker, relay, or
             // metadata integration. Their state and decision channel exist
             // only inside the per-test temporary directory/process.
-            workspaceStore.onControl = { request in
+            workspaceStore.onControl = { request, _ in
                 .accepted(
                     turnId: request.operation == .start
                         ? "fixture-started-turn" : request.expectedTurnId
@@ -1076,6 +1076,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
               var payload = incoming.payload.objectValue
         else { return incoming }
 
+        if payload["controlRoute"]?.stringValue
+            == CoveThreadControlRoute.localAppServer.rawValue {
+            return incoming
+        }
+
         if payload["liveness"]?.stringValue == CoveSessionLiveness.closed.rawValue {
             routedThreadControlRoutes.removeValue(forKey: identity)
             return incoming
@@ -1363,7 +1368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.7.0"
+                as? String ?? "0.7.1"
         ) else {
             return
         }
@@ -1380,7 +1385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ) {
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.7.0"
+                as? String ?? "0.7.1"
         ) else {
             return
         }
@@ -1396,10 +1401,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         controlClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in self?.ingest(event) }
         }
-        workspaceStore.onControl = { [weak self] request in
+        workspaceStore.onControl = { [weak self] request, route in
             guard let self else { return .rejected(.unavailable) }
             return await self.sendThreadControl(
                 request,
+                route: route,
                 desktopClient: controlClient
             )
         }
@@ -1456,28 +1462,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     private func sendThreadControl(
         _ request: CoveThreadControlRequest,
+        route: CoveThreadControlRoute,
         desktopClient: any CoveThreadControlling
     ) async -> CoveThreadControlResult {
-        switch request.target.source {
-        case .codexDesktop:
+        switch route {
+        case .desktop:
+            guard request.target.source == .codexDesktop else {
+                return .rejected(.wrongOrigin)
+            }
             return await desktopClient.send(request)
-        case .localCli:
-            guard let route = routedThreadControlRoutes[request.target],
-                  route.route == .routedLocal
+        case .localAppServer:
+            guard request.target.source == .localCli else {
+                return .rejected(.wrongOrigin)
+            }
+            return await desktopClient.send(request)
+        case .routedLocal:
+            guard request.target.source == .localCli,
+                  let liveRoute = routedThreadControlRoutes[request.target],
+                  liveRoute.route == .routedLocal
             else { return .rejected(.staleRoute) }
             return await CoveThreadControlSocketClient().send(
                 request,
-                launchId: route.launchId,
-                to: route.socketPath
+                launchId: liveRoute.launchId,
+                to: liveRoute.socketPath
             )
-        case .remoteCli:
-            guard let route = routedThreadControlRoutes[request.target],
-                  route.route == .routedRemote
+        case .routedRemote:
+            guard request.target.source == .remoteCli,
+                  let liveRoute = routedThreadControlRoutes[request.target],
+                  liveRoute.route == .routedRemote
             else { return .rejected(.staleRoute) }
             return await remoteRelayManager.sendThreadControl(
                 request,
-                launchId: route.launchId,
-                routePath: route.socketPath
+                launchId: liveRoute.launchId,
+                routePath: liveRoute.socketPath
             )
         }
     }

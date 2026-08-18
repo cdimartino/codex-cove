@@ -521,6 +521,42 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testWorkspaceStartsCompletedHookOnlyLocalTask() {
+        let app = launchFixture("mixed-20")
+        XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let card = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Fixture task 7")
+        ).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 2))
+        card.click()
+
+        let composer = element("cove.workspace.composer", in: app)
+        let inspectorScroll = element("cove.workspace.inspector", in: app)
+            .scrollViews.firstMatch
+        for _ in 0..<8 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(composer.isHittable)
+        XCTAssertTrue(
+            text(
+                "Cove will verify and resume this local task with Codex before starting the turn.",
+                in: app
+            ).waitForExistence(timeout: 2)
+        )
+        composer.click()
+        composer.typeText("Continue the completed local task.")
+        let send = element("cove.workspace.send", in: app)
+        XCTAssertTrue(send.isEnabled)
+        send.click()
+        XCTAssertTrue(text("Send this prompt?", in: app).waitForExistence(timeout: 2))
+        element("cove.workspace.confirm-send", in: app).click()
+        XCTAssertTrue(text("Turn started.", in: app).waitForExistence(timeout: 2))
+    }
+
+    @MainActor
     func testWorkspaceGridBoardInspectorAndLibrary() {
         let app = launchFixture("mixed-20")
         XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))

@@ -52,6 +52,10 @@ release-workflow-test:
 test: swift-test socket-broker-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test release-notes-test release-workflow-test
 
 ui-test:
+	@if [ -n "$$(/usr/bin/lsappinfo find bundleID=com.openai.codex 2>/dev/null)" ]; then \
+		echo "Quit Codex/ChatGPT, then run make ui-test from Terminal; macOS XCTest can crash the running app during automation teardown." >&2; \
+		exit 2; \
+	fi
 	@locked=$$(ioreg -n Root -d1 -a 2>/dev/null | plutil -extract IOConsoleLocked raw -o - - 2>/dev/null) || { \
 			echo "Unable to verify that the macOS console is unlocked; UI tests were not started." >&2; \
 			exit 2; \

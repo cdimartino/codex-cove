@@ -1061,27 +1061,30 @@ private struct CoveWorkspaceInspector: View {
                         }
                         .help("Copy a saved template into the editable composer.")
                         Spacer()
-                        Button(item.snapshot.activeTurnId == nil ? "Start Turn" : "Steer Active Turn") {
+                        Button(promptTarget.activeTurnId == nil ? "Start Turn" : "Steer Active Turn") {
                             preparedSend = workspace.prepareSend(
-                                to: item.snapshot,
+                                to: promptTarget,
                                 pendingRequests: store.state.pendingDirectRequests
                             )
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(
                             !workspace.canPrepareSend(
-                                to: item.snapshot,
+                                to: promptTarget,
                                 pendingRequests: store.state.pendingDirectRequests
                             )
                         )
                         .help("Preview a one-time start or exact-turn steer. Delivery is never retried automatically.")
                         .accessibilityIdentifier("cove.workspace.send")
                     }
-                    if item.snapshot.controlRoute == nil {
+                    if promptTarget.controlRoute == nil {
                         Text("Prompting is unavailable for this route. Open the exact task in Codex.")
                             .font(.caption).foregroundStyle(.secondary)
-                    } else if !item.snapshot.canAcceptThreadControl {
+                    } else if !promptTarget.canAcceptThreadControl {
                         Text("Cove does not have the exact active turn ID. Open the task in Codex to continue.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if promptTarget.controlRoute == .localAppServer {
+                        Text("Cove will verify and resume this local task with Codex before starting the turn.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -1120,6 +1123,10 @@ private struct CoveWorkspaceInspector: View {
             ($0.sessionIdentity == workspace.attentionIdentity ? 0 : 1)
                 < ($1.sessionIdentity == workspace.attentionIdentity ? 0 : 1)
         }
+    }
+
+    private var promptTarget: CoveSessionSnapshot {
+        workspace.promptTarget(for: item.snapshot)
     }
 
     private func addLink() {
