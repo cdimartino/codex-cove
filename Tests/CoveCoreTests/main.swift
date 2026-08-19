@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import CoveCore
+import SQLite3
 
 @main
 struct CoveCoreSmokeTests {
@@ -53,7 +54,7 @@ struct CoveCoreSmokeTests {
         try run("snapshot priority", testReducerSnapshotPriority)
         run("latest assistant output projection", testLatestAssistantOutputProjection)
         try run(
-            "snapshot origin collision fails closed",
+            "snapshot origin collision remains isolated",
             testSnapshotOriginCollisionFailsClosed
         )
         try run(
@@ -79,6 +80,11 @@ struct CoveCoreSmokeTests {
         try run("transient-state persistence sanitization", testPersistenceSanitizesTransientState)
         try run("legacy settings migration", testLegacySettingsMigration)
         try run("SQLite metadata persistence", testSQLiteMetadataPersistence)
+        try run("composite metadata identity and migration", testCompositeMetadataIdentityAndMigration)
+        try run("workspace persistence bounds and permissions", testWorkspacePersistence)
+        try run("workspace v1/v2 migration and artifact policy", testWorkspaceV2Artifacts)
+        try run("workspace hierarchy search filter and membership", testWorkspaceProjection)
+        try run("loaded-thread page and control validation", testLoadedThreadAndControlContracts)
         try run(
             "pending session attribution preserves launch metadata",
             testPendingSessionAttributionPreservesLaunchMetadata
@@ -87,6 +93,9 @@ struct CoveCoreSmokeTests {
         try run("remote decision acknowledgement protocol", testRemoteDecisionProtocol)
         try run("persistent remote SSH safety", testPersistentRemoteSSHSafety)
         try run("fixture decoding", testFixtureDecoding)
+        try await run("Desktop owned turn decision bridge", testDesktopOwnedTurnDecisionBridge)
+        try await run("local app-server turn decision bridge", testLocalAppServerTurnDecisionBridge)
+        try await run("thread control socket delivery", testThreadControlSocketDelivery)
         try await run("decision socket delivery", testDecisionSocketDelivery)
         try await run("decision socket bounds and privacy", testDecisionSocketBoundsAndPrivacy)
         print("CoveCore smoke tests passed")
@@ -545,7 +554,8 @@ struct CoveCoreSmokeTests {
                     priority: 90,
                     title: "High",
                     timestamp: now,
-                    sessionId: "high"
+                    sessionId: "high",
+                    source: .localCli
                 )
             )
         )
@@ -558,12 +568,16 @@ struct CoveCoreSmokeTests {
                     priority: 5,
                     title: "Pinned",
                     timestamp: now.addingTimeInterval(-1),
-                    sessionId: "pinned"
+                    sessionId: "pinned",
+                    source: .localCli
                 )
             )
         )
         precondition(!state.session.isExpanded)
-        CoveReducer.reduce(&state, .togglePinned("pinned"))
+        CoveReducer.reduce(&state, .togglePinned(
+            state.session.snapshots.first { $0.sessionId == "pinned" }!
+                .sessionIdentity!
+        ))
         precondition(state.session.snapshots.first?.sessionId == "pinned")
         precondition(state.session.activeSnapshot?.sessionId == "high")
         precondition(state.session.activeStatus == .failed)
@@ -944,6 +958,32 @@ struct CoveCoreSmokeTests {
                 ]),
             ])
         )
+        let structuredInternalEvents = [
+            "review", "compact", "guardian", "custom",
+        ].map { tag in
+            CoveWireEnvelope(
+                eventId: "structured-\(tag)-start",
+                kind: .appServer,
+                timestamp: timestamp,
+                source: .codexDesktop,
+                sessionId: "structured-\(tag)-thread",
+                payload: .object([
+                    "message": .object([
+                        "method": .string("thread/started"),
+                        "params": .object([
+                            "thread": .object([
+                                "id": .string("structured-\(tag)-thread"),
+                                "source": .object([
+                                    "subAgent": .object([
+                                        tag: .object([:]),
+                                    ]),
+                                ]),
+                            ]),
+                        ]),
+                    ]),
+                ])
+            )
+        }
         let autoRoutedApproval = CoveWireEnvelope(
             eventId: "auto-routed-parent-approval",
             kind: .approvalRequested,
@@ -1028,7 +1068,7 @@ struct CoveCoreSmokeTests {
                 method: "item/autoApprovalReview/completed"
             ),
             guardianAppServerEvent,
-        ]
+        ] + structuredInternalEvents
 
         var state = CoveState()
         var visibilityPolicy = CoveEventVisibilityPolicy()
@@ -1787,7 +1827,21 @@ struct CoveCoreSmokeTests {
             minimalIslandMode: true
         )
         precondition(minimal.width == 126)
-        precondition(minimal.height == 24)
+        precondition(minimal.height == 32)
+        let tallMenuBarMinimal = CoveOverlayGeometry.size(
+            expanded: false,
+            privacyMode: .auto,
+            minimalIslandMode: true,
+            topContentInset: 38
+        )
+        precondition(tallMenuBarMinimal.height == 38)
+        let minimalFallback = CoveOverlayGeometry.size(
+            expanded: false,
+            privacyMode: .auto,
+            minimalIslandMode: true,
+            topContentInset: 0
+        )
+        precondition(minimalFallback.height == 24)
         let expanded = CoveOverlayGeometry.size(
             expanded: true,
             privacyMode: .auto,
@@ -1959,6 +2013,9 @@ struct CoveCoreSmokeTests {
         CoveReducer.reduce(&state, .setShowTokenMetrics(true))
         CoveReducer.reduce(&state, .setCollapsedWidth(210))
         CoveReducer.reduce(&state, .setTextScale(1.5))
+        CoveReducer.reduce(&state, .setWorkspaceAppearance(.dark))
+        CoveReducer.reduce(&state, .setShowWorkspaceCardResidents(false))
+        CoveReducer.reduce(&state, .setAnimateWorkspaceCardResidents(false))
         CoveReducer.reduce(&state, .setSquareTopCorners(false))
         CoveReducer.reduce(
             &state,
@@ -1977,6 +2034,9 @@ struct CoveCoreSmokeTests {
         precondition(state.settings.showTokenMetrics)
         precondition(state.settings.collapsedWidth == 210)
         precondition(state.settings.textScale == 1.5)
+        precondition(state.settings.workspaceAppearance == .dark)
+        precondition(!state.settings.showWorkspaceCardResidents)
+        precondition(!state.settings.animateWorkspaceCardResidents)
         precondition(!state.settings.squareTopCorners)
         precondition(
             state.settings.queueSectionOrder
@@ -2016,6 +2076,18 @@ struct CoveCoreSmokeTests {
         precondition(!settings.showProfileTokenUsage)
         precondition(!settings.showTokenMetrics)
         precondition(settings.residentSet == .dungeonAndDragons)
+        precondition(settings.workspaceAppearance == .system)
+        precondition(settings.showWorkspaceCardResidents)
+        precondition(settings.animateWorkspaceCardResidents)
+
+        let encodedSettings = try JSONEncoder().encode(state.settings)
+        let decodedSettings = try JSONDecoder().decode(
+            CoveSettings.self,
+            from: encodedSettings
+        )
+        precondition(decodedSettings.workspaceAppearance == .dark)
+        precondition(!decodedSettings.showWorkspaceCardResidents)
+        precondition(!decodedSettings.animateWorkspaceCardResidents)
     }
 
     static func testDesktopThreadHydrationParsing() throws {
@@ -2060,6 +2132,130 @@ struct CoveCoreSmokeTests {
         precondition(snapshot.timestamp == Date(timeIntervalSince1970: 40))
         precondition(snapshot.unread)
 
+        let matchingParent: [String: CoveJSONValue] = [
+            "id": .string("child"),
+            "parentThreadId": .string("parent"),
+            "source": .object([
+                "subAgent": .object([
+                    "thread_spawn": .object([
+                        "depth": .number(1),
+                        "parent_thread_id": .string("parent"),
+                    ]),
+                ]),
+            ]),
+        ]
+        precondition(CoveThreadProvenance.parentID(in: matchingParent) == "parent")
+        precondition(!CoveThreadProvenance.hasConflictingParentID(in: matchingParent))
+        var conflictingParent = matchingParent
+        conflictingParent["parentThreadId"] = .string("other-parent")
+        precondition(CoveThreadProvenance.parentID(in: conflictingParent) == nil)
+        precondition(CoveThreadProvenance.hasConflictingParentID(in: conflictingParent))
+
+        for tag in ["review", "compact", "guardian", "custom"] {
+            let thread: [String: CoveJSONValue] = [
+                "id": .string("structured-\(tag)"),
+                "sourceKind": .string("codexDesktop"),
+                "source": .object([
+                    "subAgent": .object([tag: .object([:])]),
+                ]),
+                "status": .object(["type": .string("active")]),
+            ]
+            precondition(CoveThreadProvenance.isExcludedAgent(thread))
+            precondition(
+                CoveThreadProvenance.isExcludedAgent([
+                    "thread": .object(thread),
+                ])
+            )
+            let response = try JSONEncoder().encode(
+                CoveJSONValue.object([
+                    "id": .string("read-structured-\(tag)"),
+                    "result": .object(["thread": .object(thread)]),
+                ])
+            )
+            do {
+                _ = try CoveDesktopThreadSnapshotParser.parseResponse(
+                    response,
+                    expectedID: "read-structured-\(tag)",
+                    expectedThreadID: "structured-\(tag)",
+                    capturedAt: Date(timeIntervalSince1970: 42)
+                )
+                fatalError("Structured \(tag) agents must not be openable")
+            } catch let failure as CoveDesktopThreadHydrationFailure {
+                precondition(failure == .hiddenApprovalReviewThread)
+            }
+        }
+
+        let started = CoveWireEnvelope(
+            eventId: "thread-started-child",
+            kind: .appServer,
+            timestamp: Date(timeIntervalSince1970: 43),
+            source: .codexDesktop,
+            sessionId: "child",
+            launchId: "desktop-launch",
+            payload: .object([
+                "message": .object([
+                    "method": .string("thread/started"),
+                    "params": .object(["thread": .object(matchingParent)]),
+                ]),
+            ])
+        )
+        precondition(started.sessionSnapshot()?.sessionId == "child")
+        precondition(started.sessionSnapshot()?.parentSessionId == "parent")
+        var reducerState = CoveState()
+        CoveReducer.reduce(&reducerState, .receivedEnvelope(started))
+        var routedSnapshot = started.sessionSnapshot()!
+        routedSnapshot.timestamp = Date(timeIntervalSince1970: 43.5)
+        routedSnapshot.liveness = .loaded
+        routedSnapshot.activeTurnId = "active-child-turn"
+        routedSnapshot.controlRoute = .desktop
+        CoveReducer.reduce(&reducerState, .receivedSnapshot(routedSnapshot))
+        let sparseStatus = CoveWireEnvelope(
+            eventId: "thread-status-child",
+            kind: .appServer,
+            timestamp: Date(timeIntervalSince1970: 44),
+            source: .codexDesktop,
+            sessionId: "child",
+            payload: .object([
+                "message": .object([
+                    "method": .string("thread/status/changed"),
+                    "params": .object([
+                        "threadId": .string("child"),
+                        "status": .object(["type": .string("active")]),
+                    ]),
+                ]),
+            ])
+        )
+        CoveReducer.reduce(&reducerState, .receivedEnvelope(sparseStatus))
+        precondition(reducerState.session.snapshots.first?.launchId == "desktop-launch")
+        precondition(reducerState.session.snapshots.first?.parentSessionId == "parent")
+        precondition(reducerState.session.snapshots.first?.liveness == nil)
+        precondition(reducerState.session.snapshots.first?.activeTurnId == nil)
+        precondition(reducerState.session.snapshots.first?.controlRoute == nil)
+
+        guard let decodedSparseStatus = CoveEventDecoder.decodeLine(
+            #"{"schemaVersion":1,"eventId":"thread-status-decoded-sparse","kind":"appServer","timestamp":"1970-01-01T00:00:44Z","source":"codexDesktop","sessionId":"child","payload":{"message":{"method":"thread/status/changed","params":{"threadId":"child","status":{"type":"active"}}}}}"#
+        ) else { fatalError("Expected sparse envelope decoding") }
+        precondition(!decodedSparseStatus.advertisesLaunchID)
+        precondition(!decodedSparseStatus.advertisesParentSessionID)
+        CoveReducer.reduce(&reducerState, .receivedEnvelope(decodedSparseStatus))
+        precondition(reducerState.session.snapshots.first?.launchId == "desktop-launch")
+        precondition(reducerState.session.snapshots.first?.parentSessionId == "parent")
+
+        guard let explicitClear = CoveEventDecoder.decodeLine(
+            #"{"schemaVersion":1,"eventId":"thread-status-clear","kind":"appServer","timestamp":"1970-01-01T00:00:45Z","source":"codexDesktop","sessionId":"child","launchId":null,"payload":{"message":{"method":"thread/status/changed","params":{"threadId":"child","parentThreadId":null,"status":{"type":"active"}}}}}"#
+        ) else { fatalError("Expected explicit-null envelope decoding") }
+        precondition(explicitClear.advertisesLaunchID)
+        precondition(explicitClear.advertisesParentSessionID)
+        CoveReducer.reduce(&reducerState, .receivedEnvelope(explicitClear))
+        precondition(reducerState.session.snapshots.first?.launchId == nil)
+        precondition(reducerState.session.snapshots.first?.parentSessionId == nil)
+        let encodedClear = try JSONEncoder().encode(explicitClear)
+        let encodedObject = try JSONSerialization.jsonObject(
+            with: encodedClear
+        ) as? [String: Any]
+        precondition(encodedObject?.keys.contains("launchId") == true)
+        precondition(encodedObject?["launchId"] is NSNull)
+
         let turnsResponse = Data(
             """
             {
@@ -2068,12 +2264,14 @@ struct CoveCoreSmokeTests {
                 "data": [
                   {
                     "id": "newest-turn",
+                    "status": "inProgress",
                     "items": [
                       {"type": "userMessage", "content": [{"type": "text", "text": "Next"}]}
                     ]
                   },
                   {
                     "id": "previous-turn",
+                    "status": "completed",
                     "items": [
                       {"type": "userMessage", "content": [{"type": "text", "text": "Request"}]},
                       {"type": "agentMessage", "text": "Latest assistant output", "phase": "finalAnswer"}
@@ -2089,6 +2287,12 @@ struct CoveCoreSmokeTests {
             expectedID: "cove-desktop-thread-turns-thread-ABC_123"
         )
         precondition(latestOutput == "Latest assistant output")
+        let turnSummary = try CoveDesktopThreadSnapshotParser.turnSummary(
+            fromThreadTurnsListResponse: turnsResponse,
+            expectedID: "cove-desktop-thread-turns-thread-ABC_123"
+        )
+        precondition(turnSummary.activeTurnID == "newest-turn")
+        precondition(turnSummary.latestOutput == "Latest assistant output")
 
         let guardianResponse = Data(
             """
@@ -2176,14 +2380,17 @@ struct CoveCoreSmokeTests {
             }
             """.utf8
         )
-        let customOther = try CoveDesktopThreadSnapshotParser.parseResponse(
-            customOtherResponse,
-            expectedID: "cove-desktop-thread-read-custom",
-            expectedThreadID: "custom-subagent",
-            capturedAt: Date(timeIntervalSince1970: 42)
-        )
-        precondition(customOther.snapshotId == "custom-subagent")
-        precondition(customOther.status == .working)
+        do {
+            _ = try CoveDesktopThreadSnapshotParser.parseResponse(
+                customOtherResponse,
+                expectedID: "cove-desktop-thread-read-custom",
+                expectedThreadID: "custom-subagent",
+                capturedAt: Date(timeIntervalSince1970: 42)
+            )
+            fatalError("Custom subagent sources must remain hidden")
+        } catch let failure as CoveDesktopThreadHydrationFailure {
+            precondition(failure == .hiddenApprovalReviewThread)
+        }
 
         let listResponse = Data(
             """
@@ -2335,6 +2542,17 @@ struct CoveCoreSmokeTests {
             capturedAt: Date(timeIntervalSince1970: 50)
         )
         precondition(desktop.source == .codexDesktop)
+        let scalarDesktop = try CoveDesktopThreadSnapshotParser.parseResponse(
+            response(
+                id: "scalar-vscode",
+                sourceFragment: #""source":"vscode","#,
+                statusFragment: #""status":{"type":"active"}"#
+            ),
+            expectedID: "read-scalar-vscode",
+            expectedThreadID: "scalar-vscode",
+            capturedAt: Date(timeIntervalSince1970: 50)
+        )
+        precondition(scalarDesktop.source == .codexDesktop)
 
         let rejected: [(String, String, String)] = [
             (
@@ -2428,14 +2646,14 @@ struct CoveCoreSmokeTests {
             source: .localCli
         )
         precondition(
-            !CoveDesktopThreadSnapshotParser.canApplyDesktopSnapshot(
+            CoveDesktopThreadSnapshotParser.canApplyDesktopSnapshot(
                 hydration,
                 excluding: [],
                 currentSnapshots: [restoredLocal]
             )
         )
         precondition(
-            !CoveDesktopThreadSnapshotParser.canApplyDesktopSnapshot(
+            CoveDesktopThreadSnapshotParser.canApplyDesktopSnapshot(
                 hydration,
                 excluding: ["shared-session"],
                 currentSnapshots: []
@@ -2472,8 +2690,8 @@ struct CoveCoreSmokeTests {
                   ;;
                 *'"method":"initialized"'*)
                   ;;
-                *'"id":"cove-desktop-thread-list"'*)
-                  printf '%s\n' '{"id":"cove-desktop-thread-list","result":{"data":[{"id":"vscode-not-loaded","name":"Desktop from direct stdio","sourceKinds":["vscode"],"statusKinds":["notLoaded"]}]}}'
+                *'"id":"cove-desktop-thread-loaded-0"'*)
+                  printf '%s\n' '{"id":"cove-desktop-thread-loaded-0","result":{"data":["vscode-not-loaded"]}}'
                   ;;
                 *'"id":"cove-desktop-thread-read-vscode-not-loaded"'*)
                   case "$request" in
@@ -2503,8 +2721,7 @@ struct CoveCoreSmokeTests {
             )
         )
         let startedAt = Date()
-        let result = await client.discoverRecentDesktopThreads(
-            limit: 3,
+        let result = await client.reconcileLoadedDesktopThreads(
             capturedAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         let elapsed = Date().timeIntervalSince(startedAt)
@@ -2542,8 +2759,8 @@ struct CoveCoreSmokeTests {
                   ;;
                 *'"method":"initialized"'*)
                   ;;
-                *'"id":"cove-desktop-thread-list"'*)
-                  printf '%s\n' '{"id":"cove-desktop-thread-list","result":{"data":[{"id":"desktop-a","sourceKind":"codexDesktop","status":{"type":"running"}},{"id":"desktop-b","sourceKind":"codexDesktop","status":{"type":"running"}},{"id":"desktop-c","sourceKind":"codexDesktop","status":{"type":"running"}}]}}'
+                *'"id":"cove-desktop-thread-loaded-0"'*)
+                  printf '%s\n' '{"id":"cove-desktop-thread-loaded-0","result":{"data":["desktop-a","desktop-b","desktop-c"]}}'
                   ;;
                 *'"id":"cove-desktop-thread-read-desktop-a"'*)
                   saw_a=1
@@ -2573,8 +2790,7 @@ struct CoveCoreSmokeTests {
                 maximumLineBytes: 16_384
             )
         )
-        let result = await client.discoverRecentDesktopThreads(
-            limit: 3,
+        let result = await client.reconcileLoadedDesktopThreads(
             capturedAt: Date(timeIntervalSince1970: 1_800_000_000)
         )
         guard case let .available(batch) = result else {
@@ -2588,6 +2804,42 @@ struct CoveCoreSmokeTests {
         ])
         precondition(batch.snapshots.allSatisfy { $0.source == .codexDesktop })
         precondition(batch.snapshots.allSatisfy { $0.status == .working })
+
+        let excludedAncestorFixture = try FakeCodexFixture(
+            body: #"""
+            while IFS= read -r request; do
+              case "$request" in
+                *'"id":"cove-desktop-initialize"'*)
+                  printf '%s\n' '{"id":"cove-desktop-initialize","result":{}}'
+                  ;;
+                *'"method":"initialized"'*)
+                  ;;
+                *'"id":"cove-desktop-thread-read-excluded-child"'*)
+                  printf '%s\n' '{"id":"cove-desktop-thread-read-excluded-child","result":{"thread":{"id":"excluded-child","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"review-parent"}}},"status":{"type":"active"}}}}'
+                  ;;
+                *'"method":"thread/read"'*'"threadId":"review-parent"'*)
+                  parent_id=$(printf '%s' "$request" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\1/')
+                  printf '{"id":"%s","result":{"thread":{"id":"review-parent","source":{"subAgent":{"review":{}}},"status":{"type":"active"}}}}\n' "$parent_id"
+                  ;;
+              esac
+            done
+            """#
+        )
+        defer { excludedAncestorFixture.close() }
+        let excludedAncestorClient = CoveDesktopThreadClient(
+            configuration: .init(
+                realCodexURL: excludedAncestorFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 16_384
+            )
+        )
+        let excludedAncestorResult = await excludedAncestorClient.fetch(
+            threadID: "excluded-child",
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        precondition(
+            excludedAncestorResult == .unavailable(.threadUnavailable)
+        )
     }
 
     static func testRecoverableSessionArchive() throws {
@@ -2598,7 +2850,8 @@ struct CoveCoreSmokeTests {
             priority: 90,
             title: "Archived",
             timestamp: timestamp,
-            sessionId: "archive-me"
+            sessionId: "archive-me",
+            source: .localCli
         )
         let active = CoveSessionSnapshot(
             snapshotId: "keep-me",
@@ -2606,13 +2859,14 @@ struct CoveCoreSmokeTests {
             priority: 40,
             title: "Active",
             timestamp: timestamp,
-            sessionId: "keep-me"
+            sessionId: "keep-me",
+            source: .localCli
         )
         var state = CoveState()
         CoveReducer.reduce(&state, .receivedSnapshot(archived))
         CoveReducer.reduce(&state, .receivedSnapshot(active))
-        CoveReducer.reduce(&state, .dismissSnapshot("archive-me"))
-        precondition(state.dismissedSessionIDs == ["archive-me"])
+        CoveReducer.reduce(&state, .dismissSnapshot(archived.sessionIdentity!))
+        precondition(state.dismissedSessionIDs == [archived.sessionIdentity!.id])
         precondition(!state.session.snapshots.contains { $0.snapshotId == "archive-me" })
         precondition(state.session.activeSnapshot?.snapshotId == "keep-me")
 
@@ -2621,7 +2875,10 @@ struct CoveCoreSmokeTests {
         CoveReducer.reduce(&state, .receivedSnapshot(newerArchived))
         precondition(!state.session.snapshots.contains { $0.snapshotId == "archive-me" })
 
-        CoveReducer.reduce(&state, .restoreDismissedSession("archive-me"))
+        CoveReducer.reduce(
+            &state,
+            .restoreDismissedSession(archived.sessionIdentity!.id)
+        )
         CoveReducer.reduce(&state, .receivedSnapshot(newerArchived))
         precondition(state.dismissedSessionIDs.isEmpty)
         precondition(state.session.snapshots.contains { $0.snapshotId == "archive-me" })
@@ -3120,6 +3377,79 @@ struct CoveCoreSmokeTests {
         }
         precondition(snapshot?.latestOutput == "Finished the requested work.")
         precondition(snapshot?.title == "Codex task")
+
+        func appServer(
+            _ method: String,
+            id: String,
+            timestamp: TimeInterval,
+            params: [String: CoveJSONValue]
+        ) -> CoveWireEnvelope {
+            CoveWireEnvelope(
+                eventId: id,
+                kind: .appServer,
+                timestamp: Date(timeIntervalSince1970: timestamp),
+                source: .localCli,
+                sessionId: "output-session",
+                payload: .object([
+                    "method": .string(method),
+                    "params": .object(params),
+                ])
+            )
+        }
+
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(appServer(
+                "item/started",
+                id: "output-started",
+                timestamp: 12,
+                params: ["item": .object(["type": .string("agentMessage")])]
+            ))
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput == nil)
+        for (index, delta) in ["Streaming ", "output"].enumerated() {
+            CoveReducer.reduce(
+                &state,
+                .receivedEnvelope(appServer(
+                    "item/agentMessage/delta",
+                    id: "output-delta-\(index)",
+                    timestamp: 13 + Double(index),
+                    params: ["delta": .string(delta)]
+                ))
+            )
+        }
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput == "Streaming output")
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(appServer(
+                "item/agentMessage/delta",
+                id: "output-bounded",
+                timestamp: 15,
+                params: ["delta": .string(String(repeating: "x", count: 4_100))]
+            ))
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput?.count == 4_000)
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(appServer(
+                "item/completed",
+                id: "output-completed",
+                timestamp: 16,
+                params: ["item": .object([
+                    "type": .string("agentMessage"),
+                    "text": .string("Authoritative final output"),
+                ])]
+            ))
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput == "Authoritative final output")
     }
 
     static func testSnapshotOriginCollisionFailsClosed() throws {
@@ -3161,8 +3491,10 @@ struct CoveCoreSmokeTests {
                 )
             )
         )
-        precondition(state.session.snapshots.count == 1)
-        precondition(state.session.snapshots[0].source == .localCli)
+        precondition(state.session.snapshots.count == 2)
+        precondition(Set(state.session.snapshots.compactMap(\.source)) == [
+            .localCli, .codexDesktop,
+        ])
 
         CoveReducer.reduce(
             &state,
@@ -3174,8 +3506,13 @@ struct CoveCoreSmokeTests {
                 )
             )
         )
-        precondition(state.session.snapshots.count == 1)
-        precondition(state.session.snapshots[0].status == .completed)
+        precondition(state.session.snapshots.count == 2)
+        precondition(state.session.snapshots.first {
+            $0.source == .localCli
+        }?.status == .completed)
+        precondition(state.session.snapshots.first {
+            $0.source == .codexDesktop
+        }?.status == .waitingInput)
 
         var remoteState = CoveState()
         CoveReducer.reduce(
@@ -3201,11 +3538,13 @@ struct CoveCoreSmokeTests {
             )
         )
         let remote = remoteState.session.snapshots
-        precondition(remote.count == 1)
-        precondition(remote[0].hostId == "remote-a")
+        precondition(remote.count == 2)
+        precondition(Set(remote.compactMap(\.hostId)) == ["remote-a", "remote-b"])
         let projection = CoveQueueProjection(state: remoteState)
-        precondition(projection.active.count == 1)
-        precondition(projection.active[0].snapshot?.hostId == "remote-a")
+        precondition(projection.active.count == 2)
+        precondition(Set(projection.active.compactMap { $0.snapshot?.hostId }) == [
+            "remote-a", "remote-b",
+        ])
     }
 
     static func testReducerReadDismissAndOutOfOrderSemantics() throws {
@@ -3219,7 +3558,9 @@ struct CoveCoreSmokeTests {
                     status: .working,
                     priority: 40,
                     title: "Running",
-                    timestamp: start
+                    timestamp: start,
+                    sessionId: "running",
+                    source: .localCli
                 )
             )
         )
@@ -3232,6 +3573,8 @@ struct CoveCoreSmokeTests {
                     priority: 1,
                     title: "Completed",
                     timestamp: start.addingTimeInterval(1),
+                    sessionId: "completed",
+                    source: .localCli,
                     unread: true
                 )
             )
@@ -3239,7 +3582,13 @@ struct CoveCoreSmokeTests {
         precondition(state.session.activeSnapshot?.snapshotId == "completed")
         precondition(state.session.statusPriority == 80)
 
-        CoveReducer.reduce(&state, .markRead("completed"))
+        let completedIdentity = state.session.snapshots.first {
+            $0.snapshotId == "completed"
+        }!.sessionIdentity!
+        let runningIdentity = state.session.snapshots.first {
+            $0.snapshotId == "running"
+        }!.sessionIdentity!
+        CoveReducer.reduce(&state, .markRead(completedIdentity))
         precondition(state.session.activeSnapshot?.snapshotId == "running")
         precondition(
             state.session.snapshots.first(where: {
@@ -3255,17 +3604,19 @@ struct CoveCoreSmokeTests {
                     status: .failed,
                     priority: 90,
                     title: "Late stale failure",
-                    timestamp: start.addingTimeInterval(-1)
+                    timestamp: start.addingTimeInterval(-1),
+                    sessionId: "running",
+                    source: .localCli
                 )
             )
         )
         precondition(state.session.activeSnapshot?.status == .working)
 
-        CoveReducer.reduce(&state, .dismissSnapshot("running"))
+        CoveReducer.reduce(&state, .dismissSnapshot(runningIdentity))
         precondition(state.session.activeSnapshot?.snapshotId == "completed")
         precondition(state.session.activeStatus == .completed)
         precondition(state.session.statusPriority == 8)
-        CoveReducer.reduce(&state, .dismissSnapshot("completed"))
+        CoveReducer.reduce(&state, .dismissSnapshot(completedIdentity))
         precondition(state.session.activeSnapshot == nil)
         precondition(state.session.activeStatus == .idle)
         precondition(state.session.statusPriority == 0)
@@ -4154,6 +4505,7 @@ struct CoveCoreSmokeTests {
                 sessionId: "session-3",
                 source: .remoteCli,
                 status: .quiet,
+                hostId: "build-host",
                 updatedAt: updatedAt.addingTimeInterval(2),
                 startedAt: startedAt
             )
@@ -4162,7 +4514,7 @@ struct CoveCoreSmokeTests {
         precondition(recentMetadata.count == 2)
 
         let diagnostics = try storage.diagnostics(now: reminderAt)
-        precondition(diagnostics.schemaVersion == 1)
+        precondition(diagnostics.schemaVersion == 2)
         precondition(diagnostics.directoryPermissions == 0o700)
         precondition(diagnostics.databasePermissions == 0o600)
         precondition(diagnostics.sessionCount == 3)
@@ -4242,6 +4594,955 @@ struct CoveCoreSmokeTests {
         } catch let error as CovePersistenceError {
             precondition(error == .invalidMetadata(field: "terminalLocation.locationIdentifier"))
         }
+    }
+
+    static func testCompositeMetadataIdentityAndMigration() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = CoveSQLiteSessionMetadataStorage(
+            url: directory.appendingPathComponent("sessions.sqlite3")
+        )
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let records = [
+            CoveSessionMetadata(
+                sessionId: "collision",
+                source: .localCli,
+                status: .active,
+                updatedAt: now,
+                startedAt: now
+            ),
+            CoveSessionMetadata(
+                sessionId: "collision",
+                source: .codexDesktop,
+                status: .idle,
+                updatedAt: now,
+                startedAt: now
+            ),
+            CoveSessionMetadata(
+                sessionId: "collision",
+                source: .remoteCli,
+                status: .blocked,
+                hostId: "host-a",
+                updatedAt: now,
+                startedAt: now
+            ),
+            CoveSessionMetadata(
+                sessionId: "collision",
+                source: .remoteCli,
+                status: .working,
+                hostId: "host-b",
+                updatedAt: now,
+                startedAt: now
+            ),
+        ]
+        for record in records { try storage.upsert(record) }
+        let ambiguousLookup = try storage.metadata(sessionId: "collision")
+        precondition(ambiguousLookup == nil)
+        for record in records {
+            let identity = record.sessionIdentity!
+            let loaded = try storage.metadata(identity: identity)
+            precondition(loaded == record)
+        }
+        var collisionState = CoveState(
+            pinnedSessionIDs: ["collision"],
+            dismissedSessionIDs: ["collision"]
+        )
+        CoveReducer.reduce(&collisionState, .restoreMetadata(records))
+        precondition(collisionState.ambiguousLegacySessionIdentityCount == 1)
+        precondition(collisionState.pinnedSessionIDs == ["collision"])
+        precondition(collisionState.dismissedSessionIDs == ["collision"])
+        let beforeRemoval = try storage.diagnostics()
+        precondition(beforeRemoval.sessionCount == 4)
+        try storage.remove(identity: records[2].sessionIdentity!)
+        let afterRemoval = try storage.diagnostics()
+        precondition(afterRemoval.sessionCount == 3)
+
+        let legacyDirectory = directory.appendingPathComponent("legacy", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        let legacyURL = legacyDirectory.appendingPathComponent("sessions.sqlite3")
+        var database: OpaquePointer?
+        precondition(sqlite3_open(legacyURL.path, &database) == SQLITE_OK)
+        guard let database else { fatalError("legacy SQLite fixture failed") }
+        let legacySQL = """
+        CREATE TABLE session_metadata (
+          record_schema_version INTEGER NOT NULL,
+          session_id TEXT PRIMARY KEY NOT NULL,
+          launch_id TEXT, turn_id TEXT, source TEXT NOT NULL,
+          status TEXT NOT NULL, unread INTEGER NOT NULL,
+          reminder_at_ms INTEGER, terminal_adapter TEXT,
+          terminal_location_id TEXT, host_id TEXT,
+          parent_session_id TEXT, updated_at_ms INTEGER NOT NULL,
+          started_at_ms INTEGER NOT NULL
+        ) WITHOUT ROWID;
+        INSERT INTO session_metadata VALUES
+          (1, 'legacy-local', NULL, NULL, 'localCli', 'idle', 0,
+           NULL, NULL, NULL, NULL, NULL, 1, 1),
+          (1, 'legacy-remote', NULL, NULL, 'remoteCli', 'blocked', 1,
+           2, NULL, NULL, NULL, NULL, 2, 1);
+        PRAGMA user_version = 1;
+        """
+        precondition(sqlite3_exec(database, legacySQL, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(database)
+        let migrated = CoveSQLiteSessionMetadataStorage(url: legacyURL)
+        try migrated.initialize()
+        let migrationDiagnostics = try migrated.diagnostics()
+        precondition(migrationDiagnostics.sessionCount == 1)
+        precondition(migrationDiagnostics.ambiguousLegacyIdentityCount == 1)
+        let ambiguousLegacy = try migrated.metadata(sessionId: "legacy-remote")
+        precondition(ambiguousLegacy == nil)
+    }
+
+    static func testWorkspacePersistence() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("workspace.json")
+        let storage = CoveWorkspaceFileStorage(url: url)
+        let identity = CoveSessionIdentity(
+            source: .remoteCli,
+            hostId: "build-host",
+            sessionId: "task-1"
+        )!
+        let template = CovePromptTemplate(
+            name: "Review",
+            body: "Review the current change.",
+            favorite: true,
+            manualOrder: 0
+        )
+        var state = CoveWorkspaceState(
+            gridOrder: [identity],
+            promptTemplates: [template],
+            lastSelectedView: .board
+        )
+        state.setAlias("Release shepherd", for: identity)
+        state.setTags(["release", "backend"], for: identity)
+        state.setLinks([
+            .init(label: "Issue", url: URL(string: "https://example.com/issues/1")!),
+        ], for: identity)
+        state.assign(identity, to: "doing")
+        try storage.save(state)
+        let loaded = try storage.load()
+        precondition(loaded == state)
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        precondition((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: directory.path
+        )
+        precondition(
+            (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue
+                == 0o700
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o644)],
+            ofItemAtPath: url.path
+        )
+        _ = try storage.load()
+        let repairedAttributes = try FileManager.default.attributesOfItem(
+            atPath: url.path
+        )
+        precondition(
+            (repairedAttributes[.posixPermissions] as? NSNumber)?.intValue
+                == 0o600
+        )
+        var invalid = state
+        invalid.promptTemplates[0].body = String(
+            repeating: "x",
+            count: CoveWorkspaceLimits.templateBodyBytes + 1
+        )
+        do {
+            try storage.save(invalid)
+            fatalError("Expected oversized template rejection")
+        } catch CovePersistenceError.invalidWorkspace {
+            // Expected before the existing valid document is replaced.
+        }
+        let preserved = try storage.load()
+        precondition(preserved == state)
+        var invalidLink = state
+        invalidLink.setLinks([
+            .init(label: "Unsafe", url: URL(string: "https://user:pass@example.com/x")!),
+        ], for: identity)
+        do {
+            try storage.save(invalidLink)
+            fatalError("Expected credential-bearing link rejection")
+        } catch CovePersistenceError.invalidWorkspace {
+        }
+
+        let rootA = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "a-root"
+        )!
+        let rootB = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "b-root"
+        )!
+        var cardOnlyV2 = CoveWorkspaceState()
+        cardOnlyV2.setLinks([
+            .init(label: "B", url: URL(string: "https://example.com/b")!),
+        ], for: rootB)
+        cardOnlyV2.setLinks([
+            .init(label: "A", url: URL(string: "https://example.com/a")!),
+        ], for: rootA)
+        var cardOnlyJSON = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(cardOnlyV2)
+        ) as! [String: Any]
+        cardOnlyJSON["schemaVersion"] = 2
+        var cardOnlyCards = cardOnlyJSON["cards"] as! [[String: Any]]
+        for index in cardOnlyCards.indices {
+            var links = cardOnlyCards[index]["links"] as! [[String: Any]]
+            links[0].removeValue(forKey: "manualOrder")
+            cardOnlyCards[index]["links"] = links
+        }
+        cardOnlyJSON["cards"] = cardOnlyCards
+        let cardOnlyURL = directory.appendingPathComponent("workspace-card-only-v2.json")
+        try JSONSerialization.data(withJSONObject: cardOnlyJSON).write(to: cardOnlyURL)
+        let cardOnlyMigrated = try CoveWorkspaceFileStorage(url: cardOnlyURL).load()!
+        precondition(
+            cardOnlyMigrated.cards.flatMap(\.links).sorted {
+                $0.manualOrder! < $1.manualOrder!
+            }.map(\.label) == ["B", "A"]
+        )
+
+        var invalidIdentity = identity
+        invalidIdentity.remoteHostId = nil
+        var invalidOrigin = state
+        invalidOrigin.gridOrder = [invalidIdentity]
+        do {
+            try storage.save(invalidOrigin)
+            fatalError("Expected invalid decoded composite identity rejection")
+        } catch CovePersistenceError.invalidWorkspace {
+        }
+
+        var tooManyTemplates = state
+        tooManyTemplates.promptTemplates = (0...CoveWorkspaceLimits.templates).map {
+            CovePromptTemplate(name: "Template \($0)", body: "Body", manualOrder: $0)
+        }
+        do {
+            try storage.save(tooManyTemplates)
+            fatalError("Expected template-count rejection")
+        } catch CovePersistenceError.invalidWorkspace {
+        }
+
+        let encoded = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+        precondition(encoded.contains("Release shepherd"))
+        precondition(encoded.contains("Review the current change."))
+        precondition(!encoded.contains("latestOutput"))
+        precondition(!encoded.contains("composerText"))
+        precondition(!encoded.contains("transcript"))
+
+        let newerURL = directory.appendingPathComponent("newer-workspace.json")
+        var newer = state
+        newer.schemaVersion = CoveWorkspaceState.currentSchemaVersion + 1
+        let newerEncoder = JSONEncoder()
+        newerEncoder.dateEncodingStrategy = .millisecondsSince1970
+        try newerEncoder.encode(newer).write(to: newerURL)
+        do {
+            _ = try CoveWorkspaceFileStorage(url: newerURL).load()
+            fatalError("Expected newer Workspace schema rejection")
+        } catch CovePersistenceError.unsupportedWorkspaceSchema {
+        }
+
+        let corruptURL = directory.appendingPathComponent("corrupt-workspace.json")
+        try Data("{not-json".utf8).write(to: corruptURL)
+        do {
+            _ = try CoveWorkspaceFileStorage(url: corruptURL).load()
+            fatalError("Expected corrupt Workspace rejection")
+        } catch is DecodingError {
+        }
+
+        let targetURL = directory.appendingPathComponent("workspace-target.json")
+        try Data("unchanged".utf8).write(to: targetURL)
+        let symlinkURL = directory.appendingPathComponent("linked-workspace.json")
+        try FileManager.default.createSymbolicLink(
+            at: symlinkURL,
+            withDestinationURL: targetURL
+        )
+        let linkedStorage = CoveWorkspaceFileStorage(url: symlinkURL)
+        do {
+            try linkedStorage.save(state)
+            fatalError("Expected Workspace symlink rejection")
+        } catch CovePersistenceError.unsafeFilesystemEntry {
+        }
+        let preservedTarget = try Data(contentsOf: targetURL)
+        precondition(String(decoding: preservedTarget, as: UTF8.self) == "unchanged")
+    }
+
+    static func testWorkspaceV2Artifacts() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let documentURL = directory.appendingPathComponent("plan.txt")
+        try Data("plan".utf8).write(to: documentURL)
+        let executableURL = directory.appendingPathComponent("unsafe.sh")
+        try Data("#!/bin/sh".utf8).write(to: executableURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o700)],
+            ofItemAtPath: executableURL.path
+        )
+        let packageURL = directory.appendingPathComponent("Cove.app", isDirectory: true)
+        try FileManager.default.createDirectory(at: packageURL, withIntermediateDirectories: true)
+
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(
+                URL(string: "https://example.com/plan")!
+            ) != nil
+        )
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(documentURL) == documentURL.standardizedFileURL
+        )
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(
+                URL(string: "https://user:pass@example.com/plan")!
+            ) == nil
+        )
+        precondition(
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL(
+                URL(string: "file://other-host/private/tmp/plan")!
+            ) == nil
+        )
+        precondition(CoveWorkspaceArtifactPolicy.safeExistingFileURL(documentURL) != nil)
+        precondition(CoveWorkspaceArtifactPolicy.safeExistingFileURL(executableURL) == nil)
+        precondition(CoveWorkspaceArtifactPolicy.safeExistingFileURL(packageURL) == nil)
+
+        let root = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "root")!
+        let child = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "child")!
+        let remote = CoveSessionIdentity(source: .remoteCli, hostId: "remote", sessionId: "remote")!
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        func snapshot(
+            _ identity: CoveSessionIdentity,
+            output: String,
+            parent: String? = nil
+        ) -> CoveSessionSnapshot {
+            .init(
+                snapshotId: identity.sessionId,
+                status: .idle,
+                priority: 0,
+                title: identity.sessionId,
+                latestOutput: output,
+                timestamp: now,
+                sessionId: identity.sessionId,
+                source: identity.source,
+                hostId: identity.remoteHostId,
+                parentSessionId: parent,
+                liveness: .live
+            )
+        }
+        func writeV2(_ state: CoveWorkspaceState, to url: URL) throws {
+            var json = try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(state)
+            ) as! [String: Any]
+            json["schemaVersion"] = 2
+            var cards = json["cards"] as! [[String: Any]]
+            for cardIndex in cards.indices {
+                var links = cards[cardIndex]["links"] as? [[String: Any]] ?? []
+                for linkIndex in links.indices {
+                    links[linkIndex].removeValue(forKey: "manualOrder")
+                }
+                cards[cardIndex]["links"] = links
+            }
+            json["cards"] = cards
+            try JSONSerialization.data(withJSONObject: json).write(to: url)
+        }
+        func orderedLabels(_ state: CoveWorkspaceState) -> [String] {
+            state.cards.flatMap(\.links).sorted {
+                $0.manualOrder! < $1.manualOrder!
+            }.map(\.label)
+        }
+        let suggestions = CoveWorkspaceArtifactPolicy.suggestions(
+            snapshots: [
+                snapshot(child, output: "[Build plan](\(documentURL.path):12)", parent: root.sessionId),
+                snapshot(remote, output: "\(documentURL.path) https://example.com/remote"),
+                snapshot(root, output: "\(executableURL.path)"),
+            ],
+            existingLinks: []
+        )
+        precondition(suggestions.contains {
+            $0.sourceIdentity == child && $0.link.url == documentURL.standardizedFileURL
+        })
+        precondition(suggestions.contains {
+            $0.sourceIdentity == remote && $0.link.url == URL(string: "https://example.com/remote")!
+        })
+        precondition(!suggestions.contains { $0.link.url == executableURL.standardizedFileURL })
+        precondition(!suggestions.contains { $0.sourceIdentity == remote && $0.link.url.isFileURL })
+
+        var v1 = CoveWorkspaceState(gridOrder: [root])
+        v1.setLinks([
+            .init(label: "Missing", url: directory.appendingPathComponent("missing.txt")),
+        ], for: root)
+        var json = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(v1)
+        ) as! [String: Any]
+        json["schemaVersion"] = 1
+        var cards = json["cards"] as! [[String: Any]]
+        cards[0].removeValue(forKey: "parentSessionId")
+        json["cards"] = cards
+        let v1URL = directory.appendingPathComponent("workspace-v1.json")
+        try JSONSerialization.data(withJSONObject: json).write(to: v1URL)
+        let migrated = try CoveWorkspaceFileStorage(url: v1URL).load()
+        precondition(migrated?.schemaVersion == CoveWorkspaceState.currentSchemaVersion)
+        precondition(migrated?.card(for: root)?.parentSessionId == nil)
+        precondition(migrated?.card(for: root)?.links.first?.url.isFileURL == true)
+
+        var v2 = CoveWorkspaceState(gridOrder: [root, child])
+        v2.observe([
+            snapshot(root, output: ""),
+            snapshot(child, output: "", parent: root.sessionId),
+        ])
+        v2.setLinks([
+            .init(label: "Root one", url: URL(string: "https://example.com/one")!),
+            .init(label: "Root two", url: URL(string: "https://example.com/two")!),
+        ], for: root)
+        v2.setLinks([
+            .init(label: "Child", url: URL(string: "https://example.com/child")!),
+        ], for: child)
+        let v2URL = directory.appendingPathComponent("workspace-v2.json")
+        try writeV2(v2, to: v2URL)
+        var migratedV2 = try CoveWorkspaceFileStorage(url: v2URL).load()!
+        precondition(migratedV2.schemaVersion == 3)
+        precondition(orderedLabels(migratedV2) == ["Root one", "Root two", "Child"])
+
+        let missingFirst = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "z-missing-first"
+        )!
+        let missingLast = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "a-missing-last"
+        )!
+        var missingParentV2 = CoveWorkspaceState(
+            gridOrder: [missingLast, root, child, missingFirst]
+        )
+        missingParentV2.setLinks([
+            .init(label: "Missing first", url: URL(string: "https://example.com/missing-first")!),
+        ], for: missingFirst)
+        missingParentV2.setLinks([
+            .init(label: "Root", url: URL(string: "https://example.com/root")!),
+        ], for: root)
+        missingParentV2.setLinks([
+            .init(label: "Child", url: URL(string: "https://example.com/child")!),
+        ], for: child)
+        missingParentV2.setLinks([
+            .init(label: "Missing last", url: URL(string: "https://example.com/missing-last")!),
+        ], for: missingLast)
+        missingParentV2.cards[missingParentV2.cards.firstIndex {
+            $0.identity == missingFirst
+        }!].parentSessionId = "absent-first"
+        missingParentV2.cards[missingParentV2.cards.firstIndex {
+            $0.identity == child
+        }!].parentSessionId = root.sessionId
+        missingParentV2.cards[missingParentV2.cards.firstIndex {
+            $0.identity == missingLast
+        }!].parentSessionId = "absent-last"
+        let missingParentURL = directory.appendingPathComponent("workspace-missing-parent-v2.json")
+        try writeV2(missingParentV2, to: missingParentURL)
+        let migratedMissingParent = try CoveWorkspaceFileStorage(
+            url: missingParentURL
+        ).load()!
+        precondition(
+            orderedLabels(migratedMissingParent)
+                == ["Root", "Child", "Missing first", "Missing last"]
+        )
+
+        let cycleFirst = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "z-cycle-first"
+        )!
+        let cycleLast = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "a-cycle-last"
+        )!
+        var cyclicV2 = CoveWorkspaceState(
+            gridOrder: [cycleLast, root, child, cycleFirst]
+        )
+        cyclicV2.setLinks([
+            .init(label: "Cycle first", url: URL(string: "https://example.com/cycle-first")!),
+        ], for: cycleFirst)
+        cyclicV2.setLinks([
+            .init(label: "Root", url: URL(string: "https://example.com/root")!),
+        ], for: root)
+        cyclicV2.setLinks([
+            .init(label: "Child", url: URL(string: "https://example.com/child")!),
+        ], for: child)
+        cyclicV2.setLinks([
+            .init(label: "Cycle last", url: URL(string: "https://example.com/cycle-last")!),
+        ], for: cycleLast)
+        cyclicV2.cards[cyclicV2.cards.firstIndex {
+            $0.identity == cycleFirst
+        }!].parentSessionId = cycleLast.sessionId
+        cyclicV2.cards[cyclicV2.cards.firstIndex {
+            $0.identity == child
+        }!].parentSessionId = root.sessionId
+        cyclicV2.cards[cyclicV2.cards.firstIndex {
+            $0.identity == cycleLast
+        }!].parentSessionId = cycleFirst.sessionId
+        let cyclicURL = directory.appendingPathComponent("workspace-cyclic-v2.json")
+        try writeV2(cyclicV2, to: cyclicURL)
+        let migratedCyclic = try CoveWorkspaceFileStorage(url: cyclicURL).load()!
+        precondition(
+            orderedLabels(migratedCyclic)
+                == ["Root", "Child", "Cycle first", "Cycle last"]
+        )
+
+        migratedV2.restoreArtifactOrder(Array(migratedV2.artifactOrderIDs().reversed()))
+        let reversedLabels = migratedV2.cards.flatMap(\.links).sorted {
+            $0.manualOrder! < $1.manualOrder!
+        }.map(\.label)
+        precondition(reversedLabels == ["Child", "Root two", "Root one"])
+        try CoveWorkspaceFileStorage.validate(migratedV2)
+        let childCardIndex = migratedV2.cards.firstIndex {
+            $0.identity == child
+        }!
+        migratedV2.cards[childCardIndex].links[0].label = "Renamed child"
+        let migratedV2Storage = CoveWorkspaceFileStorage(url: v2URL)
+        try migratedV2Storage.save(migratedV2)
+        let reloadedV3 = try migratedV2Storage.load()!
+        precondition(
+            reloadedV3.cards.flatMap(\.links).sorted {
+                $0.manualOrder! < $1.manualOrder!
+            }.map(\.label) == ["Renamed child", "Root two", "Root one"]
+        )
+        var invalidOrder = migratedV2
+        invalidOrder.cards[0].links[0].manualOrder = 0
+        invalidOrder.cards[0].links[1].manualOrder = 0
+        do {
+            try CoveWorkspaceFileStorage.validate(invalidOrder)
+            fatalError("Duplicate artifact ranks must be rejected")
+        } catch CovePersistenceError.invalidWorkspace {
+        }
+    }
+
+    static func testWorkspaceProjection() throws {
+        let root = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "root")!
+        let child = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "child")!
+        let grandchild = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "grandchild")!
+        let orphan = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "orphan")!
+        let conflicted = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "conflicted")!
+        let cycleA = CoveSessionIdentity(source: .remoteCli, hostId: "one", sessionId: "cycle-a")!
+        let cycleB = CoveSessionIdentity(source: .remoteCli, hostId: "one", sessionId: "cycle-b")!
+        let sameRawOtherOrigin = CoveSessionIdentity(source: .codexDesktop, hostId: nil, sessionId: "root")!
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        func snapshot(
+            _ identity: CoveSessionIdentity,
+            parent: String? = nil,
+            status: CoveSessionStatus = .idle,
+            liveness: CoveSessionLiveness = .loaded,
+            latestOutput: String? = nil,
+            activityOffset: TimeInterval = 0
+        ) -> CoveSessionSnapshot {
+            .init(
+                snapshotId: identity.sessionId,
+                status: status,
+                priority: status == .waitingInput ? 95 : 5,
+                title: identity.sessionId,
+                latestOutput: latestOutput,
+                timestamp: now.addingTimeInterval(activityOffset),
+                sessionId: identity.sessionId,
+                source: identity.source,
+                hostId: identity.remoteHostId,
+                parentSessionId: parent,
+                liveness: liveness,
+                controlRoute: identity.source == .codexDesktop ? .desktop : nil
+            )
+        }
+        var workspace = CoveWorkspaceState(gridOrder: [
+            root, child, grandchild, orphan, conflicted, cycleA, cycleB,
+            sameRawOtherOrigin,
+        ])
+        workspace.setAlias("Main release", for: root)
+        workspace.setTags(["release"], for: root)
+        workspace.setLinks([
+            .init(label: "Release issue", url: URL(string: "https://example.com/release")!),
+        ], for: root)
+        workspace.assign(root, to: "review")
+        workspace.setAlias("Conflicted agent", for: conflicted)
+        workspace.cards[workspace.cards.firstIndex {
+            $0.identity == conflicted
+        }!].parentSessionId = root.sessionId
+        var unreadGrandchild = snapshot(
+            grandchild,
+            parent: child.sessionId,
+            status: .waitingInput
+        )
+        unreadGrandchild.unread = true
+        var conflictingParent = snapshot(conflicted)
+        conflictingParent.parentProvenanceConflict = true
+        let snapshots = [
+            snapshot(root, latestOutput: "Root output"),
+            snapshot(
+                child,
+                parent: root.sessionId,
+                latestOutput: "Fresh child output",
+                activityOffset: 2
+            ),
+            unreadGrandchild,
+            snapshot(
+                orphan,
+                parent: "missing",
+                latestOutput: "Unrelated orphan output",
+                activityOffset: 3
+            ),
+            conflictingParent,
+            snapshot(cycleA, parent: cycleB.sessionId),
+            snapshot(cycleB, parent: cycleA.sessionId),
+            snapshot(sameRawOtherOrigin),
+        ]
+        let projection = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            query: "release",
+            sort: .manual
+        )
+        precondition(projection.roots == [root])
+        precondition(projection.item(root)?.descendantAttentionCount == 1)
+        precondition(projection.owningTaskIdentity(for: grandchild) == root)
+        let complete = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            sort: .manual
+        )
+        precondition(complete.items.count == 8)
+        precondition(
+            Set(complete.unattachedAgents)
+                == [orphan, conflicted, cycleA, cycleB]
+        )
+        precondition(complete.item(root)?.children == [child])
+        precondition(complete.item(root)?.latestOutput == "Fresh child output")
+        precondition(complete.item(root)?.latestOutputIdentity == child)
+        precondition(complete.item(root)?.latestOutputTitle == child.sessionId)
+        precondition(complete.item(orphan)?.latestOutput == "Unrelated orphan output")
+        precondition(complete.owningTaskIdentity(for: conflicted) == conflicted)
+        precondition(complete.item(sameRawOtherOrigin)?.children.isEmpty == true)
+        let redacted = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            query: "release",
+            redactSensitiveContent: true
+        )
+        precondition(redacted.roots.isEmpty)
+        let redactedHost = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            query: "one",
+            redactSensitiveContent: true
+        )
+        precondition(redactedHost.roots.isEmpty)
+        let redactedSensitiveFilters = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            filter: .init(
+                sources: [.codexDesktop],
+                hosts: ["one"],
+                tags: ["release"],
+                columns: ["review"]
+            ),
+            redactSensitiveContent: true
+        )
+        precondition(redactedSensitiveFilters.items.count == snapshots.count)
+        precondition(redactedSensitiveFilters.items.allSatisfy {
+            $0.latestOutput == nil && $0.latestOutputIdentity == nil
+                && $0.latestOutputTitle == nil
+        })
+
+        func identities(
+            _ filter: CoveWorkspaceFilter,
+            pinned: Set<CoveSessionIdentity> = []
+        ) -> Set<CoveSessionIdentity> {
+            Set(
+                CoveWorkspaceProjection(
+                    snapshots: snapshots,
+                    workspace: workspace,
+                    pinnedIdentities: pinned,
+                    filter: filter,
+                    sort: .manual
+                ).roots
+            )
+        }
+        precondition(identities(.init(statuses: [.waitingInput])) == [root])
+        precondition(identities(.init(sources: [.codexDesktop])) == [sameRawOtherOrigin])
+        precondition(identities(.init(hosts: ["one"])) == [cycleA, cycleB])
+        precondition(identities(.init(tags: ["release"])) == [root])
+        precondition(identities(.init(columns: ["review"])) == [root])
+        precondition(identities(.init(unreadOnly: true)) == [root])
+        precondition(identities(.init(pinnedOnly: true), pinned: [root]) == [root])
+        precondition(identities(.init(controllableOnly: true)) == [sameRawOtherOrigin])
+        precondition(
+            identities(.init(attentionOnly: true))
+                == [root]
+        )
+
+        let linkSearch = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            query: "example.com"
+        )
+        precondition(linkSearch.roots == [root])
+        let sourceSearch = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            query: "codex desktop"
+        )
+        precondition(sourceSearch.roots == [sameRawOtherOrigin])
+
+        let attentionSorted = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            sort: .attention
+        )
+        precondition(attentionSorted.items.first?.identity == grandchild)
+        let nameSorted = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            sort: .name
+        )
+        precondition(nameSorted.items.first?.identity == child)
+        let sourceSorted = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: workspace,
+            sort: .source
+        )
+        precondition(sourceSorted.items.first?.identity.source == .codexDesktop)
+
+        var insertionWorkspace = CoveWorkspaceState(gridOrder: [root, child])
+        insertionWorkspace.ensureMembership([child, orphan, orphan])
+        precondition(insertionWorkspace.gridOrder == [root, child, orphan])
+        insertionWorkspace.assign(root, to: "doing")
+        insertionWorkspace.deleteColumn(id: "doing")
+        precondition(insertionWorkspace.columnID(for: root) == CoveWorkspaceState.inboxColumnID)
+        let insertionProjection = CoveWorkspaceProjection(
+            snapshots: [snapshot(child), snapshot(orphan)],
+            workspace: insertionWorkspace,
+            sort: .manual
+        )
+        precondition(insertionProjection.items.map(\.identity) == [root, child, orphan])
+        precondition(insertionProjection.item(root)?.isRetainedOnly == true)
+        let closed = snapshot(root, status: .completed, liveness: .closed)
+        precondition(!CoveWorkspaceProjection.isWorkspaceMember(closed))
+        var failed = snapshot(root, status: .failed, liveness: .closed)
+        failed.unread = true
+        precondition(!CoveWorkspaceProjection.isWorkspaceMember(failed))
+        failed.unread = false
+        precondition(!CoveWorkspaceProjection.isWorkspaceMember(failed))
+        var interrupted = snapshot(root, status: .interrupted, liveness: .closed)
+        interrupted.unread = true
+        precondition(!CoveWorkspaceProjection.isWorkspaceMember(interrupted))
+        var activeWithoutTurn = snapshot(
+            sameRawOtherOrigin,
+            status: .working,
+            liveness: .loaded
+        )
+        precondition(!activeWithoutTurn.canAcceptThreadControl)
+        activeWithoutTurn.activeTurnId = "turn-1"
+        precondition(activeWithoutTurn.canAcceptThreadControl)
+        activeWithoutTurn.status = .waitingApproval
+        precondition(!activeWithoutTurn.canAcceptThreadControl)
+
+        let restored = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "restored")!
+        let live = CoveSessionIdentity(source: .localCli, hostId: nil, sessionId: "live")!
+        var retainedWorkspace = CoveWorkspaceState(gridOrder: [root, child])
+        retainedWorkspace.setLinks([
+            .init(label: "Plan", url: URL(string: "https://example.com/plan")!),
+        ], for: child)
+        let retained = CoveWorkspaceProjection(
+            snapshots: [
+                snapshot(live, liveness: .live),
+                snapshot(restored, status: .completed, liveness: .closed),
+                .init(
+                    snapshotId: "unknown-history",
+                    status: .completed,
+                    priority: 0,
+                    title: "unknown-history",
+                    timestamp: now,
+                    sessionId: "unknown-history",
+                    source: .localCli
+                ),
+            ],
+            workspace: retainedWorkspace,
+            sort: .manual
+        )
+        precondition(retained.item(root)?.isRetainedOnly == true)
+        precondition(retained.item(child)?.isRetainedOnly == true)
+        precondition(retained.item(root)?.isControllable == false)
+        precondition(retained.item(restored) == nil)
+        precondition(retained.roots == [root, child, live])
+
+        let dismissedRoot = CoveWorkspaceProjection(
+            snapshots: [snapshot(root), snapshot(child, parent: root.sessionId)],
+            workspace: CoveWorkspaceState(gridOrder: [root, child]),
+            dismissedIdentities: [root]
+        )
+        precondition(dismissedRoot.items.isEmpty)
+        let dismissedChild = CoveWorkspaceProjection(
+            snapshots: [snapshot(root), snapshot(child, parent: root.sessionId)],
+            workspace: CoveWorkspaceState(gridOrder: [root, child]),
+            dismissedIdentities: [child]
+        )
+        precondition(dismissedChild.roots == [root])
+        precondition(dismissedChild.item(root)?.children.isEmpty == true)
+
+        var observed = CoveWorkspaceState()
+        observed.observe([
+            snapshot(live, liveness: .live),
+            snapshot(restored, status: .completed, liveness: .closed),
+        ])
+        precondition(observed.gridOrder == [live])
+    }
+
+    static func testLoadedThreadAndControlContracts() throws {
+        let page = Data(#"{"id":"loaded-1","result":{"data":["a",{"threadId":"b"}],"nextCursor":"next"}}"#.utf8)
+        let parsed = try CoveDesktopThreadSnapshotParser.loadedThreadPage(
+            from: page,
+            expectedID: "loaded-1"
+        )
+        precondition(parsed.ids == ["a", "b"])
+        precondition(parsed.nextCursor == "next")
+        let identity = CoveSessionIdentity(
+            source: .codexDesktop,
+            hostId: nil,
+            sessionId: "desktop-task"
+        )!
+        try CoveThreadControlRequest(
+            target: identity,
+            operation: .start,
+            input: "Continue"
+        ).validate()
+        do {
+            try CoveThreadControlRequest(
+                target: identity,
+                operation: .steer,
+                input: "Steer"
+            ).validate()
+            fatalError("Expected an exact turn ID for steer")
+        } catch CovePersistenceError.invalidMetadata {
+        }
+        do {
+            try CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                expectedTurnId: "unexpected",
+                input: "Start"
+            ).validate()
+            fatalError("Expected start to reject an expected turn ID")
+        } catch CovePersistenceError.invalidMetadata {
+        }
+        do {
+            try CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "not valid",
+                input: "Start"
+            ).validate()
+            fatalError("Expected a bounded transport-safe control ID")
+        } catch CovePersistenceError.invalidMetadata {
+        }
+
+        var state = CoveState()
+        let started = CoveWireEnvelope(
+            eventId: "turn-started-control",
+            kind: .appServer,
+            timestamp: Date(timeIntervalSince1970: 1_900_000_000),
+            source: .localCli,
+            sessionId: "routed-task",
+            launchId: "launch-1",
+            payload: .object([
+                "message": .object([
+                    "method": .string("turn/started"),
+                    "params": .object([
+                        "turn": .object(["id": .string("turn-1")])
+                    ])
+                ]),
+                "liveness": .string("live"),
+                "controlRoute": .string("routedLocal"),
+            ])
+        )
+        precondition(started.authoritativeStartedTurnID() == "turn-1")
+        CoveReducer.reduce(&state, .receivedEnvelope(started))
+        precondition(state.session.activeSnapshot?.activeTurnId == "turn-1")
+        precondition(state.session.activeSnapshot?.liveness == .live)
+        precondition(state.session.activeSnapshot?.controlRoute == .routedLocal)
+        var completed = started
+        completed.eventId = "turn-completed-control"
+        completed.timestamp = started.timestamp.addingTimeInterval(1)
+        completed.payload = .object([
+            "message": .object([
+                "method": .string("turn/completed"),
+                "params": .object([:])
+            ]),
+            "liveness": .string("live"),
+            "controlRoute": .string("routedLocal"),
+        ])
+        precondition(completed.endsActiveTurn)
+        CoveReducer.reduce(&state, .receivedEnvelope(completed))
+        precondition(state.session.activeSnapshot?.activeTurnId == nil)
+
+        func terminalSnapshot(
+            eventID: String,
+            timestamp: Date,
+            status: CoveSessionStatus
+        ) -> CoveWireEnvelope {
+            CoveWireEnvelope(
+                eventId: eventID,
+                kind: .sessionSnapshot,
+                timestamp: timestamp,
+                source: .codexDesktop,
+                sessionId: identity.sessionId,
+                payload: .object([
+                    "snapshotId": .string(identity.sessionId),
+                    "status": .string(status.rawValue),
+                    "priority": .number(90),
+                    "title": .string("Desktop task"),
+                    "liveness": .string("loaded"),
+                    "unread": .bool(true),
+                ])
+            )
+        }
+        let failedAt = started.timestamp.addingTimeInterval(2)
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(
+                terminalSnapshot(
+                    eventID: "desktop-failed-1",
+                    timestamp: failedAt,
+                    status: .failed
+                )
+            )
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionIdentity == identity
+        }?.unread == true)
+        CoveReducer.reduce(&state, .markRead(identity))
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(
+                terminalSnapshot(
+                    eventID: "desktop-failed-repeat",
+                    timestamp: failedAt,
+                    status: .failed
+                )
+            )
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionIdentity == identity
+        }?.unread == false)
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(
+                terminalSnapshot(
+                    eventID: "desktop-interrupted-newer",
+                    timestamp: failedAt.addingTimeInterval(1),
+                    status: .interrupted
+                )
+            )
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionIdentity == identity
+        }?.unread == true)
     }
 
     static func testPendingSessionAttributionPreservesLaunchMetadata() throws {
@@ -4441,6 +5742,47 @@ struct CoveCoreSmokeTests {
                 status: .delivered
             ).isSupported
         )
+
+        let identity = CoveSessionIdentity(
+            source: .remoteCli,
+            hostId: "build-host",
+            sessionId: "thread-1"
+        )!
+        let threadRequest = CoveThreadControlRequest(
+            target: identity,
+            operation: .steer,
+            expectedTurnId: "turn-1",
+            clientMessageId: "message-1",
+            input: "Change direction"
+        )
+        let threadControl = CoveRemoteThreadControl(
+            controlId: "control-thread",
+            controlSocket: "fixture-control-route",
+            launchId: "launch-remote",
+            request: threadRequest
+        )
+        let decodedThreadControl = try JSONDecoder().decode(
+            CoveRemoteThreadControl.self,
+            from: JSONEncoder().encode(threadControl)
+        )
+        precondition(decodedThreadControl == threadControl)
+        precondition(decodedThreadControl.type == "threadControl")
+        let threadAcknowledgement = CoveRemoteThreadControlAcknowledgement(
+            controlId: "control-thread",
+            status: .accepted,
+            turnId: "turn-2"
+        )
+        precondition(threadAcknowledgement.isSupported)
+        precondition(
+            threadAcknowledgement.result == .accepted(turnId: "turn-2")
+        )
+        precondition(
+            CoveRemoteThreadControlAcknowledgement(
+                controlId: "control-thread",
+                status: .rejected,
+                rejection: .turnMismatch
+            ).result == .rejected(.turnMismatch)
+        )
     }
 
     static func testPersistentRemoteSSHSafety() throws {
@@ -4554,6 +5896,567 @@ struct CoveCoreSmokeTests {
         precondition(Set(result?.keys.map { $0 } ?? []) == Set(["answers"]))
     }
 
+    static func testThreadControlSocketDelivery() async throws {
+        let fixture = try PrivateDecisionSocketFixture(mode: 0o600)
+        defer { fixture.close() }
+        let server = Task.detached {
+            try fixture.acceptOneLine(
+                replying: Data(
+                    #"{"jsonrpc":"2.0","id":"cove-thread-control:message-1","result":{"turn":{"id":"turn-2"}}}"#.utf8
+                )
+            )
+        }
+        let identity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "thread-1"
+        )!
+        let request = CoveThreadControlRequest(
+            target: identity,
+            operation: .steer,
+            expectedTurnId: "turn-1",
+            clientMessageId: "message-1",
+            input: "Change direction"
+        )
+        let result = await CoveThreadControlSocketClient().send(
+            request,
+            launchId: "launch-1",
+            to: fixture.socketPath
+        )
+        precondition(result == .accepted(turnId: "turn-2"))
+        let line = try await server.value
+        let object = try JSONSerialization.jsonObject(
+            with: line.dropLast()
+        ) as? [String: Any]
+        precondition(object?["launchId"] as? String == "launch-1")
+        precondition(object?["operation"] as? String == "steer")
+        precondition(object?["expectedTurnId"] as? String == "turn-1")
+        precondition(object?["input"] as? String == "Change direction")
+        let target = object?["target"] as? [String: Any]
+        precondition(target?["source"] as? String == "localCli")
+        precondition(target?["sessionId"] as? String == "thread-1")
+
+        let wrongResponseServer = Task.detached {
+            try fixture.acceptOneLine(
+                replying: Data(
+                    #"{"jsonrpc":"2.0","id":"cove-thread-control:other","result":{"turnId":"turn-3"}}"#.utf8
+                )
+            )
+        }
+        let wrongResponse = await CoveThreadControlSocketClient().send(
+            request,
+            launchId: "launch-1",
+            to: fixture.socketPath
+        )
+        precondition(wrongResponse == .uncertain)
+        _ = try await wrongResponseServer.value
+
+        let rejectedServer = Task.detached {
+            try fixture.acceptOneLine(
+                replying: Data(
+                    #"{"schemaVersion":1,"type":"threadControlAck","controlId":"message-1","status":"rejected","rejection":"turnMismatch"}"#.utf8
+                )
+            )
+        }
+        let rejected = await CoveThreadControlSocketClient().send(
+            request,
+            launchId: "launch-1",
+            to: fixture.socketPath
+        )
+        precondition(rejected == .rejected(.turnMismatch))
+        _ = try await rejectedServer.value
+
+        let wrongOrigin = CoveThreadControlRequest(
+            target: CoveSessionIdentity(
+                source: .remoteCli,
+                hostId: "fixture-host",
+                sessionId: "thread-1"
+            )!,
+            operation: .steer,
+            expectedTurnId: "turn-1",
+            clientMessageId: "message-1",
+            input: "Change direction"
+        )
+        let wrongOriginResult = await CoveThreadControlSocketClient().send(
+            wrongOrigin,
+            launchId: "launch-1",
+            to: fixture.socketPath
+        )
+        precondition(wrongOriginResult == .rejected(.wrongOrigin))
+    }
+
+    static func testDesktopOwnedTurnDecisionBridge() async throws {
+        let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(
+                "cc-owned-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let receipt = directory.appendingPathComponent("decision.json")
+        let fixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r thread_read || exit 1
+            thread_read_id=$(printf '%s' "$thread_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"desktop-task","source":"vscode","status":{"type":"notLoaded"}}}}\\n' "$thread_read_id"
+            IFS= read -r start_turns || exit 1
+            start_turns_id=$(printf '%s' "$start_turns" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"data":[]}}\\n' "$start_turns_id"
+            IFS= read -r control || exit 1
+            control_id=$(printf '%s' "$control" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turn":{"id":"turn-1"}}}\\n' "$control_id"
+            printf '%s\\n' '{"jsonrpc":"2.0","id":42,"method":"item/commandExecution/requestApproval","params":{"threadId":"desktop-task","turnId":"turn-1","availableDecisions":["accept","decline"]}}'
+            IFS= read -r decision || exit 1
+            printf '%s' "$decision" > '\(receipt.path)'
+            IFS= read -r steer_read || exit 1
+            steer_read_id=$(printf '%s' "$steer_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"desktop-task","source":"vscode","status":{"type":"active"}}}}\\n' "$steer_read_id"
+            IFS= read -r turns_list || exit 1
+            turns_list_id=$(printf '%s' "$turns_list" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"data":[{"id":"turn-1","status":"inProgress","items":[]}]}}\\n' "$turns_list_id"
+            IFS= read -r steer || exit 1
+            steer_id=$(printf '%s' "$steer" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turnId":"turn-1"}}\\n' "$steer_id"
+            sleep 2
+            """
+        )
+        defer { fixture.close() }
+        let events = OwnedDesktopEventBox()
+        let controller = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: fixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "runtime",
+                isDirectory: true
+            )
+        )
+        defer { controller.stop() }
+        controller.setEventHandler { events.receive($0) }
+        let identity = CoveSessionIdentity(
+            source: .codexDesktop,
+            hostId: nil,
+            sessionId: "desktop-task"
+        )!
+        let result = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-1",
+                input: "Continue"
+            )
+        )
+        guard result == .accepted(turnId: "turn-1") else {
+            fatalError("Unexpected Desktop control result: \(result)")
+        }
+        for _ in 0..<200 where events.value() == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard let event = events.value(),
+              case let .approval(approval)? = event.directRequest(),
+              let decisionSocket = approval.decisionSocket
+        else { fatalError("Expected owned Desktop approval event") }
+        precondition(event.source == .codexDesktop)
+        precondition(event.sessionId == identity.sessionId)
+        try await CoveDecisionSocketClient().send(
+            .init(
+                launchId: approval.launchId,
+                requestId: approval.requestId,
+                result: .approval(decision: .accept)
+            ),
+            to: decisionSocket
+        )
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: receipt.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let received = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)
+        ) as? [String: Any]
+        precondition(received?["id"] as? Int == 42)
+        let receivedResult = received?["result"] as? [String: Any]
+        precondition(receivedResult?["decision"] as? String == "accept")
+        let steered = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .steer,
+                expectedTurnId: "turn-1",
+                clientMessageId: "message-desktop-steer",
+                input: "One more detail"
+            )
+        )
+        precondition(steered == .accepted(turnId: "turn-1"))
+    }
+
+    static func testLocalAppServerTurnDecisionBridge() async throws {
+        let directory = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent(
+                "cc-local-owned-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let receipt = directory.appendingPathComponent("decision.json")
+        let fixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r thread_read || exit 1
+            thread_read_id=$(printf '%s' "$thread_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"cli","status":{"type":"notLoaded"}}}}\\n' "$thread_read_id"
+            IFS= read -r thread_resume || exit 1
+            printf '%s' "$thread_resume" | /usr/bin/grep -q '"excludeTurns":true' || exit 1
+            thread_resume_id=$(printf '%s' "$thread_resume" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"cli","status":{"type":"idle"}}}}\\n' "$thread_resume_id"
+            IFS= read -r start_turns || exit 1
+            start_turns_id=$(printf '%s' "$start_turns" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"data":[]}}\\n' "$start_turns_id"
+            IFS= read -r control || exit 1
+            control_id=$(printf '%s' "$control" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turn":{"id":"turn-local"}}}\\n' "$control_id"
+            printf '%s\\n' '{"jsonrpc":"2.0","id":43,"method":"item/commandExecution/requestApproval","params":{"threadId":"local-task","turnId":"turn-local","availableDecisions":["accept","decline"]}}'
+            IFS= read -r decision || exit 1
+            printf '%s' "$decision" > '\(receipt.path)'
+            IFS= read -r steer_read || exit 1
+            steer_read_id=$(printf '%s' "$steer_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"cli","status":{"type":"active"}}}}\\n' "$steer_read_id"
+            IFS= read -r turns_list || exit 1
+            turns_list_id=$(printf '%s' "$turns_list" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"data":[{"id":"turn-local","status":"inProgress","items":[]}]}}\\n' "$turns_list_id"
+            IFS= read -r steer || exit 1
+            printf '%s' "$steer" | /usr/bin/grep -q '"method":"turn/steer"' || exit 1
+            steer_id=$(printf '%s' "$steer" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turn":{"id":"turn-local"}}}\\n' "$steer_id"
+            sleep 1
+            """
+        )
+        defer { fixture.close() }
+        let events = OwnedDesktopEventBox()
+        let controller = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: fixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "runtime",
+                isDirectory: true
+            )
+        )
+        defer { controller.stop() }
+        controller.setEventHandler { events.receive($0) }
+        let identity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "local-task"
+        )!
+        let result = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-local",
+                input: "Continue"
+            )
+        )
+        precondition(result == .accepted(turnId: "turn-local"))
+        for _ in 0..<200 where events.value() == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard let event = events.value(),
+              case let .approval(approval)? = event.directRequest(),
+              let decisionSocket = approval.decisionSocket
+        else { fatalError("Expected owned local app-server approval event") }
+        precondition(event.source == .localCli)
+        precondition(event.sessionId == identity.sessionId)
+        precondition(
+            event.payload.objectValue?["controlRoute"]?.stringValue
+                == CoveThreadControlRoute.localAppServer.rawValue
+        )
+        let blocked = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .steer,
+                expectedTurnId: "turn-local",
+                clientMessageId: "message-blocked-local",
+                input: "Do not send while approval is pending"
+            )
+        )
+        precondition(blocked == .rejected(.pendingRequest))
+        try await CoveDecisionSocketClient().send(
+            .init(
+                launchId: approval.launchId,
+                requestId: approval.requestId,
+                result: .approval(decision: .accept)
+            ),
+            to: decisionSocket
+        )
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: receipt.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let received = try JSONSerialization.jsonObject(
+            with: Data(contentsOf: receipt)
+        ) as? [String: Any]
+        precondition(received?["id"] as? Int == 43)
+
+        let steered = await controller.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .steer,
+                expectedTurnId: "turn-local",
+                clientMessageId: "message-steer-local",
+                input: "One more detail"
+            )
+        )
+        precondition(steered == .accepted(turnId: "turn-local"))
+
+        let agentFixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            for phase in inspect steer; do
+              IFS= read -r child_read || exit 1
+              child_read_id=$(printf '%s' "$child_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+              printf '{"id":"%s","result":{"thread":{"id":"child-agent","name":"Child agent","parentThreadId":"root-task","source":{"subAgent":{"thread_spawn":{"depth":1,"parent_thread_id":"root-task"}}},"status":{"type":"active"}}}}\\n' "$child_read_id"
+              IFS= read -r parent_read || exit 1
+              parent_read_id=$(printf '%s' "$parent_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+              printf '{"id":"%s","result":{"thread":{"id":"root-task","source":"cli","status":{"type":"idle"}}}}\\n' "$parent_read_id"
+              IFS= read -r turns_list || exit 1
+              turns_list_id=$(printf '%s' "$turns_list" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+              printf '{"id":"%s","result":{"data":[{"id":"child-turn","status":"inProgress","items":[]}]}}\\n' "$turns_list_id"
+            done
+            IFS= read -r steer || exit 1
+            printf '%s' "$steer" | /usr/bin/grep -q '"method":"turn/steer"' || exit 1
+            steer_id=$(printf '%s' "$steer" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"turnId":"child-turn"}}\\n' "$steer_id"
+            sleep 1
+            """
+        )
+        defer { agentFixture.close() }
+        let agentController = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: agentFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "agent-runtime",
+                isDirectory: true
+            )
+        )
+        defer { agentController.stop() }
+        let agentIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "child-agent"
+        )!
+        let inspectedAgent = await agentController.inspectLocalTarget(agentIdentity)
+        precondition(inspectedAgent?.parentSessionId == "root-task")
+        precondition(inspectedAgent?.activeTurnId == "child-turn")
+        precondition(inspectedAgent?.controlRoute == .localAppServer)
+        let agentSteer = await agentController.send(
+            CoveThreadControlRequest(
+                target: agentIdentity,
+                operation: .steer,
+                expectedTurnId: "child-turn",
+                clientMessageId: "message-agent-steer",
+                input: "Focus on the regression"
+            )
+        )
+        precondition(agentSteer == .accepted(turnId: "child-turn"))
+
+        let cycleFixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r child_read || exit 1
+            child_read_id=$(printf '%s' "$child_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"cycle-child","source":{"subAgent":{"thread_spawn":{"depth":1,"parent_thread_id":"cycle-parent"}}},"status":{"type":"active"}}}}\\n' "$child_read_id"
+            IFS= read -r parent_read || exit 1
+            parent_read_id=$(printf '%s' "$parent_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"cycle-parent","source":{"subAgent":{"thread_spawn":{"depth":2,"parent_thread_id":"cycle-child"}}},"status":{"type":"active"}}}}\\n' "$parent_read_id"
+            sleep 1
+            """
+        )
+        defer { cycleFixture.close() }
+        let cycleController = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: cycleFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "cycle-runtime",
+                isDirectory: true
+            )
+        )
+        defer { cycleController.stop() }
+        let cycleIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "cycle-child"
+        )!
+        let cycleInspection = await cycleController.inspectLocalTarget(cycleIdentity)
+        precondition(cycleInspection == nil)
+
+        let excludedAncestorFixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r child_read || exit 1
+            child_read_id=$(printf '%s' "$child_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"excluded-child","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"review-parent"}}},"status":{"type":"active"}}}}\\n' "$child_read_id"
+            IFS= read -r parent_read || exit 1
+            parent_read_id=$(printf '%s' "$parent_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"review-parent","source":{"subAgent":{"review":{}}},"status":{"type":"active"}}}}\\n' "$parent_read_id"
+            sleep 1
+            """
+        )
+        defer { excludedAncestorFixture.close() }
+        let excludedAncestorController = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: excludedAncestorFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "excluded-ancestor-runtime",
+                isDirectory: true
+            )
+        )
+        defer { excludedAncestorController.stop() }
+        let excludedAncestor = await excludedAncestorController.inspectLocalTarget(
+            CoveSessionIdentity(
+                source: .localCli,
+                hostId: nil,
+                sessionId: "excluded-child"
+            )!
+        )
+        precondition(excludedAncestor == nil)
+
+        let pendingFixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r thread_read || exit 1
+            thread_read_id=$(printf '%s' "$thread_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"pending-agent","source":"cli","status":{"type":"active","activeFlags":["waitingOnApproval"]}}}}\\n' "$thread_read_id"
+            sleep 1
+            """
+        )
+        defer { pendingFixture.close() }
+        let pendingController = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: pendingFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "pending-runtime",
+                isDirectory: true
+            )
+        )
+        defer { pendingController.stop() }
+        let pendingIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "pending-agent"
+        )!
+        let pendingSteer = await pendingController.send(
+            CoveThreadControlRequest(
+                target: pendingIdentity,
+                operation: .steer,
+                expectedTurnId: "pending-turn",
+                clientMessageId: "message-pending-agent",
+                input: "Must not steer"
+            )
+        )
+        precondition(pendingSteer == .rejected(.pendingRequest))
+
+        let wrongSourceFixture = try FakeCodexFixture(
+            body: """
+            #!/bin/sh
+            IFS= read -r initialize || exit 1
+            initialize_id=$(printf '%s' "$initialize" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{}}\\n' "$initialize_id"
+            IFS= read -r initialized || exit 1
+            IFS= read -r thread_read || exit 1
+            thread_read_id=$(printf '%s' "$thread_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","result":{"thread":{"id":"local-task","source":"vscode","status":{"type":"notLoaded"}}}}\\n' "$thread_read_id"
+            IFS= read -r missing_read || exit 1
+            missing_read_id=$(printf '%s' "$missing_read" | /usr/bin/sed -E 's/.*"id":"([^"]+)".*/\\1/')
+            printf '{"id":"%s","error":{"message":"missing"}}\\n' "$missing_read_id"
+            sleep 1
+            """
+        )
+        defer { wrongSourceFixture.close() }
+        let wrongSourceController = CoveDesktopOwnedThreadControlClient(
+            configuration: .init(
+                realCodexURL: wrongSourceFixture.executableURL,
+                requestTimeout: 2,
+                maximumLineBytes: 64 * 1_024,
+                clientVersion: "test"
+            ),
+            runtimeDirectory: directory.appendingPathComponent(
+                "missing-runtime",
+                isDirectory: true
+            )
+        )
+        defer { wrongSourceController.stop() }
+        let wrongSource = await wrongSourceController.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-missing",
+                input: "Continue"
+            )
+        )
+        precondition(wrongSource == .rejected(.wrongOrigin))
+        let missing = await wrongSourceController.send(
+            CoveThreadControlRequest(
+                target: identity,
+                operation: .start,
+                clientMessageId: "message-missing",
+                input: "Continue"
+            )
+        )
+        precondition(missing == .rejected(.wrongOrigin))
+    }
+
     static func testDecisionSocketBoundsAndPrivacy() async throws {
         let oversizedAnswer = String(
             repeating: "x",
@@ -4588,6 +6491,29 @@ struct CoveCoreSmokeTests {
         } catch CoveDecisionSocketError.insecureSocket {
             // The client must only use a user-private decision socket.
         }
+    }
+}
+
+private final class OwnedDesktopEventBox: @unchecked Sendable {
+    let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var event: CoveWireEnvelope?
+
+    func receive(_ event: CoveWireEnvelope) {
+        lock.lock()
+        guard self.event == nil else {
+            lock.unlock()
+            return
+        }
+        self.event = event
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func value() -> CoveWireEnvelope? {
+        lock.lock()
+        defer { lock.unlock() }
+        return event
     }
 }
 
@@ -4677,6 +6603,10 @@ private final class PrivateDecisionSocketFixture: @unchecked Sendable {
     }
 
     func acceptOneLine() throws -> Data {
+        try acceptOneLine(replying: nil)
+    }
+
+    func acceptOneLine(replying response: Data?) throws -> Data {
         let client = accept(listener, nil, nil)
         guard client >= 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
@@ -4690,6 +6620,12 @@ private final class PrivateDecisionSocketFixture: @unchecked Sendable {
             if count == 1 {
                 result.append(byte)
                 if byte == 0x0a {
+                    if var response {
+                        if response.last != 0x0a { response.append(0x0a) }
+                        _ = response.withUnsafeBytes { bytes in
+                            Darwin.write(client, bytes.baseAddress, bytes.count)
+                        }
+                    }
                     return result
                 }
             } else if count == 0 {

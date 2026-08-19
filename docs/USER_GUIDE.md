@@ -1,7 +1,7 @@
 # User Guide
 
-Codex Cove is a menu-bar app with three presentation states: a collapsed task
-island, an attention queue, and a focused action surface. It observes Codex
+Codex Cove is a menu-bar app with a collapsed task island, an attention queue,
+a focused action surface, and a reusable Workspace window. It observes Codex
 through public app-server and hook interfaces and leaves the native Codex client
 in charge whenever it cannot handle an action safely.
 
@@ -47,10 +47,10 @@ window are focused. Ambiguous or stale registrations fail closed.
 
 ### Codex Desktop
 
-Cove discovers a bounded set of recent Desktop tasks through the public Codex
-app-server. Opening one uses its exact `codex://threads/<id>` link. Cove never
-writes a Desktop thread or transcript and does not emulate unsupported Desktop
-actions.
+Cove reconciles loaded Desktop tasks through the public Codex app-server.
+Opening one uses its exact `codex://threads/<id>` link. An explicit Workspace
+Send can start an idle turn or steer the exact active turn; Cove never reads or
+writes private Desktop storage and does not emulate unsupported actions.
 
 ## Read the island
 
@@ -102,6 +102,69 @@ Archiving is not a Codex mutation. It never archives or deletes the underlying
 task, and the task remains available in Codex. Use **Archived Sessions** in the
 menu-bar menu or **Settings → Sessions & Data** to restore a hidden card while
 its local metadata remains available.
+
+## Organize work in Workspace
+
+For a complete control-by-control reference, see
+[Workspace Help](WORKSPACE.md).
+
+Choose **Open Workspace…** from the island's More section or the menu-bar menu.
+The single resizable Workspace window restores its frame and gives Cove a Dock
+and App-Switcher presence while it is open. Closing it returns Cove to its
+menu-bar accessory behavior.
+
+Workspace shows loaded Desktop threads and live routed or hook tasks, including
+idle tasks that remain open. Closed successful tasks leave the Workspace.
+Closed failed or interrupted tasks remain until you mark them read or archive
+them. New tasks enter both the end of Grid's manual order and Board's Inbox.
+
+Use the toolbar to switch views, search, filter, sort, open the prompt library,
+or manage Board columns:
+
+- **Grid** offers Manual, Attention, Recent Activity, Name, and Source sorts.
+  Dragging is available only under Manual with no active search or filter.
+  Move Earlier/Later commands provide keyboard and menu alternatives and can be
+  undone.
+- **Board** starts with Inbox, Doing, Review, and Blocked. Rename, reorder, add,
+  or delete custom columns; deleting one moves its cards to Inbox. Column
+  placement is a Cove workflow choice and never changes live Codex status.
+
+Search matches visible aliases, live titles, tags, link labels, source/host,
+status, and workflow column. Filters cover attention/status, source/host, tag,
+column, unread, pinned, and whether Cove can prompt the task. Privacy redaction
+removes protected fields from the visible UI, Accessibility tree, and search.
+
+Selecting a card opens the right-side inspector without marking it read. It
+contains the authoritative recursive subagent hierarchy, per-agent exact Open
+action, latest memory-only output, existing approval/question controls,
+Cove-only alias/tags/artifacts, reminders, pin/read/archive actions, and the
+prompt composer. Parent links are accepted only within the same origin; missing
+parents and cycles appear under **Unattached agents** rather than being guessed.
+
+### Prompt library and Send
+
+The prompt library is one searchable, manually ordered list with favorites and
+recent use. Favorites and recent templates also appear in card menus. Choosing
+a template copies its body into the selected card's editable composer; edits do
+not change the saved template unless you explicitly save them.
+
+Send is available only for a validated control route:
+
+- an idle target starts a turn;
+- an active target steers its exact observed turn;
+- a pending approval or question must be resolved first.
+
+If the task changes after preview, the route is stale, the active turn is
+missing, or delivery is unsupported, Cove rejects the Send and offers exact
+**Open in Codex**. An uncertain result is never retried automatically; inspect
+the native task before deciding what to do next. Hook-only tasks remain
+read-only in Cove.
+
+Aliases, tags, artifacts, Board columns, and saved templates are stored locally in
+the private `workspace.json`. Unsaved composer text, prompts actually submitted,
+outputs, approvals, commands, and transcripts remain memory-only. Links and
+tags are manual context only; Cove stores no Jira, Slack, GitHub, Grafana, or
+other connector credentials.
 
 ## Approvals and questions
 
@@ -165,6 +228,7 @@ The menu-bar controls remain available when shortcuts are disabled.
 The wave menu provides:
 
 - **Show Cove**
+- **Open Workspace…**
 - **Collapse to Menu Bar** or **Restore Island**
 - **Archived Sessions**, when local archives exist
 - **Settings…**
@@ -188,6 +252,16 @@ Privacy has three settings:
   recording application is running when **Conservative capture privacy** is
   enabled. This is a safety heuristic, not proof that recording is active.
 - **Off** allows the content choices configured for Cove's UI and notifications.
+
+Privacy redaction also applies to Workspace rendering, Accessibility labels,
+and search matching. Saved user-authored Workspace content remains in its local
+private file until you edit or remove it; redaction prevents displaying or
+matching it while privacy is active.
+
+Workspace displays a content-free banner identifying whether redaction comes
+from Privacy On, automatic capture-app protection, or the macOS lock state. Its
+toolbar also offers **Follow System**, **Light**, and **Dark** appearances for
+the full window without changing the island theme.
 
 Locking the user session hides Cove and forces its locked privacy state.
 
@@ -248,6 +322,9 @@ private session files. Rate limits and token metrics are memory-only; stale or
 missing data is labeled instead of estimated.
 
 ## Settings reference
+
+For detailed behavior and hover-help equivalents for every pane, see
+[Settings Help](SETTINGS.md).
 
 | Pane | Main controls |
 | --- | --- |

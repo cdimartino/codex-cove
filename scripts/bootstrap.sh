@@ -57,7 +57,7 @@ require_command cargo "install Rust with rustup"
 require_command rustc "install Rust with rustup"
 require_command node "install Node.js 22+"
 require_command npm "install Node.js 22+"
-require_command codex "install Codex CLI 0.145.0+"
+require_command codex "install Codex CLI 0.147.0+"
 require_command make "install GNU Make"
 require_command codesign "provided by macOS"
 require_command plutil "provided by macOS"
@@ -77,7 +77,7 @@ if command -v node >/dev/null 2>&1; then
 fi
 if command -v codex >/dev/null 2>&1; then
     codex_version=$(codex --version 2>/dev/null | awk 'NR == 1 { print $2 }')
-    require_version codex-version "$codex_version" 0.145.0 "install Codex CLI 0.145.0+"
+    require_version codex-version "$codex_version" 0.147.0 "install Codex CLI 0.147.0+"
 fi
 if command -v xcodebuild >/dev/null 2>&1; then
     xcode_version=$(xcodebuild -version 2>/dev/null | awk 'NR == 1 { print $2 }')

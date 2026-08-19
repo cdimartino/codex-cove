@@ -11,7 +11,7 @@ public enum CoveQueueSection: Int, CaseIterable, Codable, Hashable, Sendable {
 /// Stable identity for a projected task row.
 public enum CoveQueueItemID: Equatable, Hashable, Sendable {
     case directRequest(CoveDirectRequestKey)
-    case snapshot(String)
+    case snapshot(CoveSessionIdentity)
 }
 
 /// A task or request after section classification and request/snapshot
@@ -20,6 +20,7 @@ public struct CoveQueueItem: Equatable, Sendable, Identifiable {
     public var id: CoveQueueItemID
     public var section: CoveQueueSection
     public var sessionId: String
+    public var identity: CoveSessionIdentity?
     public var status: CoveSessionStatus
     public var priority: Int
     public var timestamp: Date?
@@ -31,6 +32,7 @@ public struct CoveQueueItem: Equatable, Sendable, Identifiable {
         id: CoveQueueItemID,
         section: CoveQueueSection,
         sessionId: String,
+        identity: CoveSessionIdentity? = nil,
         status: CoveSessionStatus,
         priority: Int,
         timestamp: Date?,
@@ -41,6 +43,7 @@ public struct CoveQueueItem: Equatable, Sendable, Identifiable {
         self.id = id
         self.section = section
         self.sessionId = sessionId
+        self.identity = identity
         self.status = status
         self.priority = priority
         self.timestamp = timestamp
@@ -92,16 +95,19 @@ public struct CoveQueueProjection: Equatable, Sendable {
             let status = Self.status(for: request)
             guard let section = Self.section(for: status) else { continue }
             let sessionId = request.sessionId
+            let identity = request.sessionIdentity
             candidates.append(
                 Candidate(
                     item: CoveQueueItem(
                         id: .directRequest(request.key),
                         section: section,
                         sessionId: sessionId,
+                        identity: identity,
                         status: status,
                         priority: Self.priority(for: request),
                         timestamp: match?.element.timestamp,
-                        isPinned: pinned.contains(sessionId),
+                        isPinned: identity.map { pinned.contains($0.id) }
+                            ?? false,
                         directRequest: request,
                         snapshot: match?.element
                     ),
@@ -117,16 +123,18 @@ public struct CoveQueueProjection: Equatable, Sendable {
                 continue
             }
             let sessionId = snapshot.sessionId ?? snapshot.snapshotId
+            guard let identity = snapshot.sessionIdentity else { continue }
             candidates.append(
                 Candidate(
                     item: CoveQueueItem(
-                        id: .snapshot(snapshot.snapshotId),
+                        id: .snapshot(identity),
                         section: section,
                         sessionId: sessionId,
+                        identity: identity,
                         status: snapshot.status,
                         priority: snapshot.priority,
                         timestamp: snapshot.timestamp,
-                        isPinned: pinned.contains(sessionId),
+                        isPinned: pinned.contains(identity.id),
                         directRequest: nil,
                         snapshot: snapshot
                     ),

@@ -41,8 +41,10 @@ final class CoveUnixSocketBroker: @unchecked Sendable {
         let fd = listenerFD
         stateLock.unlock()
         if fd >= 0 {
-            shutdown(fd, SHUT_RDWR)
+            wakeListener()
         }
+        // Application termination must not outrun runServer's socket cleanup.
+        queue.sync {}
     }
 
     private func runServer() {
@@ -75,19 +77,8 @@ final class CoveUnixSocketBroker: @unchecked Sendable {
             try? removeOwnedSocketIfPresent()
         }
 
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let pathCapacity = MemoryLayout.size(ofValue: addr.sun_path)
-        let pathResult = socketPath.withCString { cString -> Int32 in
-            withUnsafeMutablePointer(to: &addr.sun_path.0) { destination in
-                memset(destination, 0, pathCapacity)
-                let copied = strlcpy(destination, cString, pathCapacity)
-                return copied >= pathCapacity ? -1 : 0
-            }
-        }
-        guard pathResult == 0 else {
+        guard var addr = socketAddress() else {
             NSLog("CoveUnixSocketBroker path copy failed")
-            close(fd)
             return
         }
 
@@ -195,6 +186,36 @@ final class CoveUnixSocketBroker: @unchecked Sendable {
         isRunning = false
         listenerFD = -1
         stateLock.unlock()
+    }
+
+    private func wakeListener() {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+
+        let flags = fcntl(fd, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        }
+        guard var address = socketAddress() else { return }
+        _ = withUnsafePointer(to: &address) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+    }
+
+    private func socketAddress() -> sockaddr_un? {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathCapacity = MemoryLayout.size(ofValue: address.sun_path)
+        let copied = socketPath.withCString { source -> Int in
+            withUnsafeMutablePointer(to: &address.sun_path.0) { destination in
+                memset(destination, 0, pathCapacity)
+                return strlcpy(destination, source, pathCapacity)
+            }
+        }
+        return copied < pathCapacity ? address : nil
     }
 
     private func prepareSocketDirectory() throws {

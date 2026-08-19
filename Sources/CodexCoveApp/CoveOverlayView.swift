@@ -6,6 +6,7 @@ struct CoveOverlayRootView: View {
     @EnvironmentObject private var presentationMetrics: CoveOverlayPresentationMetrics
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let onOpenWorkspace: @MainActor (CoveSessionIdentity?) -> Void
     let onOpenSettings: @MainActor () -> Void
     let onRestoreArchived: @MainActor (String?) -> Void
     let fixtureStateDirectory: String?
@@ -26,7 +27,6 @@ struct CoveOverlayRootView: View {
         }()
         let redactsSensitiveContent = state.settings.privacyMode == .on
             || state.privacyScene != .normal
-            || state.session.activeStatus == .hidden
         let presentation = store.overlayPresentation
         ZStack {
             if state.settings.minimalIslandMode {
@@ -54,6 +54,7 @@ struct CoveOverlayRootView: View {
                     CoveQueueSurfaceView(
                         state: state,
                         redactsSensitiveContent: redactsSensitiveContent,
+                        onOpenWorkspace: onOpenWorkspace,
                         onOpenSettings: onOpenSettings,
                         onRestoreArchived: onRestoreArchived
                     )
@@ -71,6 +72,7 @@ struct CoveOverlayRootView: View {
                     stateDirectory: fixtureStateDirectory,
                     decisionAttemptCount: store.fixtureRecordedDecisionCount,
                     jumpCount: store.fixtureRecordedJumpCount,
+                    threadControl: store.fixtureRecordedThreadControl,
                     queueSectionOrder: state.settings.queueSectionOrder,
                     textScale: state.settings.textScale
                 )
@@ -86,7 +88,7 @@ struct CoveOverlayRootView: View {
         .clipShape(
             CoveOverlayClipShape(
                 cornerRadius: state.settings.minimalIslandMode
-                    ? 12
+                    ? max(12, presentationMetrics.topContentInset / 2)
                     : presentation.isExpanded
                         ? state.theme.cornerRadius
                         : 16,
@@ -969,7 +971,7 @@ struct CoveSessionListView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         if store.state.pinnedSessionIDs.contains(
-                            snapshot.sessionId ?? snapshot.snapshotId
+                            snapshot.sessionIdentity?.id ?? ""
                         ) {
                             Image(systemName: "pin.fill")
                                 .coveThemeFont(theme, size: 8, weight: .semibold)
@@ -1015,8 +1017,8 @@ struct CoveSessionListView: View {
                     style: .continuous
                 )
                     .fill(
-                        store.selectedSessionID
-                            == (snapshot.sessionId ?? snapshot.snapshotId)
+                        store.selectedSessionIdentity
+                            == snapshot.sessionIdentity
                             ? Color(hex: theme.accentHex).opacity(0.2)
                             : Color(hex: theme.surfaceHex).opacity(0.7)
                     )
@@ -1027,12 +1029,14 @@ struct CoveSessionListView: View {
         .contextMenu {
             Button(
                 store.state.pinnedSessionIDs.contains(
-                    snapshot.sessionId ?? snapshot.snapshotId
+                    snapshot.sessionIdentity?.id ?? ""
                 ) ? "Unpin" : "Pin"
             ) {
                 store.togglePinned(snapshot)
             }
-            if store.reminders[snapshot.sessionId ?? snapshot.snapshotId] == nil {
+            if snapshot.sessionIdentity.map({
+                store.reminders[$0] == nil
+            }) ?? true {
                 Button("Remind me once") {
                     store.scheduleFollowUp(snapshot)
                 }

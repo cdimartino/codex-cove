@@ -39,9 +39,11 @@ struct CoveSoundSettingsSection: View {
     var body: some View {
         Section("Sounds") {
             Toggle("Play event sounds", isOn: globallyEnabledBinding)
+                .help("Enable Cove's event-sound system. Per-event choices remain configurable below.")
                 .accessibilityIdentifier("settings.sounds.global.enabled")
             Toggle("Mute all sounds", isOn: mutedBinding)
                 .disabled(!globallyEnabled)
+                .help("Temporarily silence every Cove event without changing individual sound choices.")
                 .accessibilityIdentifier("settings.sounds.global.muted")
 
             CovePrecisionControlRow(
@@ -55,6 +57,7 @@ struct CoveSoundSettingsSection: View {
                 accessibilityIdentifier: "settings.sounds.global.volume"
             )
             .disabled(!globallyEnabled || preferences.isMuted)
+            .help("Scale every enabled event sound before its per-event volume.")
 
             ForEach(CoveSoundEvent.allCases) { event in
                 eventEditor(for: event)
@@ -65,6 +68,7 @@ struct CoveSoundSettingsSection: View {
                     importSound()
                 }
                 .disabled(!sideEffectsEnabled)
+                .help("Copy a supported audio file into Cove's private local sound library.")
                 .accessibilityIdentifier("settings.sounds.import")
                 Spacer()
                 if !importedSounds.isEmpty {
@@ -79,6 +83,7 @@ struct CoveSoundSettingsSection: View {
                             )
                         }
                     }
+                    .help("Delete a copied sound from Cove's local library.")
                     .accessibilityIdentifier("settings.sounds.remove-imported")
                 }
             }
@@ -116,6 +121,7 @@ struct CoveSoundSettingsSection: View {
                     "Play sound for \(event.displayName.lowercased())",
                     isOn: enabledBinding(for: event)
                 )
+                .help("Enable or disable this event without changing its selected sound.")
                 .accessibilityIdentifier(
                     "settings.sounds.event.\(event.rawValue).enabled"
                 )
@@ -146,6 +152,7 @@ struct CoveSoundSettingsSection: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .help("Choose Cove's built-in sound, an Apple system sound, or an imported file.")
                         .accessibilityLabel("\(event.displayName), sound source")
                         .accessibilityIdentifier(
                             "settings.sounds.event.\(event.rawValue).source"
@@ -155,6 +162,7 @@ struct CoveSoundSettingsSection: View {
                             preview(event)
                         }
                         .disabled(!sideEffectsEnabled || preferences.isMuted)
+                        .help("Play this event's current sound and effective volume.")
                         .accessibilityLabel("Preview \(event.displayName) sound")
                         .accessibilityIdentifier(
                             "settings.sounds.event.\(event.rawValue).preview"
@@ -172,6 +180,7 @@ struct CoveSoundSettingsSection: View {
                         accessibilityIdentifier:
                             "settings.sounds.event.\(event.rawValue).volume"
                     )
+                    .help("Scale this event after the global volume.")
                 }
                 .disabled(!globallyEnabled || !configuration.isEnabled)
             }

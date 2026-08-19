@@ -12,6 +12,62 @@ private enum ProbeFailure: Error {
     case failed
 }
 
+private final class FaviconURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) private static var responseData = Data()
+    nonisolated(unsafe) private static var responseStatus = 200
+    nonisolated(unsafe) private static var responseError: Error?
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    private static let lock = NSLock()
+
+    static func configure(
+        data: Data,
+        status: Int = 200,
+        error: Error? = nil
+    ) {
+        lock.lock()
+        responseData = data
+        responseStatus = status
+        responseError = error
+        requests = []
+        lock.unlock()
+    }
+
+    static func capturedRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests.append(request)
+        let data = Self.responseData
+        let status = Self.responseStatus
+        let error = Self.responseError
+        Self.lock.unlock()
+        if let error {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": String(data.count)]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 private actor ProbeSender: CoveDecisionSending {
     let shouldFail: Bool
     private var frames: [CoveDecisionFrame] = []
@@ -121,6 +177,7 @@ private struct CoveStoreFoundationTests {
                 title: id,
                 timestamp: now,
                 sessionId: sessionID ?? id,
+                source: .localCli,
                 unread: true
             )
         }
@@ -153,7 +210,10 @@ private struct CoveStoreFoundationTests {
                         sharedActive,
                     ]
                 ),
-                pinnedSessionIDs: ["completed-pinned", "active"]
+                pinnedSessionIDs: [
+                    pinnedCompleted.sessionIdentity!.id,
+                    active.sessionIdentity!.id,
+                ]
             ),
             persistenceWritesEnabledOverride: false,
             initialSoundPreferences: CoveSoundPreferences(),
@@ -165,16 +225,16 @@ private struct CoveStoreFoundationTests {
         var unpinned: [String] = []
         var canceledReminders: [String] = []
         store.onDismissSessions = {
-            archivedBatches.append($0)
+            archivedBatches.append($0.map(\.sessionId))
             return true
         }
         store.onSetPinned = { sessionID, pinned in
-            if !pinned { unpinned.append(sessionID) }
+            if !pinned { unpinned.append(sessionID.sessionId) }
             return true
         }
         store.onScheduleFollowUp = { _, _ in true }
         store.onCancelFollowUp = {
-            canceledReminders.append($0)
+            canceledReminders.append($0.sessionId)
             return true
         }
         store.scheduleFollowUp(remindedCompleted)
@@ -190,10 +250,15 @@ private struct CoveStoreFoundationTests {
         precondition(store.archivableCompletedCount == 0)
         precondition(
             Set(store.state.dismissedSessionIDs)
-                == ["completed-pinned", "completed-reminded"]
+                == [
+                    pinnedCompleted.sessionIdentity!.id,
+                    remindedCompleted.sessionIdentity!.id,
+                ]
         )
-        precondition(store.state.pinnedSessionIDs == ["active"])
-        precondition(store.reminders["completed-reminded"] == nil)
+        precondition(
+            store.state.pinnedSessionIDs == [active.sessionIdentity!.id]
+        )
+        precondition(store.reminders[remindedCompleted.sessionIdentity!] == nil)
         precondition(
             Set(store.state.session.snapshots.map(\.snapshotId))
                 == ["failed", "active", "shared-completed", "shared-active"]
@@ -201,6 +266,8 @@ private struct CoveStoreFoundationTests {
     }
 
     static func main() async {
+        testWorkspaceArtifactMutations()
+        await testFaviconLoader()
         do {
             try testUITestTemporaryDirectoryPolicy()
         } catch {
@@ -213,6 +280,7 @@ private struct CoveStoreFoundationTests {
         testEditorFocusResponseContract()
         testEditorFocusSocketTransport()
         testEditorExactOriginBinding()
+        testSessionOpenFailureFeedback()
         do {
             try testMetadataOriginCollisionFailsClosed()
         } catch {
@@ -220,6 +288,11 @@ private struct CoveStoreFoundationTests {
         }
         testArchiveAllCompletedSafety()
         await testRecoverableIdleAutoHide()
+        do {
+            try testCustomThemeDraftPersistsWhenSettingsCloses()
+        } catch {
+            fatalError("Custom theme close persistence failed: \(error)")
+        }
         do {
             try testCustomThemeSaveAndExport()
         } catch {
@@ -340,6 +413,284 @@ private struct CoveStoreFoundationTests {
         print("CoveStore foundation tests passed")
     }
 
+    static func testWorkspaceArtifactMutations() {
+        let root = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "workspace-root"
+        )!
+        let child = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "workspace-child"
+        )!
+        var workspace = CoveWorkspaceState(gridOrder: [root, child])
+        workspace.setLinks([
+            .init(label: "Root", url: URL(string: "https://example.com/root")!),
+        ], for: root)
+        workspace.setLinks([
+            .init(label: "Child", url: URL(string: "https://example.org/child")!),
+        ], for: child)
+        let now = Date(timeIntervalSince1970: 2_000)
+        let snapshots = [
+            CoveSessionSnapshot(
+                snapshotId: root.sessionId,
+                status: .idle,
+                priority: 5,
+                title: "Root",
+                timestamp: now,
+                sessionId: root.sessionId,
+                source: .localCli,
+                liveness: .live
+            ),
+            CoveSessionSnapshot(
+                snapshotId: child.sessionId,
+                status: .idle,
+                priority: 5,
+                title: "Child",
+                timestamp: now,
+                sessionId: child.sessionId,
+                source: .localCli,
+                parentSessionId: root.sessionId,
+                liveness: .live
+            ),
+        ]
+        workspace.observe(snapshots)
+        let store = CoveWorkspaceStore(
+            initialState: workspace,
+            writesEnabled: false,
+            openArtifactURL: { _ in true }
+        )
+        let projection = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: store.state
+        )
+        var artifacts = store.artifacts(for: root, projection: projection)
+        precondition(artifacts.map(\.link.label) == ["Root", "Child"])
+        let originalOrder = store.artifactOrder
+        let childArtifact = artifacts[1]
+        let childID = childArtifact.link.id
+        let childURL = childArtifact.link.url
+        store.renameArtifact(childArtifact, label: "  Renamed child  ")
+        artifacts = store.artifacts(for: root, projection: projection)
+        precondition(artifacts[1].link.label == "Renamed child")
+        precondition(artifacts[1].link.id == childID)
+        precondition(artifacts[1].link.url == childURL)
+        store.renameArtifact(artifacts[1], label: "   ")
+        precondition(store.artifacts(for: root, projection: projection)[1].link.label == "Renamed child")
+        store.renameArtifact(
+            artifacts[1],
+            label: String(repeating: "é", count: 65)
+        )
+        precondition(
+            store.artifacts(for: root, projection: projection)[1].link.label
+                == "Renamed child"
+        )
+        store.moveArtifact(artifacts[1], before: artifacts[0])
+        precondition(
+            store.artifacts(for: root, projection: projection).map(\.link.label)
+                == ["Renamed child", "Root"]
+        )
+        store.restoreArtifactOrder(originalOrder)
+        precondition(
+            store.artifacts(for: root, projection: projection).map(\.link.label)
+                == ["Root", "Renamed child"]
+        )
+    }
+
+    static func testFaviconLoader() async {
+        let blockedArtifactURLs = [
+            "https://localhost/path",
+            "https://intranet/path",
+            "https://127.0.0.1/path",
+            "https://127.1/path",
+            "https://127.0.1/path",
+            "https://127.000.000.001/path",
+            "https://0177.0.0.1/path",
+            "https://0x7f.0.0.1/path",
+            "https://2130706433/path",
+            "https://0x7f000001/path",
+            "https://8.8.2056/path",
+            "https://[::1]/path",
+            "https://[::ffff:127.0.0.1]/path",
+            "https://service.local/path",
+            "https://home.arpa/path",
+            "https://HOME.ARPA./path",
+            "https://service.home.arpa/path",
+        ].map { URL(string: $0)! }
+        precondition(
+            CoveFaviconLoader.faviconURL(
+                for: URL(string: "https://Example.COM/private/path?token=secret")!
+            ) == URL(string: "https://example.com/favicon.ico")!
+        )
+        precondition(
+            CoveFaviconLoader.faviconURL(
+                for: URL(string: "http://example.com:8080/path")!
+            ) == URL(string: "https://example.com/favicon.ico")!
+        )
+        precondition(
+            CoveFaviconLoader.faviconURL(
+                for: URL(string: "https://127.0.0.1.example.com/path")!
+            ) == URL(string: "https://127.0.0.1.example.com/favicon.ico")!
+        )
+        for url in blockedArtifactURLs {
+            precondition(CoveFaviconLoader.faviconURL(for: url) == nil)
+        }
+
+        let png = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
+        FaviconURLProtocol.configure(data: png)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FaviconURLProtocol.self]
+        let loader = CoveFaviconLoader(configuration: configuration)
+        for url in blockedArtifactURLs { loader.load(for: url) }
+        precondition(FaviconURLProtocol.capturedRequests().isEmpty)
+        let artifactURL = URL(string: "https://example.com/private?token=secret")!
+        loader.load(for: artifactURL)
+        loader.load(for: artifactURL)
+        let loaded = await waitUntil {
+            loader.image(for: artifactURL) != nil
+        }
+        precondition(loaded)
+        let requests = FaviconURLProtocol.capturedRequests()
+        precondition(requests.count == 1)
+        precondition(requests[0].url == URL(string: "https://example.com/favicon.ico"))
+        precondition(requests[0].value(forHTTPHeaderField: "Cookie") == nil)
+        precondition(requests[0].value(forHTTPHeaderField: "Authorization") == nil)
+        loader.load(for: artifactURL)
+        try? await Task.sleep(for: .milliseconds(50))
+        precondition(FaviconURLProtocol.capturedRequests().count == 1)
+
+        func littleEndianBytes(_ value: Int) -> [UInt8] {
+            let value = UInt32(value)
+            return [
+                UInt8(truncatingIfNeeded: value),
+                UInt8(truncatingIfNeeded: value >> 8),
+                UInt8(truncatingIfNeeded: value >> 16),
+                UInt8(truncatingIfNeeded: value >> 24),
+            ]
+        }
+        var ico = Data([0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0])
+        ico.append(contentsOf: littleEndianBytes(48))
+        ico.append(contentsOf: littleEndianBytes(22))
+        ico.append(contentsOf: littleEndianBytes(40))
+        ico.append(contentsOf: littleEndianBytes(1))
+        ico.append(contentsOf: littleEndianBytes(2))
+        ico.append(contentsOf: [1, 0, 32, 0])
+        ico.append(contentsOf: littleEndianBytes(0))
+        ico.append(contentsOf: littleEndianBytes(4))
+        for _ in 0..<4 { ico.append(contentsOf: littleEndianBytes(0)) }
+        ico.append(contentsOf: [0, 0, 255, 255, 0, 0, 0, 0])
+        FaviconURLProtocol.configure(data: ico)
+        let icoLoader = CoveFaviconLoader(configuration: configuration)
+        let icoURL = URL(string: "https://ico.example.com/artifact")!
+        icoLoader.load(for: icoURL)
+        let icoLoaded = await waitUntil { icoLoader.image(for: icoURL) != nil }
+        precondition(icoLoaded)
+
+        func assertRejected(
+            _ host: String,
+            data: Data = Data(),
+            status: Int = 200,
+            error: Error? = nil
+        ) async {
+            FaviconURLProtocol.configure(
+                data: data,
+                status: status,
+                error: error
+            )
+            let rejectedLoader = CoveFaviconLoader(configuration: configuration)
+            let url = URL(string: "https://\(host)/artifact")!
+            let initial = rejectedLoader.revision
+            rejectedLoader.load(for: url)
+            let completed = await waitUntil {
+                rejectedLoader.revision != initial
+            }
+            precondition(completed)
+            precondition(rejectedLoader.image(for: url) == nil)
+        }
+
+        await assertRejected("missing.example.com", status: 404)
+        await assertRejected("redirect.example.com", status: 302)
+        await assertRejected(
+            "invalid-image.example.com",
+            data: Data("not an image".utf8)
+        )
+        await assertRejected(
+            "timeout.example.com",
+            error: URLError(.timedOut)
+        )
+
+        FaviconURLProtocol.configure(data: Data(repeating: 0, count: 256 * 1_024 + 1))
+        let oversizedLoader = CoveFaviconLoader(configuration: configuration)
+        let initialRevision = oversizedLoader.revision
+        oversizedLoader.load(for: URL(string: "https://oversized.example.com/x")!)
+        let rejectedOversized = await waitUntil {
+            oversizedLoader.revision != initialRevision
+        }
+        precondition(rejectedOversized)
+        precondition(
+            oversizedLoader.image(for: URL(string: "https://oversized.example.com/x")!) == nil
+        )
+    }
+
+    static func testSessionOpenFailureFeedback() {
+        let snapshot = CoveSessionSnapshot(
+            snapshotId: "open-feedback-snapshot",
+            status: .working,
+            priority: 40,
+            title: "Open feedback fixture",
+            timestamp: Date(timeIntervalSince1970: 1),
+            sessionId: "open-feedback-session",
+            launchId: "open-feedback-launch",
+            source: .remoteCli,
+            hostId: "fixture-remote",
+            unread: true
+        )
+        let store = CoveStore(
+            storage: MemoryStorage(),
+            decisionSender: ProbeSender(),
+            initialState: CoveState(
+                session: CoveSessionState(
+                    isExpanded: true,
+                    snapshots: [snapshot]
+                )
+            ),
+            persistenceWritesEnabledOverride: false,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+        var markedRead: [String] = []
+        store.onMarkRead = { markedRead.append($0.sessionId) }
+        store.onJumpToSession = { _ in
+            CoveJumpResult(
+                focusedExactLocation: false,
+                message: "The exact originating remote terminal is not currently available."
+            )
+        }
+
+        precondition(!store.open(snapshot))
+        precondition(
+            store.sessionOpenFailureMessage
+                == "The exact originating remote terminal is not currently available."
+        )
+        precondition(store.state.session.snapshots[0].unread)
+        precondition(markedRead.isEmpty)
+
+        store.onJumpToSession = { _ in
+            CoveJumpResult(
+                focusedExactLocation: true,
+                message: "Focused the originating remote Codex terminal."
+            )
+        }
+        precondition(store.open(snapshot))
+        precondition(store.sessionOpenFailureMessage == nil)
+        precondition(!store.state.session.snapshots[0].unread)
+        precondition(markedRead == ["open-feedback-session"])
+    }
+
     static func testCustomThemeSaveAndExport() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -370,8 +721,6 @@ private struct CoveStoreFoundationTests {
         store.previewTheme(draft)
         precondition(store.themePreview?.backgroundHex == "#123456")
         precondition(store.themePreview?.surfaceFill == .solid)
-        store.endSettingsPresentation()
-        precondition(store.themePreview == nil)
         let saved = try store.saveCustomTheme(draft, named: "My Theme")
         precondition(!saved.isBuiltIn)
         precondition(saved.name == "My Theme")
@@ -403,6 +752,55 @@ private struct CoveStoreFoundationTests {
         precondition(resaved.name == "My Theme 2")
         precondition(resaved.surfaceHex == "#654321")
         precondition(store.customThemes == [resaved])
+    }
+
+    static func testCustomThemeDraftPersistsWhenSettingsCloses() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storage = CoveFileStateStorage(
+            url: directory.appendingPathComponent("settings.json")
+        )
+        let themeStorage = CoveThemeFileStore(
+            directoryURL: directory.appendingPathComponent("Themes")
+        )
+        let store = CoveStore(
+            storage: storage,
+            themeStorage: themeStorage,
+            initialState: CoveState(),
+            persistenceWritesEnabledOverride: true,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false,
+            initialCustomThemes: []
+        )
+
+        var draft = store.state.theme
+        draft.name = "Close Saved Theme"
+        draft.backgroundHex = "#123456"
+        draft.surfaceFill = .solid
+        store.previewTheme(draft)
+        store.endSettingsPresentation()
+
+        precondition(store.themePreview == nil)
+        precondition(store.customThemes.count == 1)
+        let saved = store.customThemes[0]
+        precondition(saved.name == "Close Saved Theme")
+        precondition(saved.backgroundHex == "#123456")
+        precondition(saved.surfaceFill == .solid)
+        precondition(saved.identifier != draft.identifier)
+        let persistedState = try storage.load()
+        precondition(
+            persistedState?.settings.customThemeID == saved.identifier
+        )
+
+        let reloaded = CoveStore(
+            storage: storage,
+            themeStorage: themeStorage,
+            initialSoundPreferences: CoveSoundPreferences(),
+            soundWritesEnabled: false
+        )
+        precondition(reloaded.state.settings.customThemeID == saved.identifier)
+        precondition(reloaded.state.theme == saved)
     }
 
     static func testRecoverableIdleAutoHide() async {
@@ -832,6 +1230,7 @@ private struct CoveStoreFoundationTests {
             launchId: "missing-launch",
             source: .localCli
         )
+        precondition(!service.canJump(to: missing))
         let result = service.jump(to: missing)
         precondition(!result.focusedExactLocation)
         precondition(openedURLs.isEmpty)
@@ -845,6 +1244,7 @@ private struct CoveStoreFoundationTests {
             sessionId: "verified-desktop",
             source: .codexDesktop
         )
+        precondition(service.canJump(to: desktop))
         precondition(service.jump(to: desktop).focusedExactLocation)
         precondition(
             openedURLs.map(\.absoluteString)
@@ -859,6 +1259,7 @@ private struct CoveStoreFoundationTests {
             sessionId: "",
             source: .codexDesktop
         )
+        precondition(!service.canJump(to: emptyDesktop))
         precondition(!service.jump(to: emptyDesktop).focusedExactLocation)
         precondition(
             openedURLs.map(\.absoluteString)
@@ -1162,12 +1563,28 @@ private struct CoveStoreFoundationTests {
             ),
             state: CoveState()
         )
-        let retainedLocal = try storage.metadata(
+        let localIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "shared-metadata-session"
+        )!
+        let desktopIdentity = CoveSessionIdentity(
+            source: .codexDesktop,
+            hostId: nil,
+            sessionId: "shared-metadata-session"
+        )!
+        let ambiguousLocal = try storage.metadata(
             sessionId: "shared-metadata-session"
         )
+        precondition(ambiguousLocal == nil)
+        let retainedLocal = try storage.metadata(identity: localIdentity)
         precondition(retainedLocal?.source == .localCli)
         precondition(
             retainedLocal?.updatedAt == Date(timeIntervalSince1970: 1)
+        )
+        let retainedDesktop = try storage.metadata(identity: desktopIdentity)
+        precondition(
+            retainedDesktop?.updatedAt == Date(timeIntervalSince1970: 2)
         )
 
         bridge.remove(
@@ -1209,13 +1626,29 @@ private struct CoveStoreFoundationTests {
             ),
             state: CoveState()
         )
-        let retainedRemote = try storage.metadata(
+        let remoteAIdentity = CoveSessionIdentity(
+            source: .remoteCli,
+            hostId: "remote-a",
+            sessionId: "shared-metadata-session"
+        )!
+        let remoteBIdentity = CoveSessionIdentity(
+            source: .remoteCli,
+            hostId: "remote-b",
+            sessionId: "shared-metadata-session"
+        )!
+        let ambiguousRemote = try storage.metadata(
             sessionId: "shared-metadata-session"
         )
+        precondition(ambiguousRemote == nil)
+        let retainedRemote = try storage.metadata(identity: remoteAIdentity)
         precondition(retainedRemote?.source == .remoteCli)
         precondition(retainedRemote?.hostId == "remote-a")
         precondition(
             retainedRemote?.updatedAt == Date(timeIntervalSince1970: 3)
+        )
+        let retainedRemoteB = try storage.metadata(identity: remoteBIdentity)
+        precondition(
+            retainedRemoteB?.updatedAt == Date(timeIntervalSince1970: 4)
         )
         bridge.remove(
             sessionID: "shared-metadata-session",
@@ -1235,6 +1668,42 @@ private struct CoveStoreFoundationTests {
             sessionId: "shared-metadata-session"
         )
         precondition(remoteAfterExactRemoval == nil)
+
+        let sparseIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "sparse-metadata-session"
+        )!
+        bridge.record(
+            CoveWireEnvelope(
+                eventId: "sparse-metadata-initial",
+                kind: .sessionStatus,
+                timestamp: Date(timeIntervalSince1970: 5),
+                source: .localCli,
+                sessionId: sparseIdentity.sessionId,
+                launchId: "sparse-launch",
+                payload: .object([
+                    "status": .string(CoveSessionStatus.working.rawValue),
+                    "parentThreadId": .string("sparse-parent"),
+                ])
+            ),
+            state: CoveState()
+        )
+        guard let omitted = CoveEventDecoder.decodeLine(
+            #"{"schemaVersion":1,"eventId":"sparse-metadata-omitted","kind":"sessionStatus","timestamp":"1970-01-01T00:00:06Z","source":"localCli","sessionId":"sparse-metadata-session","payload":{"status":"working"}}"#
+        ) else { fatalError("Expected omitted metadata envelope") }
+        bridge.record(omitted, state: CoveState())
+        let retained = try storage.metadata(identity: sparseIdentity)
+        precondition(retained?.launchId == "sparse-launch")
+        precondition(retained?.parentSessionId == "sparse-parent")
+
+        guard let cleared = CoveEventDecoder.decodeLine(
+            #"{"schemaVersion":1,"eventId":"sparse-metadata-cleared","kind":"sessionStatus","timestamp":"1970-01-01T00:00:07Z","source":"localCli","sessionId":"sparse-metadata-session","launchId":null,"payload":{"status":"working","parentThreadId":null}}"#
+        ) else { fatalError("Expected explicit-null metadata envelope") }
+        bridge.record(cleared, state: CoveState())
+        let clearedMetadata = try storage.metadata(identity: sparseIdentity)
+        precondition(clearedMetadata?.launchId == nil)
+        precondition(clearedMetadata?.parentSessionId == nil)
     }
 
     static func testEditorFocusResponseContract() {
@@ -1325,7 +1794,7 @@ private struct CoveStoreFoundationTests {
             response: fragmented,
             fragmentSize: 1,
             fragmentDelayMicroseconds: 500,
-            clientTimeout: 0.5
+            clientTimeout: 5
         )
         precondition(fragmentedResult.accepted)
 
@@ -1336,7 +1805,7 @@ private struct CoveStoreFoundationTests {
             response: eofDelimited,
             fragmentSize: 2,
             fragmentDelayMicroseconds: 500,
-            clientTimeout: 0.5
+            clientTimeout: 5
         )
         precondition(eofResult.accepted)
 

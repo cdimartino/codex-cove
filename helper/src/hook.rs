@@ -84,6 +84,11 @@ pub fn run_hook_with_io<R: Read, W: Write>(
         json!({"hookEventName": hook_name, "data": payload}),
     );
     event.turn_id = turn_id;
+    if let Some(liveness) = hook_liveness(hook_name)
+        && let Some(object) = event.payload.as_object_mut()
+    {
+        object.insert("liveness".to_owned(), Value::String(liveness.to_owned()));
+    }
 
     if hook_name == "PermissionRequest" {
         let decision_path = config.runtime_directory.join(format!(
@@ -169,6 +174,13 @@ pub fn run_hook_with_io<R: Read, W: Write>(
         );
     }
     Ok(())
+}
+
+fn hook_liveness(hook_name: &str) -> Option<&'static str> {
+    match hook_name {
+        "SessionEnd" => Some("closed"),
+        _ => Some("live"),
+    }
 }
 
 fn configured_source(payload: &Value) -> Option<EventSource> {
@@ -328,6 +340,13 @@ mod tests {
         .unwrap();
         server.join().unwrap();
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn session_hooks_separate_liveness_from_turn_status() {
+        assert_eq!(hook_liveness("SessionStart"), Some("live"));
+        assert_eq!(hook_liveness("SessionEnd"), Some("closed"));
+        assert_eq!(hook_liveness("Stop"), Some("live"));
     }
 
     #[test]

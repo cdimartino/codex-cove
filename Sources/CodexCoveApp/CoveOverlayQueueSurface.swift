@@ -15,6 +15,7 @@ struct CoveQueueSurfaceView: View {
 
     let state: CoveState
     let redactsSensitiveContent: Bool
+    let onOpenWorkspace: @MainActor (CoveSessionIdentity?) -> Void
     let onOpenSettings: @MainActor () -> Void
     let onRestoreArchived: @MainActor (String?) -> Void
 
@@ -177,6 +178,15 @@ struct CoveQueueSurfaceView: View {
                     .stroke(Color(hex: state.theme.borderHex))
             }
 
+            if let snapshot = selectedItem?.snapshot,
+               let message = store.sessionOpenFailureMessage(for: snapshot) {
+                CoveSessionOpenFailureView(
+                    message: message,
+                    theme: state.theme,
+                    redactsSensitiveContent: redactsSensitiveContent
+                )
+            }
+
             if let warning = store.persistenceWarning {
                 Label(
                     redactsSensitiveContent
@@ -262,10 +272,12 @@ struct CoveQueueSurfaceView: View {
                             theme: state.theme,
                             redactsSensitiveContent: redactsSensitiveContent,
                             isSelected: item.id == selectedID,
-                            isReminderScheduled: store.reminders[item.sessionId]
-                                != nil,
-                            onSelect: { open(item) },
-                            onFocus: { focus(item) }
+                            isReminderScheduled: item.identity.map {
+                                store.reminders[$0] != nil
+                            } ?? false,
+                            onSelect: { openWorkspace(item) },
+                            onFocus: { focus(item) },
+                            onOpenInCodex: { openInCodex(item) }
                         )
                         .environmentObject(store)
                     }
@@ -402,6 +414,15 @@ struct CoveQueueSurfaceView: View {
 
             archivedSection
 
+            Button { onOpenWorkspace(nil) } label: {
+                Label("Open Workspace…", systemImage: "square.grid.2x2.fill")
+                    .coveOverlayFont(state.theme, .body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderedProminent)
+            .help("Open the Codex Cove Workspace")
+            .accessibilityIdentifier("cove.queue.workspace")
+
             Button(action: onOpenSettings) {
                 Label("Settings…", systemImage: "gearshape.fill")
                     .coveOverlayFont(state.theme, .body)
@@ -410,6 +431,15 @@ struct CoveQueueSurfaceView: View {
             .buttonStyle(.bordered)
             .help("Open Codex Cove Settings")
             .accessibilityIdentifier("cove.queue.settings")
+
+            Link(destination: CoveHelp.userGuideURL) {
+                Label("Help…", systemImage: "questionmark.circle")
+                    .coveOverlayFont(state.theme, .body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.bordered)
+            .help("Open the complete Codex Cove user guide")
+            .accessibilityIdentifier("cove.queue.help")
         }
     }
 
@@ -725,10 +755,15 @@ struct CoveQueueSurfaceView: View {
 
     private func openSelectedItem() {
         guard let selectedItem else { return }
-        open(selectedItem)
+        openInCodex(selectedItem)
     }
 
-    private func open(_ item: CoveQueueItem) {
+    private func openWorkspace(_ item: CoveQueueItem) {
+        selectedID = item.id
+        onOpenWorkspace(item.identity)
+    }
+
+    private func openInCodex(_ item: CoveQueueItem) {
         selectedID = item.id
         if let request = item.directRequest {
             store.openInCodex(for: request)
@@ -799,6 +834,7 @@ private struct CoveQueueTaskRow: View {
     let isReminderScheduled: Bool
     let onSelect: () -> Void
     let onFocus: () -> Void
+    let onOpenInCodex: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -882,7 +918,7 @@ private struct CoveQueueTaskRow: View {
             .accessibilityLabel(
                 "\(item.status.displayName), \(CoveQueueCopy.title(for: item, redactsSensitiveContent: redactsSensitiveContent))"
             )
-            .accessibilityHint("Opens this task in Codex")
+            .accessibilityHint("Opens this task in Workspace")
 
             Button(action: onFocus) {
                 Text(item.directRequest == nil ? "Details" : "Review")
@@ -919,6 +955,12 @@ private struct CoveQueueTaskRow: View {
 
     @ViewBuilder
     private var quickActions: some View {
+        Button("Open in Codex", action: onOpenInCodex)
+            .accessibilityIdentifier(
+                actionAccessibilityIdentifier("open-in-codex")
+            )
+        Divider()
+
         Button(item.isPinned ? "Unpin" : "Pin") {
             guard let snapshot = item.snapshot else { return }
             store.togglePinned(snapshot)
@@ -1248,6 +1290,7 @@ struct CoveFixtureAccessibilityMarkers: View {
     let stateDirectory: String
     let decisionAttemptCount: Int
     let jumpCount: Int
+    let threadControl: String
     let queueSectionOrder: [CoveQueueSection]
     let textScale: Double
 
@@ -1264,6 +1307,10 @@ struct CoveFixtureAccessibilityMarkers: View {
             marker(
                 value: "\(jumpCount)",
                 identifier: "cove.fixture.jump-count"
+            )
+            marker(
+                value: threadControl,
+                identifier: "cove.fixture.thread-control"
             )
             marker(
                 value: queueSectionOrder
@@ -1497,7 +1544,7 @@ struct CoveFocusedSurfaceView: View {
     }
 }
 
-private struct CoveFocusedDirectRequestView: View {
+struct CoveFocusedDirectRequestView: View {
     @EnvironmentObject private var store: CoveStore
 
     let request: CoveDirectRequest
@@ -2368,6 +2415,14 @@ private struct CoveFocusedSessionView: View {
                     )
                 )
             }
+
+            if let message = store.sessionOpenFailureMessage(for: snapshot) {
+                CoveSessionOpenFailureView(
+                    message: message,
+                    theme: theme,
+                    redactsSensitiveContent: redactsSensitiveContent
+                )
+            }
         }
         .coveOpaqueCard(theme: theme)
     }
@@ -2377,11 +2432,13 @@ private struct CoveFocusedSessionView: View {
     }
 
     private var isPinned: Bool {
-        store.state.pinnedSessionIDs.contains(sessionID)
+        snapshot.sessionIdentity.map {
+            store.state.pinnedSessionIDs.contains($0.id)
+        } ?? false
     }
 
     private var isReminderScheduled: Bool {
-        store.reminders[sessionID] != nil
+        snapshot.sessionIdentity.map { store.reminders[$0] != nil } ?? false
     }
 
     private var metadata: some View {
@@ -2505,6 +2562,32 @@ private struct CoveDecisionDeliveryView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+struct CoveSessionOpenFailureView: View {
+    let message: String
+    let theme: CoveThemePalette
+    let redactsSensitiveContent: Bool
+
+    var body: some View {
+        Label(
+            displayMessage,
+            systemImage: "exclamationmark.triangle.fill"
+        )
+        .coveOverlayFont(theme, .metadata)
+        .foregroundStyle(Color(hex: theme.failedHex))
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Open in Codex failed")
+        .accessibilityValue(displayMessage)
+        .accessibilityIdentifier("cove.session-open-failure")
+    }
+
+    private var displayMessage: String {
+        redactsSensitiveContent
+            ? "The exact Codex location could not be opened."
+            : message
     }
 }
 

@@ -9,8 +9,10 @@ public protocol CoveStateStorage: Sendable {
 
 public enum CovePersistenceError: Error, Equatable, LocalizedError, Sendable {
     case unsupportedSettingsSchema(found: Int, supported: Int)
+    case unsupportedWorkspaceSchema(found: Int, supported: Int)
     case unsupportedDatabaseSchema(found: Int, supported: Int)
     case invalidMetadata(field: String)
+    case invalidWorkspace(field: String)
     case unsafeFilesystemEntry(kind: String)
     case sqlite(operation: String, code: Int32, message: String)
 
@@ -18,10 +20,14 @@ public enum CovePersistenceError: Error, Equatable, LocalizedError, Sendable {
         switch self {
         case let .unsupportedSettingsSchema(found, supported):
             return "Settings schema \(found) is newer than supported schema \(supported)."
+        case let .unsupportedWorkspaceSchema(found, supported):
+            return "Workspace schema \(found) is newer than supported schema \(supported)."
         case let .unsupportedDatabaseSchema(found, supported):
             return "Session database schema \(found) is newer than supported schema \(supported)."
         case let .invalidMetadata(field):
             return "Invalid session metadata field: \(field)."
+        case let .invalidWorkspace(field):
+            return "Invalid workspace field: \(field)."
         case let .unsafeFilesystemEntry(kind):
             return "Refusing to use an unsafe \(kind) filesystem entry."
         case let .sqlite(operation, code, message):
@@ -240,6 +246,7 @@ public struct CoveSessionMetadataDiagnostics: Codable, Equatable, Sendable {
     public var unreadCount: Int
     public var scheduledReminderCount: Int
     public var dueReminderCount: Int
+    public var ambiguousLegacyIdentityCount: Int
     public var oldestStartedAt: Date?
     public var newestUpdatedAt: Date?
     public var statusCounts: [String: Int]
@@ -253,6 +260,7 @@ public struct CoveSessionMetadataDiagnostics: Codable, Equatable, Sendable {
         unreadCount: Int,
         scheduledReminderCount: Int,
         dueReminderCount: Int,
+        ambiguousLegacyIdentityCount: Int = 0,
         oldestStartedAt: Date?,
         newestUpdatedAt: Date?,
         statusCounts: [String: Int]
@@ -265,6 +273,7 @@ public struct CoveSessionMetadataDiagnostics: Codable, Equatable, Sendable {
         self.unreadCount = unreadCount
         self.scheduledReminderCount = scheduledReminderCount
         self.dueReminderCount = dueReminderCount
+        self.ambiguousLegacyIdentityCount = ambiguousLegacyIdentityCount
         self.oldestStartedAt = oldestStartedAt
         self.newestUpdatedAt = newestUpdatedAt
         self.statusCounts = statusCounts
@@ -273,9 +282,11 @@ public struct CoveSessionMetadataDiagnostics: Codable, Equatable, Sendable {
 
 public protocol CoveSessionMetadataStorage: Sendable {
     func upsert(_ metadata: CoveSessionMetadata) throws
+    func metadata(identity: CoveSessionIdentity) throws -> CoveSessionMetadata?
     func metadata(sessionId: String) throws -> CoveSessionMetadata?
     func recent(limit: Int) throws -> [CoveSessionMetadata]
     func dueReminders(now: Date, limit: Int) throws -> [CoveSessionMetadata]
+    func remove(identity: CoveSessionIdentity) throws
     func remove(sessionId: String) throws
     @discardableResult
     func prune(updatedBefore: Date, limit: Int) throws -> Int
@@ -289,7 +300,7 @@ public extension CoveSessionMetadataStorage {
 }
 
 public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
-    public static let currentDatabaseSchemaVersion = 1
+    public static let currentDatabaseSchemaVersion = 2
     public static let defaultMaximumQueryRows = 200
     public static let hardMaximumQueryRows = 500
 
@@ -345,8 +356,13 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
                 var attributedMetadata = metadata
                 if shouldReplace,
                    let replacingSessionId,
+                   let pendingIdentity = CoveSessionIdentity(
+                       source: metadata.source,
+                       hostId: metadata.hostId,
+                       sessionId: replacingSessionId
+                   ),
                    let pending = try self.metadata(
-                       sessionId: replacingSessionId,
+                       identity: pendingIdentity,
                        in: connection
                    ) {
                     attributedMetadata.launchId = attributedMetadata.launchId
@@ -378,13 +394,28 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
                 try upsert(attributedMetadata, in: connection)
                 if shouldReplace, let replacingSessionId {
                     let statement = try connection.prepare(
-                        "DELETE FROM session_metadata WHERE session_id = ?",
+                        """
+                        DELETE FROM session_metadata
+                        WHERE source = ? AND origin_host_id = ? AND session_id = ?
+                        """,
                         operation: "prepare pending attribution removal"
                     )
                     defer { sqlite3_finalize(statement) }
                     try connection.bind(
-                        replacingSessionId,
+                        metadata.source.rawValue,
                         to: 1,
+                        in: statement,
+                        operation: "bind pending attribution removal"
+                    )
+                    try connection.bind(
+                        originHostID(for: metadata),
+                        to: 2,
+                        in: statement,
+                        operation: "bind pending attribution removal"
+                    )
+                    try connection.bind(
+                        replacingSessionId,
+                        to: 3,
                         in: statement,
                         operation: "bind pending attribution removal"
                     )
@@ -415,7 +446,7 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
         try validateOpaqueIdentifier(sessionId, field: "sessionId", maximumBytes: 512)
         return try withDatabase { connection in
             let statement = try connection.prepare(
-                "\(Self.selectColumnsSQL) WHERE session_id = ? LIMIT 1",
+                "\(Self.selectColumnsSQL) WHERE session_id = ? LIMIT 2",
                 operation: "prepare metadata lookup"
             )
             defer { sqlite3_finalize(statement) }
@@ -427,7 +458,20 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
             guard result == SQLITE_ROW else {
                 throw connection.error(operation: "metadata lookup", code: result)
             }
-            return try decodeMetadata(from: statement)
+            let record = try decodeMetadata(from: statement)
+            // A raw identifier is a compatibility lookup only. Once multiple
+            // origins own it, fail closed instead of selecting an arbitrary
+            // route or mutating the wrong record.
+            guard sqlite3_step(statement) == SQLITE_DONE else { return nil }
+            return record
+        }
+    }
+
+    public func metadata(
+        identity: CoveSessionIdentity
+    ) throws -> CoveSessionMetadata? {
+        try withDatabase { connection in
+            try metadata(identity: identity, in: connection)
         }
     }
 
@@ -513,12 +557,36 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
         try validateOpaqueIdentifier(sessionId, field: "sessionId", maximumBytes: 512)
         try withDatabase { connection in
             let statement = try connection.prepare(
-                "DELETE FROM session_metadata WHERE session_id = ?",
+                """
+                DELETE FROM session_metadata
+                WHERE session_id = ?
+                  AND 1 = (
+                    SELECT COUNT(*) FROM session_metadata WHERE session_id = ?
+                  )
+                """,
                 operation: "prepare remove"
             )
             defer { sqlite3_finalize(statement) }
             try connection.bind(sessionId, to: 1, in: statement, operation: "bind remove")
+            try connection.bind(sessionId, to: 2, in: statement, operation: "bind remove")
             try connection.stepDone(statement, operation: "remove")
+        }
+    }
+
+    public func remove(identity: CoveSessionIdentity) throws {
+        try withDatabase { connection in
+            let statement = try connection.prepare(
+                """
+                DELETE FROM session_metadata
+                WHERE source = ? AND origin_host_id = ? AND session_id = ?
+                """,
+                operation: "prepare scoped remove"
+            )
+            defer { sqlite3_finalize(statement) }
+            try connection.bind(identity.source.rawValue, to: 1, in: statement, operation: "bind scoped remove")
+            try connection.bind(identity.remoteHostId ?? "", to: 2, in: statement, operation: "bind scoped remove")
+            try connection.bind(identity.sessionId, to: 3, in: statement, operation: "bind scoped remove")
+            try connection.stepDone(statement, operation: "scoped remove")
         }
     }
 
@@ -531,8 +599,8 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
             let statement = try connection.prepare(
                 """
                 DELETE FROM session_metadata
-                WHERE session_id IN (
-                    SELECT session_id
+                WHERE (source, origin_host_id, session_id) IN (
+                    SELECT source, origin_host_id, session_id
                     FROM session_metadata
                     WHERE updated_at_ms < ?
                     ORDER BY updated_at_ms ASC
@@ -613,6 +681,10 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
                 atPath: url.deletingLastPathComponent().path
             )
             let directoryPermissions = (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+            let ambiguousLegacyIdentityCount = try connection.scalarInt(
+                "SELECT COUNT(*) FROM legacy_session_metadata",
+                operation: "read ambiguous legacy metadata count"
+            )
 
             return CoveSessionMetadataDiagnostics(
                 schemaVersion: Self.currentDatabaseSchemaVersion,
@@ -623,6 +695,7 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
                 unreadCount: unreadCount,
                 scheduledReminderCount: scheduledReminderCount,
                 dueReminderCount: dueReminderCount,
+                ambiguousLegacyIdentityCount: ambiguousLegacyIdentityCount,
                 oldestStartedAt: oldestStartedAt,
                 newestUpdatedAt: newestUpdatedAt,
                 statusCounts: statusCounts
@@ -657,6 +730,7 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
             INSERT INTO session_metadata (
                 record_schema_version,
                 session_id,
+                origin_host_id,
                 launch_id,
                 turn_id,
                 source,
@@ -669,8 +743,8 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
                 parent_session_id,
                 updated_at_ms,
                 started_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, origin_host_id, session_id) DO UPDATE SET
                 record_schema_version = excluded.record_schema_version,
                 launch_id = excluded.launch_id,
                 turn_id = excluded.turn_id,
@@ -690,38 +764,55 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
 
         try connection.bind(Int64(metadata.schemaVersion), to: 1, in: statement, operation: "bind upsert")
         try connection.bind(metadata.sessionId, to: 2, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.launchId, to: 3, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.turnId, to: 4, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.source.rawValue, to: 5, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.status.rawValue, to: 6, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.unread ? 1 : 0, to: 7, in: statement, operation: "bind upsert")
-        try connection.bind(try milliseconds(metadata.reminderAt), to: 8, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.terminalLocation?.adapter, to: 9, in: statement, operation: "bind upsert")
+        try connection.bind(originHostID(for: metadata), to: 3, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.launchId, to: 4, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.turnId, to: 5, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.source.rawValue, to: 6, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.status.rawValue, to: 7, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.unread ? 1 : 0, to: 8, in: statement, operation: "bind upsert")
+        try connection.bind(try milliseconds(metadata.reminderAt), to: 9, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.terminalLocation?.adapter, to: 10, in: statement, operation: "bind upsert")
         try connection.bind(
             try storedLocationIdentifier(metadata.terminalLocation),
-            to: 10,
+            to: 11,
             in: statement,
             operation: "bind upsert"
         )
-        try connection.bind(metadata.hostId, to: 11, in: statement, operation: "bind upsert")
-        try connection.bind(metadata.parentSessionId, to: 12, in: statement, operation: "bind upsert")
-        try connection.bind(try milliseconds(metadata.updatedAt), to: 13, in: statement, operation: "bind upsert")
-        try connection.bind(try milliseconds(metadata.startedAt), to: 14, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.hostId, to: 12, in: statement, operation: "bind upsert")
+        try connection.bind(metadata.parentSessionId, to: 13, in: statement, operation: "bind upsert")
+        try connection.bind(try milliseconds(metadata.updatedAt), to: 14, in: statement, operation: "bind upsert")
+        try connection.bind(try milliseconds(metadata.startedAt), to: 15, in: statement, operation: "bind upsert")
         try connection.stepDone(statement, operation: "upsert")
     }
 
     private func metadata(
-        sessionId: String,
+        identity: CoveSessionIdentity,
         in connection: CoveSQLiteConnection
     ) throws -> CoveSessionMetadata? {
         let statement = try connection.prepare(
-            "\(Self.selectColumnsSQL) WHERE session_id = ? LIMIT 1",
+            """
+            \(Self.selectColumnsSQL)
+            WHERE source = ? AND origin_host_id = ? AND session_id = ?
+            LIMIT 1
+            """,
             operation: "prepare transactional metadata lookup"
         )
         defer { sqlite3_finalize(statement) }
         try connection.bind(
-            sessionId,
+            identity.source.rawValue,
             to: 1,
+            in: statement,
+            operation: "bind transactional metadata lookup"
+        )
+        try connection.bind(
+            identity.remoteHostId ?? "",
+            to: 2,
+            in: statement,
+            operation: "bind transactional metadata lookup"
+        )
+        try connection.bind(
+            identity.sessionId,
+            to: 3,
             in: statement,
             operation: "bind transactional metadata lookup"
         )
@@ -815,6 +906,100 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
                         """,
                         operation: "create reminder index"
                     )
+                case 2:
+                    // v1 used the opaque session ID as its sole primary key.
+                    // Preserve unscoped legacy remote rows in a separate
+                    // content-free table, but never apply them to live state.
+                    try connection.execute(
+                        "DROP INDEX IF EXISTS session_metadata_updated_at",
+                        operation: "drop legacy updated index"
+                    )
+                    try connection.execute(
+                        "DROP INDEX IF EXISTS session_metadata_reminder",
+                        operation: "drop legacy reminder index"
+                    )
+                    try connection.execute(
+                        "ALTER TABLE session_metadata RENAME TO legacy_session_metadata",
+                        operation: "preserve legacy metadata"
+                    )
+                    try connection.execute(
+                        """
+                        CREATE TABLE session_metadata (
+                            record_schema_version INTEGER NOT NULL DEFAULT 1
+                                CHECK (record_schema_version > 0),
+                            session_id TEXT NOT NULL,
+                            origin_host_id TEXT NOT NULL,
+                            launch_id TEXT,
+                            turn_id TEXT,
+                            source TEXT NOT NULL,
+                            status TEXT NOT NULL,
+                            unread INTEGER NOT NULL CHECK (unread IN (0, 1)),
+                            reminder_at_ms INTEGER,
+                            terminal_adapter TEXT,
+                            terminal_location_id TEXT,
+                            host_id TEXT,
+                            parent_session_id TEXT,
+                            updated_at_ms INTEGER NOT NULL,
+                            started_at_ms INTEGER NOT NULL,
+                            PRIMARY KEY (source, origin_host_id, session_id),
+                            CHECK (
+                                source != 'remoteCli'
+                                OR (origin_host_id != '' AND host_id = origin_host_id)
+                            ),
+                            CHECK (
+                                (terminal_adapter IS NULL AND terminal_location_id IS NULL)
+                                OR
+                                (terminal_adapter IS NOT NULL AND terminal_location_id IS NOT NULL)
+                            )
+                        ) WITHOUT ROWID
+                        """,
+                        operation: "create composite session metadata schema"
+                    )
+                    try connection.execute(
+                        """
+                        INSERT INTO session_metadata (
+                            record_schema_version, session_id, origin_host_id,
+                            launch_id, turn_id, source, status, unread,
+                            reminder_at_ms, terminal_adapter,
+                            terminal_location_id, host_id, parent_session_id,
+                            updated_at_ms, started_at_ms
+                        )
+                        SELECT
+                            record_schema_version, session_id,
+                            CASE WHEN source = 'remoteCli' THEN host_id ELSE '' END,
+                            launch_id, turn_id, source, status, unread,
+                            reminder_at_ms, terminal_adapter,
+                            terminal_location_id, host_id, parent_session_id,
+                            updated_at_ms, started_at_ms
+                        FROM legacy_session_metadata
+                        WHERE source != 'remoteCli'
+                           OR (host_id IS NOT NULL AND host_id != '')
+                        """,
+                        operation: "migrate scoped session metadata"
+                    )
+                    try connection.execute(
+                        """
+                        DELETE FROM legacy_session_metadata
+                        WHERE source != 'remoteCli'
+                           OR (host_id IS NOT NULL AND host_id != '')
+                        """,
+                        operation: "retain only ambiguous legacy metadata"
+                    )
+                    try connection.execute(
+                        """
+                        CREATE INDEX session_metadata_updated_at
+                        ON session_metadata(updated_at_ms DESC)
+                        """,
+                        operation: "create composite updated index"
+                    )
+                    try connection.execute(
+                        """
+                        CREATE INDEX session_metadata_reminder
+                        ON session_metadata(reminder_at_ms)
+                        WHERE reminder_at_ms IS NOT NULL
+                        """,
+                        operation: "create composite reminder index"
+                    )
                 default:
                     throw CovePersistenceError.unsupportedDatabaseSchema(
                         found: nextVersion,
@@ -858,6 +1043,7 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
         let required: Set<String> = [
             "record_schema_version",
             "session_id",
+            "origin_host_id",
             "launch_id",
             "turn_id",
             "source",
@@ -888,6 +1074,9 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
         try validateOptionalOpaqueIdentifier(metadata.launchId, field: "launchId", maximumBytes: 512)
         try validateOptionalOpaqueIdentifier(metadata.turnId, field: "turnId", maximumBytes: 512)
         try validateOptionalOpaqueIdentifier(metadata.hostId, field: "hostId", maximumBytes: 512)
+        guard metadata.sessionIdentity != nil else {
+            throw CovePersistenceError.invalidMetadata(field: "origin")
+        }
         try validateOptionalOpaqueIdentifier(
             metadata.parentSessionId,
             field: "parentSessionId",
@@ -956,6 +1145,10 @@ public struct CoveSQLiteSessionMetadataStorage: CoveSessionMetadataStorage {
     ) throws {
         guard let value else { return }
         try validateOpaqueIdentifier(value, field: field, maximumBytes: maximumBytes)
+    }
+
+    private func originHostID(for metadata: CoveSessionMetadata) -> String {
+        metadata.source == .remoteCli ? metadata.hostId ?? "" : ""
     }
 
     private func validateOpaqueIdentifier(
@@ -1172,6 +1365,16 @@ public enum CoveStateFilesystem {
         ).appendingPathComponent("sessions.sqlite3")
     }
 
+    public static func workspaceURL(
+        fileManager: FileManager = .default,
+        bundleIdentifier: String? = nil
+    ) -> URL {
+        applicationSupportDirectoryURL(
+            fileManager: fileManager,
+            bundleIdentifier: bundleIdentifier
+        ).appendingPathComponent("workspace.json")
+    }
+
     /// Compatibility alias for callers that still construct only the settings
     /// store. New code should use `settingsURL`.
     public static func applicationSupportURL(
@@ -1182,7 +1385,7 @@ public enum CoveStateFilesystem {
     }
 }
 
-private enum CoveSecureFilesystem {
+enum CoveSecureFilesystem {
     static func prepareDirectory(_ url: URL) throws {
         let fileManager = FileManager.default
         if fileManager.fileExists(atPath: url.path) {
@@ -1235,6 +1438,64 @@ private enum CoveSecureFilesystem {
         return URL(
             fileURLWithPath: String(decoding: bytes, as: UTF8.self),
             isDirectory: true
+        )
+    }
+
+    /// Writes a replacement file without ever creating a group/other-readable
+    /// workspace document. `rename` replaces a raced destination symlink
+    /// itself instead of following it.
+    static func writeAtomically(
+        _ data: Data,
+        to url: URL,
+        permissions: mode_t,
+        kind: String
+    ) throws {
+        let directory = try canonicalDirectory(url.deletingLastPathComponent())
+        let destination = directory.appendingPathComponent(url.lastPathComponent)
+        let temporary = directory.appendingPathComponent(
+            ".\(url.lastPathComponent).\(UUID().uuidString.lowercased()).tmp"
+        )
+        let descriptor = open(
+            temporary.path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+            permissions
+        )
+        guard descriptor >= 0 else {
+            throw CovePersistenceError.unsafeFilesystemEntry(kind: kind)
+        }
+        var shouldRemoveTemporary = true
+        defer {
+            Darwin.close(descriptor)
+            if shouldRemoveTemporary { unlink(temporary.path) }
+        }
+        guard fchmod(descriptor, permissions) == 0 else {
+            throw CovePersistenceError.unsafeFilesystemEntry(kind: kind)
+        }
+        try data.withUnsafeBytes { bytes in
+            guard var pointer = bytes.baseAddress else { return }
+            var remaining = bytes.count
+            while remaining > 0 {
+                let written = Darwin.write(descriptor, pointer, remaining)
+                if written > 0 {
+                    remaining -= written
+                    pointer = pointer.advanced(by: written)
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else {
+                    throw CovePersistenceError.unsafeFilesystemEntry(kind: kind)
+                }
+            }
+        }
+        guard fsync(descriptor) == 0,
+              rename(temporary.path, destination.path) == 0
+        else {
+            throw CovePersistenceError.unsafeFilesystemEntry(kind: kind)
+        }
+        shouldRemoveTemporary = false
+        try enforcePermissions(
+            Int(permissions),
+            at: destination,
+            kind: kind
         )
     }
 }

@@ -34,6 +34,21 @@ test("interactive request schema is available", () => {
   assert.deepEqual(schema.properties.kind.enum, ["approval", "question", "plan"]);
 });
 
+test("thread control schema covers local, remote, and correlated acknowledgements", () => {
+  const schema = loadSchema("thread-control.v1.schema.json");
+
+  assert.equal(schema.$id, "https://codex-cove.local/schemas/thread-control.v1.schema.json");
+  assert.equal(schema.schemaVersion, 1);
+  assert.equal(schema.oneOf.length, 3);
+  assert.deepEqual(schema.$defs.target.properties.source.enum, ["localCli", "remoteCli"]);
+  assert.ok(schema.$defs.target.properties.remoteHostId);
+  assert.deepEqual(schema.$defs.acknowledgement.properties.status.enum, [
+    "accepted",
+    "rejected",
+    "uncertain",
+  ]);
+});
+
 test("theme schema covers the expanded plan tokens", () => {
   const schema = loadSchema("theme-definition.v1.schema.json");
 

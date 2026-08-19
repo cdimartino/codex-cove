@@ -5,11 +5,38 @@ turns task activity into a small notch-aligned island, brings approvals and
 questions into an attention-first queue, and can return you to the exact
 terminal, editor window, or Codex task where work began.
 
+<p align="center">
+  <img src="docs/images/codex-cove-island.png" alt="Codex Cove collapsed Sunset island showing four animated agent residents" width="260">
+</p>
+
+<p align="center">
+  <strong>One glance. Every agent.</strong><br>
+  <sub>The notch-sized island keeps active, remote, waiting, and completed work visible without taking over your desktop.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/codex-cove-command-center.png" alt="Codex Cove Native Glass Ocean command center coordinating nine local, desktop, and remote agents" width="390">
+  <img src="docs/images/codex-cove-approval-retro.png" alt="Codex Cove Retro Terminal focused approval with safe one-action and current-task scopes" width="390">
+</p>
+
+<p align="center">
+  <sub><strong>Native Glass · Ocean</strong> — a live command center &nbsp;&nbsp;&nbsp; <strong>Retro Terminal · Terminal Green</strong> — approvals without context switching</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/codex-cove-remote-oled.png" alt="Codex Cove Minimal OLED Sunset queue tracking active and completed agents on two remote hosts" width="390">
+</p>
+
+<p align="center">
+  <strong>Local, desktop, and remote work—one attention layer.</strong><br>
+  <sub>Exact origins stay visible, including the selected SSH host, in Minimal OLED · Sunset.</sub>
+</p>
+
 Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.5.0`. Check
+> **Release status:** the source tree is currently version `0.9.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
@@ -42,6 +69,10 @@ named suggestion; update the tap or use the source or verified manual path. See
 - An expandable queue with collapsible, reorderable sections; search; row-level
   context actions; pinning; reminders; unread state; and recoverable local or
   bulk completed-task archives.
+- A Workspace-first window with a reorderable responsive Grid, independent
+  custom-column Board, recursive subagent inspector, compound filters, Cove-only
+  aliases/tags/artifacts, live parent-or-agent output excerpts, optional animated
+  task residents, and a saved prompt library.
 - Exact-origin navigation for Terminal, iTerm2, tmux, WezTerm, VS Code, Cursor,
   remote CLI sessions, and Codex Desktop tasks.
 - Native Glass, Retro Terminal, and Minimal OLED styles, five built-in palettes,
@@ -69,7 +100,7 @@ musl builds for arm64 and x86_64 Linux.
 | Surface | Integration | Additional permission or tool |
 | --- | --- | --- |
 | Codex CLI | Native hooks by default; explicit `codex-cove launch` for broker-routed approvals and questions | Trust the installed hook; put `~/bin` on `PATH` only for the helper command |
-| Codex Desktop | Read-only public app-server hydration and exact `codex://` task links | Codex Desktop installed |
+| Codex Desktop | Public loaded-thread reconciliation, Cove-owned turn start/steer, and exact `codex://` task links | Codex Desktop installed |
 | Terminal.app | Exact tab restoration by TTY | Terminal Automation permission |
 | iTerm2 | Exact session restoration by TTY | iTerm Automation permission |
 | VS Code 1.92+ | Bundled extension, routed terminals, exact terminal and window focus | Accessibility permission for exact window focus |
@@ -87,7 +118,7 @@ Install the prerequisites first:
 - Swift 6.0 or newer
 - Rust 1.85 or newer
 - Node.js 22 or newer
-- Codex CLI 0.145.0 or newer
+- Codex CLI 0.147.0 or newer
 - GNU Make and the macOS code-signing tools
 - Full Xcode 26.6 or newer for `make bootstrap` and the UI-test release gate
 
@@ -127,10 +158,30 @@ releases, macOS permissions, remote helpers, upgrades, and safe removal.
 
 ## Everyday use
 
-Use the menu-bar wave icon to show Cove, switch privacy, mute sounds, restore
-the full island, open Settings or Doctor, and restore locally archived tasks.
-The island never expands merely because an event arrives; it opens only during
-explicit interaction.
+Launch or reopen Codex Cove to open Workspace. Use the menu-bar wave icon to
+show the ambient island, switch privacy,
+mute sounds, restore the full island, open Settings or Doctor, and restore
+locally archived tasks. The island never expands merely because an event
+arrives; it opens only during explicit interaction.
+
+The app's Help menu, menu-bar **Help…** action, Workspace help icon, and each
+Settings-pane help icon open the maintained [user](docs/USER_GUIDE.md),
+[Workspace](docs/WORKSPACE.md), and [Settings](docs/SETTINGS.md) guides.
+
+Opening **Workspace** gives Cove a normal Dock/App-Switcher presence for as long
+as that window is open. Grid supports manual drag ordering only when no search
+or filter is active, plus undoable Move Earlier/Later commands. Board starts
+with Inbox, Doing, Review, and Blocked; its workflow placement is independent
+from live Codex status. Selecting a card opens its recursive agent hierarchy,
+latest memory-only output, approval/question controls, Cove-only metadata, and
+prompt composer without marking it read.
+
+The prompt library stores only templates you explicitly save. Choosing one
+copies it into an editable memory-only composer. Sending starts an idle turn or
+steers the exact active turn when Cove has a validated Desktop, routed-local,
+or routed-remote control path. Pending requests, hook-only tasks, stale or
+ambiguous routes, and uncertain delivery fall back to **Open in Codex**; prompt
+delivery is never retried automatically.
 
 When global shortcuts are enabled and Cove has Accessibility access:
 
@@ -155,6 +206,7 @@ make bootstrap  # read-only toolchain and dependency checks
 make build      # Swift app, Rust helper, TypeScript extension
 make test       # Swift foundations, Rust tests, extension tests
 make ui-test    # XCUITest; full Xcode and an unlocked console required
+make ui-test-legacy-ax # private Xcode 26.6 (17F113) fallback with Codex open
 make run        # uninstalled development app only
 ```
 
@@ -208,17 +260,21 @@ engineering evidence; they are not a substitute for the user guides above.
 
 ## Privacy in one paragraph
 
-Prompts, responses, commands, diffs, token metrics, and request details are not
-written to Cove's durable store. When notifications are enabled, macOS
+Unsaved composer text, prompts submitted to Codex, responses, commands, diffs,
+token metrics, and request details are not written to Cove's durable store.
+Saved Workspace aliases, tags, validated HTTP(S) and local-file artifacts, workflow organization,
+and prompt-library templates are an explicit local exception in a versioned,
+mode-`0600` `workspace.json`. When notifications are enabled, macOS
 Notification Center may retain delivered banner content according to system
 settings. Cove otherwise persists settings plus bounded task metadata such as
 opaque task and launch identifiers, status, unread and reminder state,
 timestamps, source, and opaque terminal-location identifiers. Local runtime
 directories and files are current-user only. Event diagnostics redact sensitive
 payload fields; Doctor may show the local paths it inspected, so review its
-output before sharing. Cove contacts no service of its own; remote transport is
-opened only to SSH aliases you explicitly add, while Codex continues to use its
-own network services.
+output before sharing. Cove has no telemetry or hosted service. Runtime network
+access is limited to SSH aliases you explicitly add and bounded, credential-free
+HTTPS favicon requests to hosts from saved Workspace links; Codex continues to
+use its own network services.
 
 ## License
 
