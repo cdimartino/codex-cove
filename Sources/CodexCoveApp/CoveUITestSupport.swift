@@ -699,6 +699,7 @@ enum CoveUITestFixtures {
                 status: .active,
                 priority: 40,
                 title: "Active child agent",
+                latestOutput: "Initial child output",
                 timestamp: now.addingTimeInterval(-2),
                 sessionId: "fixture-agent-active",
                 launchId: "fixture-agent-launch",

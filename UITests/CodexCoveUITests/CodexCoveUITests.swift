@@ -521,6 +521,24 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testWorkspaceCardShowsNestedAgentOutputAsItArrives() {
+        let app = launchFixture("workspace-primary")
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let rootCard = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Fixture parent task")
+        ).firstMatch
+        XCTAssertTrue(rootCard.waitForExistence(timeout: 2))
+        XCTAssertTrue(stringValue(of: rootCard).contains("Initial child output"))
+        XCTAssertTrue(
+            waitUntil(timeout: 3) {
+                self.stringValue(of: rootCard).contains("live update arrived")
+            },
+            "The owning card must update when its nested agent streams output"
+        )
+    }
+
+    @MainActor
     func testWorkspaceTargetsNestedAgentsAndNewTopLevelTasks() {
         let app = launchFixture("workspace-primary")
         let window = app.windows["Codex Cove Workspace"]
@@ -541,7 +559,7 @@ final class CodexCoveUITests: XCTestCase {
             scrollView: inspectorScroll,
             app: app
         )
-        XCTAssertEqual(stringValue(of: rootCard), "Selected")
+        XCTAssertTrue(stringValue(of: rootCard).hasPrefix("Selected"))
         XCTAssertTrue(text("Idle child agent", in: app).exists)
 
         let composer = element("cove.workspace.composer", in: app)
@@ -2339,6 +2357,20 @@ final class CodexCoveUITests: XCTestCase {
             displayText(of: description),
             "Cove automatically assigns each task a resident from the selected set. The gallery previews that set; individual residents are not selected per task."
         )
+        let cardResidents = element(
+            "settings.residents.workspace-cards",
+            in: app
+        )
+        let cardMotion = element(
+            "settings.residents.workspace-card-motion",
+            in: app
+        )
+        XCTAssertTrue(cardResidents.waitForExistence(timeout: 2))
+        XCTAssertTrue(cardMotion.exists)
+        revealAndClick(cardResidents, in: app)
+        XCTAssertTrue(waitUntil(timeout: 2) { !cardMotion.isEnabled })
+        revealAndClick(cardResidents, in: app)
+        XCTAssertTrue(waitUntil(timeout: 2) { cardMotion.isEnabled })
         let characterSet = element("settings.residents.character-set", in: app)
         revealAndClick(characterSet, in: app)
         for set in ["Dungeon / D&D", "Tech Creatures", "Virus / Bacteria"] {

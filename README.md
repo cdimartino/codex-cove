@@ -36,7 +36,7 @@ Codex Cove is built only for Codex. It has no account system, telemetry, cloud
 backend, advertising, licensing service, online updater, or private Codex
 storage access.
 
-> **Release status:** the source tree is currently version `0.8.1`. Check
+> **Release status:** the source tree is currently version `0.9.0`. Check
 > [GitHub Releases](https://github.com/cdimartino/codex-cove/releases) for
 > public binary availability. Local packages are signed ad hoc unless a signing
 > identity is supplied; distribution artifacts must pass the protected release
@@ -71,7 +71,8 @@ named suggestion; update the tap or use the source or verified manual path. See
   bulk completed-task archives.
 - A Workspace-first window with a reorderable responsive Grid, independent
   custom-column Board, recursive subagent inspector, compound filters, Cove-only
-  aliases/tags/artifacts, and a saved prompt library.
+  aliases/tags/artifacts, live parent-or-agent output excerpts, optional animated
+  task residents, and a saved prompt library.
 - Exact-origin navigation for Terminal, iTerm2, tmux, WezTerm, VS Code, Cursor,
   remote CLI sessions, and Codex Desktop tasks.
 - Native Glass, Retro Terminal, and Minimal OLED styles, five built-in palettes,

@@ -274,6 +274,21 @@ struct SettingsView: View {
             .help("Choose which resident family Cove assigns across visible tasks.")
             .accessibilityIdentifier("settings.residents.character-set")
 
+            Toggle(
+                "Show residents on Workspace cards",
+                isOn: workspaceCardResidentsBinding
+            )
+            .help("Show each task's assigned resident on its Grid and Board cards.")
+            .accessibilityIdentifier("settings.residents.workspace-cards")
+
+            Toggle(
+                "Animate active card residents",
+                isOn: workspaceCardResidentMotionBinding
+            )
+            .disabled(!store.state.settings.showWorkspaceCardResidents)
+            .help("Animate card residents while their task is active. Reduce Motion still pauses them.")
+            .accessibilityIdentifier("settings.residents.workspace-card-motion")
+
             Picker("Task state", selection: $residentPreviewStatus) {
                 ForEach(Self.residentPreviewStatuses, id: \.self) { status in
                     Text(status.displayName).tag(status)
@@ -1227,6 +1242,20 @@ struct SettingsView: View {
         Binding(
             get: { store.state.settings.residentSet },
             set: { store.dispatch(.setResidentSet($0)) }
+        )
+    }
+
+    private var workspaceCardResidentsBinding: Binding<Bool> {
+        Binding(
+            get: { store.state.settings.showWorkspaceCardResidents },
+            set: { store.dispatch(.setShowWorkspaceCardResidents($0)) }
+        )
+    }
+
+    private var workspaceCardResidentMotionBinding: Binding<Bool> {
+        Binding(
+            get: { store.state.settings.animateWorkspaceCardResidents },
+            set: { store.dispatch(.setAnimateWorkspaceCardResidents($0)) }
         )
     }
 

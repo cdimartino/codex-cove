@@ -244,6 +244,13 @@ labels and a Workspace-global manual rank remain Cove-only; filtering that rank
 to a parent hierarchy allows parent and child artifacts to interleave without
 changing ownership.
 
+App-server `item/agentMessage/delta` events update the exact session's bounded
+in-memory `latestOutput`. Projection selects the newest output across each
+owning root and its descendants for the root card; it does not persist a
+transcript. Card residents reuse the existing stable session assignment and
+pixel renderer, with settings and Reduce Motion controlling visibility and
+active-state movement.
+
 ## Persistence model
 
 Cove separates transient task content from durable metadata.
