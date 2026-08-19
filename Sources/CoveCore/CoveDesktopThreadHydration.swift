@@ -16,13 +16,21 @@ public enum CoveDesktopThreadHydrationFailure: String, Error, Codable, Equatable
 public struct CoveDesktopThreadDiscoveryBatch: Equatable, Sendable {
     public var snapshots: [CoveSessionSnapshot]
     public var hiddenApprovalReviewThreadIDs: [String]
+    public var loadedThreadIDs: [String]
+    /// False when reconciliation hit its page/task bound. An incomplete set
+    /// may add or refresh tasks but must never be used to close unseen ones.
+    public var loadedThreadSetIsComplete: Bool
 
     public init(
         snapshots: [CoveSessionSnapshot],
-        hiddenApprovalReviewThreadIDs: [String] = []
+        hiddenApprovalReviewThreadIDs: [String] = [],
+        loadedThreadIDs: [String] = [],
+        loadedThreadSetIsComplete: Bool = true
     ) {
         self.snapshots = snapshots
         self.hiddenApprovalReviewThreadIDs = hiddenApprovalReviewThreadIDs
+        self.loadedThreadIDs = loadedThreadIDs
+        self.loadedThreadSetIsComplete = loadedThreadSetIsComplete
     }
 }
 
@@ -49,7 +57,7 @@ public struct CoveDesktopThreadHydrationConfiguration: Equatable, Sendable {
         realCodexURL: URL,
         requestTimeout: TimeInterval = defaultRequestTimeout,
         maximumLineBytes: Int = defaultMaximumLineBytes,
-        clientVersion: String = "0.5.2"
+        clientVersion: String = "0.9.0"
     ) {
         self.realCodexURL = realCodexURL
         self.requestTimeout = min(30, max(0.25, requestTimeout))
@@ -60,7 +68,7 @@ public struct CoveDesktopThreadHydrationConfiguration: Equatable, Sendable {
     public static func installed(
         configurationURL: URL = defaultInstalledConfigurationURL(),
         requestTimeout: TimeInterval = defaultRequestTimeout,
-        clientVersion: String = "0.5.2"
+        clientVersion: String = "0.9.0"
     ) throws -> Self {
         struct InstalledHelperConfiguration: Decodable {
             var realCodex: String?
@@ -156,19 +164,17 @@ public struct CoveDesktopThreadClient: Sendable {
         }.value
     }
 
-    public func discoverRecentDesktopThreads(
-        limit: Int = 3,
+    public func reconcileLoadedDesktopThreads(
         capturedAt: Date = Date()
     ) async -> CoveDesktopThreadDiscoveryResult {
         let configuration = configuration
-        let boundedLimit = min(10, max(1, limit))
         return await Task.detached(priority: .utility) {
             if let failure = Self.configurationIsUsable(configuration) {
                 return .unavailable(failure)
             }
             do {
                 let batch = try CoveAppServerThreadQuery.run(
-                    operation: .discoverRecentDesktop(limit: boundedLimit),
+                    operation: .reconcileLoadedDesktop,
                     configuration: configuration,
                     capturedAt: capturedAt
                 )
@@ -285,11 +291,11 @@ public final class CoveDesktopThreadHydrator {
         }
     }
 
-    public func discoverRecentDesktopThreads(limit: Int = 3) {
+    public func reconcileLoadedDesktopThreads() {
         guard discoveryHandler != nil, discoveryTask == nil else { return }
         discoveryTask = Task { [weak self] in
             guard let self else { return }
-            let result = await self.client.discoverRecentDesktopThreads(limit: limit)
+            let result = await self.client.reconcileLoadedDesktopThreads()
             self.discoveryTask = nil
             self.discoveryHandler?(result)
         }
@@ -297,6 +303,16 @@ public final class CoveDesktopThreadHydrator {
 }
 
 public enum CoveDesktopThreadSnapshotParser {
+    public struct ThreadTurnSummary: Equatable, Sendable {
+        public var latestOutput: String?
+        public var activeTurnID: String?
+
+        public init(latestOutput: String?, activeTurnID: String?) {
+            self.latestOutput = latestOutput
+            self.activeTurnID = activeTurnID
+        }
+    }
+
     public struct ThreadListSelection: Equatable, Sendable {
         public var discoverableDesktopThreadIDs: [String]
         public var hiddenApprovalReviewThreadIDs: [String]
@@ -314,8 +330,34 @@ public enum CoveDesktopThreadSnapshotParser {
         _ data: Data,
         expectedID: String,
         expectedThreadID: String,
-        capturedAt: Date
+        capturedAt: Date,
+        acceptingTrustedThreadSpawn: Bool = false
     ) throws -> CoveSessionSnapshot {
+        let thread = try self.thread(
+            fromResponse: data,
+            expectedID: expectedID,
+            expectedThreadID: expectedThreadID
+        )
+        guard !isHiddenInternalThread(thread) else {
+            throw CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread
+        }
+        guard isConfidentlyDesktopOpenable(thread)
+                || (acceptingTrustedThreadSpawn
+                    && CoveThreadProvenance.isThreadSpawnAgent(thread)) else {
+            throw CoveDesktopThreadHydrationFailure.threadUnavailable
+        }
+        return try snapshot(
+            fromThread: thread,
+            expectedThreadID: expectedThreadID,
+            capturedAt: capturedAt
+        )
+    }
+
+    static func thread(
+        fromResponse data: Data,
+        expectedID: String,
+        expectedThreadID: String
+    ) throws -> [String: CoveJSONValue] {
         let value: CoveJSONValue
         do {
             value = try JSONDecoder().decode(CoveJSONValue.self, from: data)
@@ -335,24 +377,23 @@ public enum CoveDesktopThreadSnapshotParser {
               threadID == expectedThreadID else {
             throw CoveDesktopThreadHydrationFailure.threadUnavailable
         }
-        guard !isApprovalReviewThread(thread) else {
-            throw CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread
-        }
-        guard isConfidentlyDesktopOpenable(thread) else {
-            throw CoveDesktopThreadHydrationFailure.threadUnavailable
-        }
-
-        return try snapshot(
-            fromThread: thread,
-            expectedThreadID: expectedThreadID,
-            capturedAt: capturedAt
-        )
+        return thread
     }
 
     public static func latestOutput(
         fromThreadTurnsListResponse data: Data,
         expectedID: String
     ) throws -> String? {
+        try turnSummary(
+            fromThreadTurnsListResponse: data,
+            expectedID: expectedID
+        ).latestOutput
+    }
+
+    public static func turnSummary(
+        fromThreadTurnsListResponse data: Data,
+        expectedID: String
+    ) throws -> ThreadTurnSummary {
         guard let response = try? JSONDecoder().decode(
             CoveJSONValue.self,
             from: data
@@ -363,6 +404,12 @@ public enum CoveDesktopThreadSnapshotParser {
         else {
             throw CoveDesktopThreadHydrationFailure.protocolUnavailable
         }
+        let activeTurnID = turns.first(where: {
+            $0.objectValue?["status"]?.stringValue == "inProgress"
+        })?.objectValue?["id"]?.scalarStringValue.flatMap { value in
+            !value.isEmpty && value.utf8.count <= 512 ? value : nil
+        }
+        var latestOutput: String?
         for turn in turns {
             let items = turn.objectValue?["items"]?.arrayValue ?? []
             for item in items.reversed() {
@@ -374,11 +421,16 @@ public enum CoveDesktopThreadSnapshotParser {
                     in: .whitespacesAndNewlines
                 )
                 if !trimmed.isEmpty {
-                    return String(trimmed.prefix(4_000))
+                    latestOutput = String(trimmed.prefix(4_000))
+                    break
                 }
             }
+            if latestOutput != nil { break }
         }
-        return nil
+        return ThreadTurnSummary(
+            latestOutput: latestOutput,
+            activeTurnID: activeTurnID
+        )
     }
 
     public static func discoverableDesktopThreadIDs(
@@ -416,17 +468,12 @@ public enum CoveDesktopThreadSnapshotParser {
         excluding knownNonDesktopSessionIDs: Set<String>,
         currentSnapshots: [CoveSessionSnapshot]
     ) -> Bool {
-        let sessionID = snapshot.sessionId ?? snapshot.snapshotId
-        guard snapshot.source == .codexDesktop,
-              !knownNonDesktopSessionIDs.contains(sessionID) else {
-            return false
-        }
-        return !currentSnapshots.contains { current in
-            let currentSessionID = current.sessionId ?? current.snapshotId
-            return currentSessionID == sessionID
-                && current.source != nil
-                && current.source != .codexDesktop
-        }
+        // Composite identity makes an identical opaque ID at another origin a
+        // distinct task. Retain the legacy parameters for source compatibility
+        // with older callers, but never use them to suppress the Desktop row.
+        _ = knownNonDesktopSessionIDs
+        _ = currentSnapshots
+        return snapshot.source == .codexDesktop
     }
 
     public static func threadListSelection(
@@ -457,7 +504,7 @@ public enum CoveDesktopThreadSnapshotParser {
         var hiddenApprovalReviewThreadIDs: [String] = []
         for row in rows {
             guard let thread = row.objectValue else { continue }
-            if isApprovalReviewThread(thread) {
+            if isHiddenInternalThread(thread) {
                 if let id = thread["id"]?.scalarStringValue,
                    CoveDesktopThreadClient.isSafeThreadIdentifier(id),
                    !hiddenApprovalReviewThreadIDs.contains(id) {
@@ -490,7 +537,7 @@ public enum CoveDesktopThreadSnapshotParser {
               threadID == expectedThreadID else {
             throw CoveDesktopThreadHydrationFailure.threadUnavailable
         }
-        guard !isApprovalReviewThread(thread) else {
+        guard !isHiddenInternalThread(thread) else {
             throw CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread
         }
         let status = status(from: thread)
@@ -513,16 +560,55 @@ public enum CoveDesktopThreadSnapshotParser {
             timestamp: timestamp,
             sessionId: threadID,
             source: .codexDesktop,
-            parentSessionId: thread["parentThreadId"]?.scalarStringValue
-                ?? thread["parentSessionId"]?.scalarStringValue,
+            parentSessionId: CoveThreadProvenance.parentID(in: thread),
+            parentProvenanceConflict: CoveThreadProvenance
+                .hasConflictingParentID(in: thread),
+            liveness: .loaded,
+            activeTurnId: activeTurnID(from: thread),
+            controlRoute: .desktop,
             unread: capturedAt.timeIntervalSince(timestamp) <= 10 * 60
-                && (
-                    status.status == .waitingApproval
-                        || status.status == .waitingInput
-                        || status.status == .blocked
-                        || status.status == .failed
-                )
+                && status.status.requiresUnreadAcknowledgement
         )
+    }
+
+    public static func loadedThreadPage(
+        from data: Data,
+        expectedID: String
+    ) throws -> (ids: [String], nextCursor: String?) {
+        guard let response = try? JSONDecoder().decode(
+            CoveJSONValue.self,
+            from: data
+        ).objectValue,
+              response["id"]?.scalarStringValue == expectedID,
+              response["error"] == nil || response["error"] == .null,
+              let result = response["result"]?.objectValue
+        else { throw CoveDesktopThreadHydrationFailure.protocolUnavailable }
+        let rows = result["data"]?.arrayValue
+            ?? result["threadIds"]?.arrayValue
+            ?? result["threads"]?.arrayValue
+            ?? []
+        let ids = rows.compactMap { row -> String? in
+            let value = row.scalarStringValue
+                ?? row.objectValue?["id"]?.scalarStringValue
+                ?? row.objectValue?["threadId"]?.scalarStringValue
+            guard let value,
+                  CoveDesktopThreadClient.isSafeThreadIdentifier(value)
+            else { return nil }
+            return value
+        }
+        return (
+            Array(Set(ids)).sorted(),
+            result["nextCursor"]?.scalarStringValue
+                ?? result["next_cursor"]?.scalarStringValue
+        )
+    }
+
+    private static func activeTurnID(
+        from thread: [String: CoveJSONValue]
+    ) -> String? {
+        thread["activeTurnId"]?.scalarStringValue
+            ?? thread["activeTurn"]?.objectValue?["id"]?.scalarStringValue
+            ?? thread["status"]?.objectValue?["activeTurnId"]?.scalarStringValue
     }
 
     private static func threadTimestamp(
@@ -565,17 +651,13 @@ public enum CoveDesktopThreadSnapshotParser {
         }
     }
 
-    private static func isApprovalReviewThread(
+    private static func isHiddenInternalThread(
         _ thread: [String: CoveJSONValue]
     ) -> Bool {
         if thread["model"]?.scalarStringValue == "codex-auto-review" {
             return true
         }
-        guard let source = thread["source"]?.objectValue else { return false }
-        let subagent = source["subAgent"]?.objectValue
-            ?? source["subagent"]?.objectValue
-            ?? source["sub_agent"]?.objectValue
-        return subagent?["other"]?.scalarStringValue == "guardian"
+        return CoveThreadProvenance.isExcludedAgent(thread)
     }
 
     private static func isDesktopDiscoveryCandidate(
@@ -584,9 +666,16 @@ public enum CoveDesktopThreadSnapshotParser {
         isConfidentlyDesktopOpenable(thread)
     }
 
-    private static func isConfidentlyDesktopOpenable(
+    static func isConfidentlyDesktopOpenable(
         _ thread: [String: CoveJSONValue]
     ) -> Bool {
+        let authoritativeSource = thread["source"]?.scalarStringValue?
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        if authoritativeSource == "vscode" || authoritativeSource == "appserver" {
+            return true
+        }
         let candidates = scalarStrings(thread["source"])
             + scalarStrings(thread["sourceKind"])
             + scalarStrings(thread["sourceKinds"])
@@ -710,10 +799,24 @@ public enum CoveDesktopThreadSnapshotParser {
 
 private enum CoveAppServerThreadOperation {
     case read(threadIDs: [String])
-    case discoverRecentDesktop(limit: Int)
+    case reconcileLoadedDesktop
+
+    func loadedThreadIDs(fallback: [String]) -> [String] {
+        switch self {
+        case .read:
+            return []
+        case .reconcileLoadedDesktop:
+            return fallback
+        }
+    }
+
+    var isReconciliation: Bool {
+        if case .reconcileLoadedDesktop = self { return true }
+        return false
+    }
 }
 
-private enum CoveAppServerMode: CaseIterable {
+private enum CoveAppServerMode: CaseIterable, Equatable {
     case proxy
     case directStdio
 
@@ -730,6 +833,7 @@ private enum CoveAppServerMode: CaseIterable {
 private enum CoveAppServerThreadQuery {
     private static let initializeID = "cove-desktop-initialize"
     private static let threadListID = "cove-desktop-thread-list"
+    private static let loadedListID = "cove-desktop-thread-loaded"
     private static let threadReadID = "cove-desktop-thread-read"
     private static let threadTurnsListID = "cove-desktop-thread-turns"
     private static let maximumMessagesPerRequest = 256
@@ -748,7 +852,10 @@ private enum CoveAppServerThreadQuery {
                     configuration: configuration,
                     capturedAt: capturedAt,
                     mode: mode,
-                    requestTimeout: requestTimeout(for: mode, configuration: configuration)
+                    initializationTimeout: requestTimeout(
+                        for: mode,
+                        configuration: configuration
+                    )
                 )
             } catch let failure as CoveDesktopThreadHydrationFailure {
                 lastFailure = failure
@@ -763,7 +870,7 @@ private enum CoveAppServerThreadQuery {
         configuration: CoveDesktopThreadHydrationConfiguration,
         capturedAt: Date,
         mode: CoveAppServerMode,
-        requestTimeout: TimeInterval
+        initializationTimeout: TimeInterval
     ) throws -> CoveDesktopThreadDiscoveryBatch {
         let process = Process()
         let standardInput = Pipe()
@@ -794,13 +901,7 @@ private enum CoveAppServerThreadQuery {
             stopAndReap(process)
         }
 
-        let timeoutNanoseconds = UInt64(
-            requestTimeout * 1_000_000_000
-        )
-        let now = DispatchTime.now().uptimeNanoseconds
-        let deadline = now > UInt64.max - timeoutNanoseconds
-            ? UInt64.max
-            : now + timeoutNanoseconds
+        var deadline = Self.deadline(after: initializationTimeout)
         var reader = CoveDesktopBoundedLineReader(
             fileDescriptor: output.fileDescriptor,
             maximumLineBytes: configuration.maximumLineBytes
@@ -833,126 +934,237 @@ private enum CoveAppServerThreadQuery {
             ["method": "initialized", "params": [String: Any]()],
             to: input.fileDescriptor
         )
+        // Proxy availability must be probed quickly, but a successful proxy
+        // gets a separately bounded window for pagination and hydration.
+        deadline = Self.deadline(
+            after: operation.isReconciliation
+                ? 30 : configuration.requestTimeout
+        )
         let threadIDs: [String]
         var hiddenApprovalReviewThreadIDs: [String] = []
+        // Only the public Desktop proxy owns the Desktop process's in-memory
+        // loaded set. A direct-stdio fallback can enrich known IDs, but its
+        // empty private process must never unload cards owned by Desktop.
+        var loadedThreadSetIsComplete = mode == .proxy
         switch operation {
         case let .read(ids):
             threadIDs = ids
-        case let .discoverRecentDesktop(limit):
-            try writeJSON(
-                [
-                    "id": threadListID,
-                    "method": "thread/list",
-                    "params": [
-                        "limit": max(1, limit * 4),
-                        "archived": false,
-                        "sourceKinds": ["vscode"],
-                        "sortKey": "updated_at",
-                        "sortDirection": "desc",
-                        "useStateDbOnly": true,
+        case .reconcileLoadedDesktop:
+            var loaded: [String] = []
+            var cursor: String?
+            for page in 0..<20 {
+                let requestID = "\(loadedListID)-\(page)"
+                var params: [String: Any] = ["limit": 100]
+                if let cursor { params["cursor"] = cursor }
+                try writeJSON(
+                    [
+                        "id": requestID,
+                        "method": "thread/loaded/list",
+                        "params": params,
                     ],
-                ],
-                to: input.fileDescriptor
-            )
-            let listResponse = try response(
-                withID: threadListID,
-                reader: &reader,
-                responses: &responses,
-                deadline: deadline
-            )
-            let selection = try CoveDesktopThreadSnapshotParser
-                .threadListSelection(
-                    fromThreadListResponse: listResponse,
-                    expectedID: threadListID,
-                    limit: limit
+                    to: input.fileDescriptor
                 )
-            threadIDs = selection.discoverableDesktopThreadIDs
-            hiddenApprovalReviewThreadIDs =
-                selection.hiddenApprovalReviewThreadIDs
-        }
-        guard !threadIDs.isEmpty else {
-            return .init(
-                snapshots: [],
-                hiddenApprovalReviewThreadIDs: hiddenApprovalReviewThreadIDs
-            )
-        }
-        for threadID in threadIDs {
-            try writeJSON(
-                [
-                    "id": "\(threadReadID)-\(threadID)",
-                    "method": "thread/read",
-                    "params": [
-                        "threadId": threadID,
-                        "includeTurns": false,
-                    ],
-                ],
-                to: input.fileDescriptor
-            )
-            try writeJSON(
-                [
-                    "id": "\(threadTurnsListID)-\(threadID)",
-                    "method": "thread/turns/list",
-                    "params": [
-                        "threadId": threadID,
-                        "limit": 8,
-                        "sortDirection": "desc",
-                        "itemsView": "summary",
-                    ],
-                ],
-                to: input.fileDescriptor
-            )
-        }
-        var snapshots: [CoveSessionSnapshot] = []
-        for threadID in threadIDs {
-            let expectedID = "\(threadReadID)-\(threadID)"
-            let threadResponse = try response(
-                withID: expectedID,
-                reader: &reader,
-                responses: &responses,
-                deadline: deadline
-            )
-            do {
-                let snapshot = try CoveDesktopThreadSnapshotParser.parseResponse(
-                    threadResponse,
-                    expectedID: expectedID,
-                    expectedThreadID: threadID,
-                    capturedAt: capturedAt
-                )
-                snapshots.append(snapshot)
-            } catch CoveDesktopThreadHydrationFailure.hiddenApprovalReviewThread {
-                hiddenApprovalReviewThreadIDs.append(threadID)
-            } catch {
-                // A missing/deleted ordinary task should not make the whole
-                // discovery batch unavailable or delete persisted jump data.
-            }
-        }
-        for index in snapshots.indices {
-            let threadID = snapshots[index].sessionId
-                ?? snapshots[index].snapshotId
-            let expectedID = "\(threadTurnsListID)-\(threadID)"
-            do {
-                let turnsResponse = try response(
-                    withID: expectedID,
+                let pageResponse = try response(
+                    withID: requestID,
                     reader: &reader,
                     responses: &responses,
                     deadline: deadline
                 )
-                snapshots[index].latestOutput = try CoveDesktopThreadSnapshotParser
-                    .latestOutput(
-                        fromThreadTurnsListResponse: turnsResponse,
-                        expectedID: expectedID
+                let parsed = try CoveDesktopThreadSnapshotParser.loadedThreadPage(
+                    from: pageResponse,
+                    expectedID: requestID
+                )
+                loaded.append(contentsOf: parsed.ids)
+                guard let next = parsed.nextCursor else { break }
+                guard next != cursor,
+                      loaded.count < 500,
+                      page < 19
+                else {
+                    loadedThreadSetIsComplete = false
+                    break
+                }
+                cursor = next
+            }
+            threadIDs = Array(Set(loaded.prefix(500))).sorted()
+        }
+        guard !threadIDs.isEmpty else {
+            return .init(
+                snapshots: [],
+                hiddenApprovalReviewThreadIDs: hiddenApprovalReviewThreadIDs,
+                loadedThreadIDs: threadIDs,
+                loadedThreadSetIsComplete: loadedThreadSetIsComplete
+            )
+        }
+        var snapshots: [CoveSessionSnapshot] = []
+        let hydrationBatchSize = 8
+        for start in stride(
+            from: 0,
+            to: threadIDs.count,
+            by: hydrationBatchSize
+        ) {
+            let end = min(start + hydrationBatchSize, threadIDs.count)
+            let batchIDs = Array(threadIDs[start..<end])
+            for threadID in batchIDs {
+                try writeJSON(
+                    [
+                        "id": "\(threadReadID)-\(threadID)",
+                        "method": "thread/read",
+                        "params": [
+                            "threadId": threadID,
+                            "includeTurns": false,
+                        ],
+                    ],
+                    to: input.fileDescriptor
+                )
+            }
+            var batchSnapshots: [CoveSessionSnapshot] = []
+            for threadID in batchIDs {
+                let expectedID = "\(threadReadID)-\(threadID)"
+                do {
+                    let threadResponse = try response(
+                        withID: expectedID,
+                        reader: &reader,
+                        responses: &responses,
+                        deadline: deadline
                     )
-            } catch {
-                // Latest output is optional enrichment. Metadata hydration
-                // remains useful when an older app-server lacks this method.
+                    let thread = try CoveDesktopThreadSnapshotParser.thread(
+                        fromResponse: threadResponse,
+                        expectedID: expectedID,
+                        expectedThreadID: threadID
+                    )
+                    guard try hasTrustedDesktopRoot(
+                        for: thread,
+                        expectedThreadID: threadID,
+                        reader: &reader,
+                        responses: &responses,
+                        input: input.fileDescriptor,
+                        deadline: deadline
+                    ) else { continue }
+                    batchSnapshots.append(
+                        try CoveDesktopThreadSnapshotParser.parseResponse(
+                            threadResponse,
+                            expectedID: expectedID,
+                            expectedThreadID: threadID,
+                            capturedAt: capturedAt,
+                            acceptingTrustedThreadSpawn: true
+                        )
+                    )
+                } catch CoveDesktopThreadHydrationFailure
+                    .hiddenApprovalReviewThread {
+                    hiddenApprovalReviewThreadIDs.append(threadID)
+                } catch {
+                    // A missing/deleted ordinary task should not make the
+                    // entire reconciliation unavailable.
+                }
+            }
+            var requestedTurnIDs = Set<String>()
+            for snapshot in batchSnapshots {
+                let threadID = snapshot.sessionId ?? snapshot.snapshotId
+                do {
+                    try writeJSON(
+                        [
+                            "id": "\(threadTurnsListID)-\(threadID)",
+                            "method": "thread/turns/list",
+                            "params": [
+                                "threadId": threadID,
+                                "limit": 8,
+                                "sortDirection": "desc",
+                                "itemsView": "summary",
+                            ],
+                        ],
+                        to: input.fileDescriptor
+                    )
+                    requestedTurnIDs.insert(threadID)
+                } catch {
+                    // This optional public method may be unavailable on an
+                    // older app-server connection.
+                }
+            }
+            for var snapshot in batchSnapshots {
+                let threadID = snapshot.sessionId ?? snapshot.snapshotId
+                let expectedID = "\(threadTurnsListID)-\(threadID)"
+                if requestedTurnIDs.contains(threadID) {
+                    do {
+                        let turnsResponse = try response(
+                            withID: expectedID,
+                            reader: &reader,
+                            responses: &responses,
+                            deadline: deadline
+                        )
+                        let summary = try CoveDesktopThreadSnapshotParser
+                            .turnSummary(
+                                fromThreadTurnsListResponse: turnsResponse,
+                                expectedID: expectedID
+                            )
+                        snapshot.latestOutput = summary.latestOutput
+                        snapshot.activeTurnId = summary.activeTurnID
+                    } catch {
+                        // Output and active-turn enrichment are optional. An
+                        // active task without an exact ID stays read-only.
+                    }
+                }
+                snapshots.append(snapshot)
             }
         }
         return .init(
             snapshots: snapshots,
             hiddenApprovalReviewThreadIDs: Array(
                 Set(hiddenApprovalReviewThreadIDs)
-            ).sorted()
+            ).sorted(),
+            loadedThreadIDs: operation.loadedThreadIDs(fallback: threadIDs),
+            loadedThreadSetIsComplete: loadedThreadSetIsComplete
         )
+    }
+
+    private static func hasTrustedDesktopRoot(
+        for initial: [String: CoveJSONValue],
+        expectedThreadID: String,
+        reader: inout CoveDesktopBoundedLineReader,
+        responses: inout CoveDesktopResponseBuffer,
+        input: Int32,
+        deadline: UInt64
+    ) throws -> Bool {
+        var thread = initial
+        var expected = expectedThreadID
+        var visited = Set<String>()
+        for _ in 0..<32 {
+            guard thread["id"]?.scalarStringValue == expected,
+                  visited.insert(expected).inserted,
+                  !CoveThreadProvenance.hasConflictingParentID(in: thread),
+                  !CoveThreadProvenance.isExcludedAgent(thread)
+            else { return false }
+            if !CoveThreadProvenance.isThreadSpawnAgent(thread) {
+                return CoveDesktopThreadSnapshotParser
+                    .isConfidentlyDesktopOpenable(thread)
+            }
+            guard
+                  let parent = CoveThreadProvenance.parentID(in: thread),
+                  CoveDesktopThreadClient.isSafeThreadIdentifier(parent),
+                  !visited.contains(parent)
+            else { return false }
+            let requestID = "cove-desktop-thread-root-\(UUID().uuidString.lowercased())"
+            try writeJSON(
+                [
+                    "id": requestID,
+                    "method": "thread/read",
+                    "params": ["threadId": parent, "includeTurns": false],
+                ],
+                to: input
+            )
+            let data = try response(
+                withID: requestID,
+                reader: &reader,
+                responses: &responses,
+                deadline: deadline
+            )
+            thread = try CoveDesktopThreadSnapshotParser.thread(
+                fromResponse: data,
+                expectedID: requestID,
+                expectedThreadID: parent
+            )
+            expected = parent
+        }
+        return false
     }
 
     private static func requestTimeout(
@@ -965,6 +1177,14 @@ private enum CoveAppServerThreadQuery {
         case .directStdio:
             return configuration.requestTimeout
         }
+    }
+
+    private static func deadline(after timeout: TimeInterval) -> UInt64 {
+        let timeoutNanoseconds = UInt64(timeout * 1_000_000_000)
+        let now = DispatchTime.now().uptimeNanoseconds
+        return now > UInt64.max - timeoutNanoseconds
+            ? UInt64.max
+            : now + timeoutNanoseconds
     }
 
     private static func response(
@@ -1073,7 +1293,7 @@ private struct CoveDesktopResponseBuffer {
     }
 }
 
-private struct CoveDesktopBoundedLineReader {
+struct CoveDesktopBoundedLineReader {
     let fileDescriptor: Int32
     let maximumLineBytes: Int
     private var buffered = Data()

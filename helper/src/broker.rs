@@ -3,7 +3,7 @@ use crate::ipc::{bind_private_listener, read_limited_line, send_event_one_way};
 use crate::{CoveEvent, EventSource};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -71,6 +71,16 @@ pub struct AppServerProbe {
 struct AppServerCommand<'a> {
     real_codex: &'a Path,
     mode: AppServerMode,
+}
+
+struct BrokerRunContext<'a> {
+    decision_listener: &'a UnixListener,
+    decision_path: &'a Path,
+    control_listener: &'a UnixListener,
+    launch_id: &'a str,
+    app_server: AppServerCommand<'a>,
+    config: &'a Config,
+    observed_sessions: Arc<Mutex<HashSet<String>>>,
 }
 
 pub fn probe_direct_stdio(real_codex: &Path, timeout: Duration) -> DirectStdioProbe {
@@ -184,28 +194,85 @@ pub fn run_broker(
             return Err(error);
         }
     };
+    let control_path = listen_path.with_extension("c");
+    let control_listener = match bind_private_listener(&control_path) {
+        Ok(listener) => listener,
+        Err(error) => {
+            let _ = fs::remove_file(listen_path);
+            let _ = fs::remove_file(&decision_path);
+            return Err(error);
+        }
+    };
     let accept_timeout = broker_client_claim_timeout(config);
-    let app_server = AppServerCommand { real_codex, mode };
+    let observed_sessions = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let context = BrokerRunContext {
+        decision_listener: &decision_listener,
+        decision_path: &decision_path,
+        control_listener: &control_listener,
+        launch_id,
+        app_server: AppServerCommand { real_codex, mode },
+        config,
+        observed_sessions: Arc::clone(&observed_sessions),
+    };
     let result = match accept_with_timeout(&listener, accept_timeout) {
         Ok((client, _)) => {
             trace_broker("broker_socket_claimed");
-            run_broker_inner(
-                &client,
-                &decision_listener,
-                &decision_path,
-                launch_id,
-                &app_server,
-                config,
-            )
+            run_broker_inner(&client, &context)
         }
         Err(error) => {
             trace_broker(&format!("broker_accept_error kind={:?}", error.kind()));
             Err(error)
         }
     };
+    publish_closed_sessions(
+        config,
+        launch_id,
+        &observed_sessions.lock().unwrap(),
+        result.as_ref().is_ok_and(|code| *code == 0),
+    );
     let _ = fs::remove_file(listen_path);
     let _ = fs::remove_file(decision_path);
+    let _ = fs::remove_file(control_path);
     result
+}
+
+fn publish_closed_sessions(
+    config: &Config,
+    launch_id: &str,
+    observed_sessions: &HashSet<String>,
+    succeeded: bool,
+) {
+    let source = if env::var_os("CODEX_COVE_HOST_ID").is_some() {
+        EventSource::RemoteCli
+    } else {
+        EventSource::LocalCli
+    };
+    let mut session_ids = observed_sessions.iter().collect::<Vec<_>>();
+    session_ids.sort();
+    for session_id in session_ids {
+        let event = CoveEvent::new(
+            "session_snapshot",
+            source,
+            session_id.clone(),
+            Some(launch_id.to_owned()),
+            json!({
+                "snapshotId": session_id,
+                "status": if succeeded { "completed" } else { "failed" },
+                "priority": if succeeded { 8 } else { 90 },
+                "title": "Codex CLI",
+                "unread": !succeeded,
+                "liveness": "closed",
+                "activeTurnId": Value::Null,
+                "controlRoute": Value::Null,
+            }),
+        );
+        let _ = send_event_one_way(
+            &config.event_socket,
+            &event,
+            Duration::from_millis(50),
+            config.max_frame_bytes,
+        );
+    }
 }
 
 fn accept_with_timeout(
@@ -523,33 +590,13 @@ fn terminate_remaining_process_group(pid: u32) -> io::Result<()> {
     }
 }
 
-fn run_broker_inner(
-    client: &UnixStream,
-    decision_listener: &UnixListener,
-    decision_path: &Path,
-    launch_id: &str,
-    app_server: &AppServerCommand<'_>,
-    config: &Config,
-) -> io::Result<i32> {
-    let handshake_timeout = broker_handshake_timeout(config);
+fn run_broker_inner(client: &UnixStream, context: &BrokerRunContext<'_>) -> io::Result<i32> {
+    let handshake_timeout = broker_handshake_timeout(context.config);
     match detect_client_transport(client, handshake_timeout)? {
-        ClientTransport::WebSocket => run_websocket_broker_inner(
-            client,
-            decision_listener,
-            decision_path,
-            launch_id,
-            app_server,
-            config,
-            handshake_timeout,
-        ),
-        ClientTransport::RawJsonl => run_raw_broker_inner(
-            client,
-            decision_listener,
-            decision_path,
-            launch_id,
-            app_server,
-            config,
-        ),
+        ClientTransport::WebSocket => {
+            run_websocket_broker_inner(client, context, handshake_timeout)
+        }
+        ClientTransport::RawJsonl => run_raw_broker_inner(client, context),
     }
 }
 
@@ -616,14 +663,14 @@ fn unix_stream_peek(stream: &UnixStream, buffer: &mut [u8]) -> io::Result<usize>
     }
 }
 
-fn run_raw_broker_inner(
-    client: &UnixStream,
-    decision_listener: &UnixListener,
-    decision_path: &Path,
-    launch_id: &str,
-    app_server: &AppServerCommand<'_>,
-    config: &Config,
-) -> io::Result<i32> {
+fn run_raw_broker_inner(client: &UnixStream, context: &BrokerRunContext<'_>) -> io::Result<i32> {
+    let decision_listener = context.decision_listener;
+    let decision_path = context.decision_path;
+    let control_listener = context.control_listener;
+    let launch_id = context.launch_id;
+    let app_server = &context.app_server;
+    let config = context.config;
+    let observed_sessions = Arc::clone(&context.observed_sessions);
     let mut child = spawn_app_server(app_server.real_codex, app_server.mode)?;
     if let Err(error) = verify_child_started(&mut child) {
         stop_child(&mut child);
@@ -643,6 +690,8 @@ fn run_raw_broker_inner(
     let (decision_sender, decision_receiver) = mpsc::channel::<Vec<u8>>();
     let (worker_sender, worker_receiver) = mpsc::channel::<RawBrokerWorkerResult>();
     let pending = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let control_replies = Arc::new(Mutex::new(ThreadControlReplies::new()));
+    let active_turns = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     let input_pending = Arc::clone(&pending);
     let max_bytes = config.max_frame_bytes;
     let input_result_sender = worker_sender.clone();
@@ -707,6 +756,18 @@ fn run_raw_broker_inner(
     let launch_id = launch_id.to_owned();
     let decision_path_text = decision_path.display().to_string();
     let running = Arc::new(AtomicBool::new(true));
+    let control_thread = spawn_thread_control_listener(
+        control_listener.try_clone()?,
+        ThreadControlListenerContext {
+            launch_id: launch_id.clone(),
+            observed_sessions: Arc::clone(&observed_sessions),
+            active_turns: Arc::clone(&active_turns),
+            replies: Arc::clone(&control_replies),
+            running: Arc::clone(&running),
+            app_server_sender: decision_sender.clone(),
+            max_bytes,
+        },
+    )?;
     let decision_thread = spawn_decision_listener(
         decision_listener.try_clone()?,
         launch_id.clone(),
@@ -716,6 +777,9 @@ fn run_raw_broker_inner(
         max_bytes,
     )?;
     let output_pending = Arc::clone(&pending);
+    let output_control_replies = Arc::clone(&control_replies);
+    let output_observed_sessions = Arc::clone(&observed_sessions);
+    let output_active_turns = Arc::clone(&active_turns);
     let output_thread = thread::spawn(move || {
         let result = (|| -> io::Result<()> {
             let mut reader = BufReader::new(proxy_output);
@@ -743,6 +807,13 @@ fn run_raw_broker_inner(
                     traced_outbound_frame = true;
                 }
                 if let Some(value) = parsed.as_ref() {
+                    if let Some(session_id) = extract_session_id(value) {
+                        output_observed_sessions.lock().unwrap().insert(session_id);
+                    }
+                    observe_active_turn(value, &output_active_turns);
+                    if deliver_thread_control_response(value, &line, &output_control_replies) {
+                        continue;
+                    }
                     if let Some(key) = server_request_key(value) {
                         output_pending.lock().unwrap().insert(key);
                     }
@@ -824,6 +895,7 @@ fn run_raw_broker_inner(
         .join()
         .map_err(|_| io::Error::other("broker output thread panicked"))?;
     let _ = decision_thread.join();
+    let _ = control_thread.join();
 
     match outcome {
         RawBrokerOutcome::Child(status) => Ok(status.code().unwrap_or(1)),
@@ -877,13 +949,16 @@ fn raw_client_disconnect(error: &io::Error) -> bool {
 
 fn run_websocket_broker_inner(
     client: &UnixStream,
-    decision_listener: &UnixListener,
-    decision_path: &Path,
-    launch_id: &str,
-    app_server: &AppServerCommand<'_>,
-    config: &Config,
+    context: &BrokerRunContext<'_>,
     handshake_timeout: Duration,
 ) -> io::Result<i32> {
+    let decision_listener = context.decision_listener;
+    let decision_path = context.decision_path;
+    let control_listener = context.control_listener;
+    let launch_id = context.launch_id;
+    let app_server = &context.app_server;
+    let config = context.config;
+    let observed_sessions = Arc::clone(&context.observed_sessions);
     let max_bytes = config.max_frame_bytes;
     let mut websocket = accept_rpc_websocket(client.try_clone()?, max_bytes, handshake_timeout)?;
     trace_broker("ws_accepted");
@@ -893,11 +968,25 @@ fn run_websocket_broker_inner(
     let (decision_sender, decision_receiver) = mpsc::channel::<Vec<u8>>();
     let (output_sender, output_receiver) = mpsc::channel::<Vec<u8>>();
     let pending = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let control_replies = Arc::new(Mutex::new(ThreadControlReplies::new()));
+    let active_turns = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     let socket = config.event_socket.clone();
     let timeout = Duration::from_millis(50);
     let launch_id_text = launch_id.to_owned();
     let decision_path_text = decision_path.display().to_string();
     let running = Arc::new(AtomicBool::new(true));
+    let control_thread = spawn_thread_control_listener(
+        control_listener.try_clone()?,
+        ThreadControlListenerContext {
+            launch_id: launch_id_text.clone(),
+            observed_sessions: Arc::clone(&observed_sessions),
+            active_turns: Arc::clone(&active_turns),
+            replies: Arc::clone(&control_replies),
+            running: Arc::clone(&running),
+            app_server_sender: decision_sender.clone(),
+            max_bytes,
+        },
+    )?;
     let decision_thread = spawn_decision_listener(
         decision_listener.try_clone()?,
         launch_id_text.clone(),
@@ -909,6 +998,9 @@ fn run_websocket_broker_inner(
 
     let output_context = WebsocketOutputContext {
         pending: Arc::clone(&pending),
+        control_replies: Arc::clone(&control_replies),
+        observed_sessions: Arc::clone(&observed_sessions),
+        active_turns: Arc::clone(&active_turns),
         output_sender: output_sender.clone(),
         event_socket: socket.clone(),
         launch_id: launch_id_text.clone(),
@@ -960,6 +1052,7 @@ fn run_websocket_broker_inner(
                         stop_child(&mut finished.child);
                         running.store(false, Ordering::Relaxed);
                         let _ = decision_thread.join();
+                        let _ = control_thread.join();
                         return Err(error);
                     }
                 }
@@ -971,6 +1064,7 @@ fn run_websocket_broker_inner(
                         terminate_remaining_process_group(finished.child.id())?;
                         running.store(false, Ordering::Relaxed);
                         let _ = decision_thread.join();
+                        let _ = control_thread.join();
                         let _ = close_websocket_ignoring_closed(&mut websocket, None);
                         return Ok(status.code().unwrap_or(1));
                     }
@@ -984,6 +1078,7 @@ fn run_websocket_broker_inner(
             stop_child(&mut finished.child);
             running.store(false, Ordering::Relaxed);
             let _ = decision_thread.join();
+            let _ = control_thread.join();
             let _ = close_websocket_ignoring_closed(&mut websocket, None);
             return match output_result {
                 Ok(()) => Err(io::Error::new(
@@ -1010,6 +1105,7 @@ fn run_websocket_broker_inner(
                 }
                 running.store(false, Ordering::Relaxed);
                 let _ = decision_thread.join();
+                let _ = control_thread.join();
                 let _ = close_websocket_ignoring_closed(&mut websocket, None);
                 return Ok(status.code().unwrap_or(1));
             }
@@ -1068,6 +1164,7 @@ fn run_websocket_broker_inner(
                     }
                     running.store(false, Ordering::Relaxed);
                     let _ = decision_thread.join();
+                    let _ = control_thread.join();
                     return Ok(0);
                 }
                 Message::Frame(_) => {}
@@ -1084,6 +1181,7 @@ fn run_websocket_broker_inner(
                 }
                 running.store(false, Ordering::Relaxed);
                 let _ = decision_thread.join();
+                let _ = control_thread.join();
                 return Ok(0);
             }
             Err(error) => {
@@ -1092,6 +1190,7 @@ fn run_websocket_broker_inner(
                 }
                 running.store(false, Ordering::Relaxed);
                 let _ = decision_thread.join();
+                let _ = control_thread.join();
                 trace_broker(&format!(
                     "ws_error kind={:?}",
                     websocket_io_error_kind(&error)
@@ -1140,6 +1239,9 @@ fn websocket_runtime<'a>(
 #[derive(Clone)]
 struct WebsocketOutputContext {
     pending: Arc<Mutex<HashSet<String>>>,
+    control_replies: Arc<Mutex<ThreadControlReplies>>,
+    observed_sessions: Arc<Mutex<HashSet<String>>>,
+    active_turns: Arc<Mutex<HashMap<String, String>>>,
     output_sender: mpsc::Sender<Vec<u8>>,
     event_socket: PathBuf,
     launch_id: String,
@@ -1174,6 +1276,13 @@ fn websocket_output_thread(
             ));
         }
         if let Some(value) = parse_json_line(&line) {
+            if let Some(session_id) = extract_session_id(&value) {
+                context.observed_sessions.lock().unwrap().insert(session_id);
+            }
+            observe_active_turn(&value, &context.active_turns);
+            if deliver_thread_control_response(&value, &line, &context.control_replies) {
+                continue;
+            }
             observe_server_message(
                 &value,
                 &context.pending,
@@ -1208,13 +1317,11 @@ fn accept_rpc_websocket(
 ) -> io::Result<WebSocket<UnixStream>> {
     stream.set_read_timeout(Some(handshake_timeout))?;
     stream.set_write_timeout(Some(handshake_timeout))?;
-    let config = WebSocketConfig {
-        write_buffer_size: 0,
-        max_write_buffer_size: max_bytes.saturating_mul(2).max(max_bytes.saturating_add(1)),
-        max_message_size: Some(max_bytes),
-        max_frame_size: Some(max_bytes),
-        ..WebSocketConfig::default()
-    };
+    let config = WebSocketConfig::default()
+        .write_buffer_size(0)
+        .max_write_buffer_size(max_bytes.saturating_mul(2).max(max_bytes.saturating_add(1)))
+        .max_message_size(Some(max_bytes))
+        .max_frame_size(Some(max_bytes));
     tungstenite::accept_hdr_with_config(
         stream,
         |request: &Request, response: Response| {
@@ -1264,12 +1371,12 @@ fn websocket_send_jsonl(
     }
     let text = String::from_utf8(line)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    websocket_send_message(websocket, Message::Text(text), "outbound")
+    websocket_send_message(websocket, Message::Text(text.into()), "outbound")
 }
 
 fn close_websocket_ignoring_closed(
     websocket: &mut WebSocket<UnixStream>,
-    frame: Option<tungstenite::protocol::CloseFrame<'static>>,
+    frame: Option<tungstenite::protocol::CloseFrame>,
 ) -> io::Result<()> {
     match websocket.close(frame) {
         Ok(()) => Ok(()),
@@ -1359,6 +1466,7 @@ fn write_websocket_client_message(
     }
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    reject_reserved_thread_control_id(&value)?;
     if let Some(key) = client_response_key(&value) {
         pending.lock().unwrap().remove(&key);
     }
@@ -1407,12 +1515,28 @@ fn forward_complete_raw_client_frame(
         ));
     }
     if let Ok(value) = serde_json::from_slice::<Value>(line) {
+        reject_reserved_thread_control_id(&value)?;
         if let Some(key) = client_response_key(&value) {
             pending.lock().unwrap().remove(&key);
         }
     }
     proxy_input.write_all(line)?;
     proxy_input.flush()
+}
+
+fn reject_reserved_thread_control_id(value: &Value) -> io::Result<()> {
+    if value.get("method").is_some()
+        && value
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with("cove-thread-control:"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "client request uses Cove's reserved control ID namespace",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1661,6 +1785,316 @@ fn spawn_decision_listener(
     }))
 }
 
+type ThreadControlReplies = HashMap<String, mpsc::Sender<Vec<u8>>>;
+
+struct ThreadControlListenerContext {
+    launch_id: String,
+    observed_sessions: Arc<Mutex<HashSet<String>>>,
+    active_turns: Arc<Mutex<HashMap<String, String>>>,
+    replies: Arc<Mutex<ThreadControlReplies>>,
+    running: Arc<AtomicBool>,
+    app_server_sender: mpsc::Sender<Vec<u8>>,
+    max_bytes: usize,
+}
+
+fn spawn_thread_control_listener(
+    listener: UnixListener,
+    context: ThreadControlListenerContext,
+) -> io::Result<thread::JoinHandle<()>> {
+    listener.set_nonblocking(true)?;
+    Ok(thread::spawn(move || {
+        let ThreadControlListenerContext {
+            launch_id,
+            observed_sessions,
+            active_turns,
+            replies,
+            running,
+            app_server_sender,
+            max_bytes,
+        } = context;
+        while running.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = handle_thread_control_stream(
+                        stream,
+                        &launch_id,
+                        &observed_sessions,
+                        &active_turns,
+                        &replies,
+                        &app_server_sender,
+                        max_bytes,
+                    );
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(_) => break,
+            }
+        }
+    }))
+}
+
+fn handle_thread_control_stream(
+    stream: UnixStream,
+    launch_id: &str,
+    observed_sessions: &Arc<Mutex<HashSet<String>>>,
+    active_turns: &Arc<Mutex<HashMap<String, String>>>,
+    replies: &Arc<Mutex<ThreadControlReplies>>,
+    app_server_sender: &mpsc::Sender<Vec<u8>>,
+    max_bytes: usize,
+) -> io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+    stream.set_write_timeout(Some(Duration::from_millis(500)))?;
+    let mut reader = BufReader::new(stream);
+    let Some(line) = read_limited_line(&mut reader, max_bytes)? else {
+        return Ok(());
+    };
+    let value: Value = serde_json::from_slice(&line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let (response_id, request) = match validate_thread_control_frame(
+        &value,
+        launch_id,
+        &observed_sessions.lock().unwrap(),
+        &active_turns.lock().unwrap(),
+    ) {
+        Ok(validated) => validated,
+        Err(error) => {
+            let Some(control_id) = value
+                .get("clientMessageId")
+                .and_then(Value::as_str)
+                .filter(|value| valid_control_id(value))
+            else {
+                return Err(error);
+            };
+            let acknowledgement = serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "type": "threadControlAck",
+                "controlId": control_id,
+                "status": "rejected",
+                "rejection": thread_control_rejection(&error),
+            }))
+            .map_err(|encode_error| io::Error::new(io::ErrorKind::InvalidData, encode_error))?;
+            reader.get_mut().write_all(&acknowledgement)?;
+            reader.get_mut().write_all(b"\n")?;
+            reader.get_mut().flush()?;
+            return Ok(());
+        }
+    };
+    let (reply_sender, reply_receiver) = mpsc::channel();
+    {
+        let mut pending = replies.lock().unwrap();
+        if pending.len() >= 32 || pending.contains_key(&response_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "thread control is already pending",
+            ));
+        }
+        pending.insert(response_id.clone(), reply_sender);
+    }
+    if app_server_sender.send(request).is_err() {
+        replies.lock().unwrap().remove(&response_id);
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "broker input closed",
+        ));
+    }
+    let response = match reply_receiver.recv_timeout(Duration::from_secs(3)) {
+        Ok(response) => response,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            replies.lock().unwrap().remove(&response_id);
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "type": "threadControlAck",
+                "controlId": value["clientMessageId"],
+                "status": "uncertain",
+            }))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            replies.lock().unwrap().remove(&response_id);
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "control response closed",
+            ));
+        }
+    };
+    reader.get_mut().write_all(&response)?;
+    if !response.ends_with(b"\n") {
+        reader.get_mut().write_all(b"\n")?;
+    }
+    reader.get_mut().flush()
+}
+
+fn validate_thread_control_frame(
+    value: &Value,
+    launch_id: &str,
+    observed_sessions: &HashSet<String>,
+    active_turns: &HashMap<String, String>,
+) -> io::Result<(String, Vec<u8>)> {
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || value.get("launchId").and_then(Value::as_str) != Some(launch_id)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "thread control version or launch ID mismatch",
+        ));
+    }
+    let control_id = value
+        .get("clientMessageId")
+        .and_then(Value::as_str)
+        .filter(|id| valid_control_id(id))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid control ID"))?;
+    let target = value
+        .get("target")
+        .and_then(Value::as_object)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing control target"))?;
+    let session_id = target
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 512)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid target session"))?;
+    if !matches!(
+        target.get("source").and_then(Value::as_str),
+        Some("localCli" | "remoteCli")
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "thread control target origin is invalid",
+        ));
+    }
+    if !observed_sessions.contains(session_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "thread control target was not observed by this broker",
+        ));
+    }
+    let input = value
+        .get("input")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty() && text.len() <= 32 * 1_024)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid control input"))?;
+    let operation = value
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing control operation"))?;
+    let method = match operation {
+        "start" => "turn/start",
+        "steer" => "turn/steer",
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported control operation",
+            ));
+        }
+    };
+    let mut params = serde_json::Map::new();
+    params.insert("threadId".to_owned(), Value::String(session_id.to_owned()));
+    params.insert(
+        "clientUserMessageId".to_owned(),
+        Value::String(control_id.to_owned()),
+    );
+    params.insert("input".to_owned(), json!([{"type":"text", "text": input}]));
+    if operation == "start" && active_turns.contains_key(session_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "thread state changed before start",
+        ));
+    }
+    if operation == "steer" {
+        let expected = value
+            .get("expectedTurnId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 512)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing expected turn"))?;
+        if active_turns.get(session_id).map(String::as_str) != Some(expected) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "thread state changed before steer",
+            ));
+        }
+        params.insert(
+            "expectedTurnId".to_owned(),
+            Value::String(expected.to_owned()),
+        );
+    }
+    let response_id = format!("cove-thread-control:{control_id}");
+    let request = serde_json::to_vec(&json!({
+        "jsonrpc": "2.0",
+        "id": response_id,
+        "method": method,
+        "params": params,
+    }))
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok((response_id, request))
+}
+
+fn thread_control_rejection(error: &io::Error) -> &'static str {
+    let message = error.to_string();
+    if message.contains("state changed") {
+        "turnMismatch"
+    } else if message.contains("origin") {
+        "wrongOrigin"
+    } else if message.contains("not observed") || message.contains("launch ID mismatch") {
+        "staleRoute"
+    } else if message.contains("unsupported") {
+        "unsupported"
+    } else {
+        "invalidInput"
+    }
+}
+
+fn valid_control_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'-' | b'_' | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z'))
+}
+
+fn observe_active_turn(value: &Value, active_turns: &Arc<Mutex<HashMap<String, String>>>) {
+    let Some(session_id) = extract_session_id(value) else {
+        return;
+    };
+    let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+    if method == "turn/started" {
+        if let Some(turn_id) = value
+            .pointer("/params/turn/id")
+            .or_else(|| value.pointer("/params/turnId"))
+            .and_then(Value::as_str)
+        {
+            active_turns
+                .lock()
+                .unwrap()
+                .insert(session_id, turn_id.to_owned());
+        }
+    } else if matches!(
+        method,
+        "turn/completed" | "turn/aborted" | "turn/interrupted" | "turn/failed"
+    ) || (method == "thread/status/changed"
+        && (value.pointer("/params/status/type").and_then(Value::as_str) == Some("idle")
+            || value.pointer("/params/status").and_then(Value::as_str) == Some("idle")))
+    {
+        active_turns.lock().unwrap().remove(&session_id);
+    }
+}
+
+fn deliver_thread_control_response(
+    value: &Value,
+    line: &[u8],
+    replies: &Arc<Mutex<ThreadControlReplies>>,
+) -> bool {
+    let Some(id) = value.get("id").and_then(Value::as_str) else {
+        return false;
+    };
+    if !id.starts_with("cove-thread-control:") {
+        return false;
+    }
+    if let Some(sender) = replies.lock().unwrap().remove(id) {
+        let _ = sender.send(line.to_vec());
+    }
+    true
+}
+
 fn handle_decision_stream(
     stream: UnixStream,
     launch_id: &str,
@@ -1823,6 +2257,207 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn thread_control_allowlist_builds_only_start_and_exact_steer() {
+        let observed = HashSet::from(["thread-1".to_owned()]);
+        let no_active_turns = HashMap::new();
+        let start = json!({
+            "schemaVersion": 1,
+            "launchId": "launch-1",
+            "target": {"source": "localCli", "sessionId": "thread-1"},
+            "operation": "start",
+            "clientMessageId": "message-1",
+            "input": "Continue"
+        });
+        let (response_id, encoded) =
+            validate_thread_control_frame(&start, "launch-1", &observed, &no_active_turns).unwrap();
+        let request: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(response_id, "cove-thread-control:message-1");
+        assert_eq!(request["method"], "turn/start");
+        assert_eq!(request["params"]["threadId"], "thread-1");
+        assert_eq!(request["params"]["input"][0]["text"], "Continue");
+
+        let steer = json!({
+            "schemaVersion": 1,
+            "launchId": "launch-1",
+            "target": {"source": "remoteCli", "sessionId": "thread-1"},
+            "operation": "steer",
+            "expectedTurnId": "turn-9",
+            "clientMessageId": "message-2",
+            "input": "Change direction"
+        });
+        let active_turns = HashMap::from([("thread-1".to_owned(), "turn-9".to_owned())]);
+        let (_, encoded) =
+            validate_thread_control_frame(&steer, "launch-1", &observed, &active_turns).unwrap();
+        let request: Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(request["method"], "turn/steer");
+        assert_eq!(request["params"]["expectedTurnId"], "turn-9");
+    }
+
+    #[test]
+    fn thread_control_rejects_stale_wrong_origin_and_missing_turn() {
+        let observed = HashSet::from(["thread-1".to_owned()]);
+        let active_turns = HashMap::new();
+        let base = json!({
+            "schemaVersion": 1,
+            "launchId": "launch-1",
+            "target": {"source": "localCli", "sessionId": "thread-1"},
+            "operation": "steer",
+            "clientMessageId": "message-1",
+            "input": "Continue"
+        });
+        assert!(
+            validate_thread_control_frame(&base, "launch-1", &observed, &active_turns).is_err()
+        );
+        let mut wrong_origin = base.clone();
+        wrong_origin["operation"] = json!("start");
+        wrong_origin["target"]["source"] = json!("codexDesktop");
+        assert!(
+            validate_thread_control_frame(&wrong_origin, "launch-1", &observed, &active_turns)
+                .is_err()
+        );
+        let mut stale = wrong_origin;
+        stale["target"]["source"] = json!("localCli");
+        stale["target"]["sessionId"] = json!("unobserved");
+        assert!(
+            validate_thread_control_frame(&stale, "launch-1", &observed, &active_turns).is_err()
+        );
+        assert!(
+            validate_thread_control_frame(&stale, "other-launch", &observed, &active_turns)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn thread_control_rejects_state_changes_before_delivery() {
+        let observed = HashSet::from(["thread-1".to_owned()]);
+        let active_turns = HashMap::from([("thread-1".to_owned(), "turn-2".to_owned())]);
+        let mut request = json!({
+            "schemaVersion": 1,
+            "launchId": "launch-1",
+            "target": {"source": "localCli", "sessionId": "thread-1"},
+            "operation": "start",
+            "clientMessageId": "message-1",
+            "input": "Continue"
+        });
+        assert!(
+            validate_thread_control_frame(&request, "launch-1", &observed, &active_turns).is_err()
+        );
+
+        request["operation"] = json!("steer");
+        request["expectedTurnId"] = json!("turn-1");
+        assert!(
+            validate_thread_control_frame(&request, "launch-1", &observed, &active_turns).is_err()
+        );
+
+        request["expectedTurnId"] = json!("turn-2");
+        assert!(
+            validate_thread_control_frame(&request, "launch-1", &observed, &active_turns).is_ok()
+        );
+
+        let no_active_turns = HashMap::new();
+        assert!(
+            validate_thread_control_frame(&request, "launch-1", &observed, &no_active_turns)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn active_turn_observation_tracks_started_and_terminal_events() {
+        let active_turns = Arc::new(Mutex::new(HashMap::new()));
+        observe_active_turn(
+            &json!({
+                "method": "turn/started",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": {"id": "turn-1"}
+                }
+            }),
+            &active_turns,
+        );
+        assert_eq!(
+            active_turns.lock().unwrap().get("thread-1"),
+            Some(&"turn-1".to_owned())
+        );
+
+        observe_active_turn(
+            &json!({
+                "method": "turn/completed",
+                "params": {"threadId": "thread-1", "turn": {"id": "turn-1"}}
+            }),
+            &active_turns,
+        );
+        assert!(!active_turns.lock().unwrap().contains_key("thread-1"));
+    }
+
+    #[test]
+    fn reserved_thread_control_response_is_intercepted_once() {
+        let replies = Arc::new(Mutex::new(ThreadControlReplies::new()));
+        let (sender, receiver) = mpsc::channel();
+        replies
+            .lock()
+            .unwrap()
+            .insert("cove-thread-control:message-1".to_owned(), sender);
+        let value = json!({
+            "jsonrpc": "2.0",
+            "id": "cove-thread-control:message-1",
+            "result": {"turn": {"id": "turn-1"}}
+        });
+        let line = serde_json::to_vec(&value).unwrap();
+        assert!(deliver_thread_control_response(&value, &line, &replies));
+        assert_eq!(receiver.recv().unwrap(), line);
+        assert!(deliver_thread_control_response(
+            &value, b"ignored", &replies
+        ));
+        assert!(replies.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn client_cannot_claim_reserved_thread_control_ids() {
+        assert!(
+            reject_reserved_thread_control_id(&json!({
+                "id": "cove-thread-control:message-1",
+                "method": "turn/start",
+                "params": {}
+            }))
+            .is_err()
+        );
+        assert!(
+            reject_reserved_thread_control_id(&json!({
+                "id": "ordinary-client-id",
+                "method": "turn/start",
+                "params": {}
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn broker_close_event_separates_liveness_from_failure_status() {
+        let temp = short_tempdir();
+        let mut config = Config::for_home(temp.path());
+        config.event_socket = temp.path().join("events.sock");
+        let listener = bind_private_listener(&config.event_socket).unwrap();
+        let receiver = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            serde_json::from_str::<CoveEvent>(&line).unwrap()
+        });
+        publish_closed_sessions(
+            &config,
+            "launch-1",
+            &HashSet::from(["thread-1".to_owned()]),
+            false,
+        );
+        let event = receiver.join().unwrap();
+        assert_eq!(event.kind, "session_snapshot");
+        assert_eq!(event.session_id, "thread-1");
+        assert_eq!(event.payload["status"], "failed");
+        assert_eq!(event.payload["liveness"], "closed");
+        assert_eq!(event.payload["unread"], true);
     }
 
     #[test]
@@ -2041,7 +2676,8 @@ mod tests {
         websocket
             .send(Message::Text(
                 r#"{"jsonrpc":"2.0","id":"bootstrap","method":"initialize","params":{}}"#
-                    .to_owned(),
+                    .to_owned()
+                    .into(),
             ))
             .unwrap();
 
@@ -2052,7 +2688,9 @@ mod tests {
 
         websocket
             .send(Message::Text(
-                r#"{"jsonrpc":"2.0","id":"7","result":{"answers":{"q":"native"}}}"#.to_owned(),
+                r#"{"jsonrpc":"2.0","id":"7","result":{"answers":{"q":"native"}}}"#
+                    .to_owned()
+                    .into(),
             ))
             .unwrap();
         let mut decision_client = UnixStream::connect(&decision).unwrap();
@@ -2109,6 +2747,54 @@ mod tests {
 
         let error = broker.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(!listen.exists());
+        assert!(!decision.exists());
+    }
+
+    #[test]
+    fn websocket_rejects_invalid_client_key_before_starting_app_server() {
+        let temp = short_tempdir();
+        let fake_codex = temp.path().join("fake-codex");
+        let marker = temp.path().join("started");
+        fs::write(
+            &fake_codex,
+            format!(
+                "#!/bin/sh\nprintf started > '{}'\nexec sleep 30\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_codex, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut config = Config::for_home(temp.path());
+        config.event_socket = temp.path().join("missing-events.sock");
+        config.runtime_directory = temp.path().join("run");
+        let listen = broker_socket(&config.runtime_directory, "launch-ws-invalid-key");
+        let decision = decision_socket(&config.runtime_directory, "launch-ws-invalid-key");
+        let broker_config = config.clone();
+        let broker_listen = listen.clone();
+        let broker = thread::spawn(move || {
+            run_broker(
+                &broker_listen,
+                "launch-ws-invalid-key",
+                &fake_codex,
+                &broker_config,
+                AppServerMode::DirectStdio,
+            )
+        });
+
+        assert!(wait_for_socket(&listen, Duration::from_secs(1)));
+        assert!(wait_for_socket(&decision, Duration::from_secs(1)));
+        let mut stream = UnixStream::connect(&listen).unwrap();
+        stream
+            .write_all(
+                b"GET /rpc HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: invalid\r\n\r\n",
+            )
+            .unwrap();
+
+        let error = broker.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!marker.exists());
         assert!(!listen.exists());
         assert!(!decision.exists());
     }
@@ -2222,7 +2908,9 @@ mod tests {
         assert!(wait_for_socket(&decision, Duration::from_secs(1)));
         let stream = UnixStream::connect(&listen).unwrap();
         let (mut websocket, _) = tungstenite::client("ws://localhost/rpc", stream).unwrap();
-        websocket.send(Message::Text("x".repeat(128))).unwrap();
+        websocket
+            .send(Message::Text("x".repeat(128).into()))
+            .unwrap();
         let error = broker.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!listen.exists());
@@ -2265,7 +2953,8 @@ mod tests {
         websocket
             .send(Message::Text(
                 r#"{"jsonrpc":"2.0","id":"bootstrap","method":"initialize","params":{}}"#
-                    .to_owned(),
+                    .to_owned()
+                    .into(),
             ))
             .unwrap();
 

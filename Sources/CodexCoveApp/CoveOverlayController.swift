@@ -18,12 +18,14 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
     private var animationGeneration = 0
     private var hasEverBeenShown = false
     private var isManuallyHidden = false
+    private var isWorkspaceSuppressed = false
     private var hideInProgress = false
     private var presentationCancellable: AnyCancellable?
     private let presentationMetrics = CoveOverlayPresentationMetrics()
 
     func attach(
         store: CoveStore,
+        onOpenWorkspace: @escaping @MainActor (CoveSessionIdentity?) -> Void,
         onOpenSettings: @escaping @MainActor () -> Void,
         onRestoreArchived: @escaping @MainActor (String?) -> Void,
         fixtureStateDirectory: String? = nil
@@ -31,6 +33,7 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
         self.store = store
         if panel == nil {
             let rootView = CoveOverlayRootView(
+                onOpenWorkspace: onOpenWorkspace,
                 onOpenSettings: onOpenSettings,
                 onRestoreArchived: onRestoreArchived,
                 fixtureStateDirectory: fixtureStateDirectory
@@ -98,7 +101,7 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        guard let panel else { return }
+        guard let panel, !isWorkspaceSuppressed else { return }
         isManuallyHidden = false
         hideInProgress = false
 
@@ -133,6 +136,17 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
             animateFrameIfNeeded(targetFrame, on: panel, state: state)
         }
         hasEverBeenShown = true
+    }
+
+    var isVisible: Bool { panel?.isVisible == true }
+
+    func setWorkspaceSuppressed(_ suppressed: Bool) {
+        isWorkspaceSuppressed = suppressed
+        if suppressed {
+            animationGeneration += 1
+            hideInProgress = false
+            panel?.orderOut(nil)
+        }
     }
 
     func toggleVisibility() {
@@ -184,6 +198,11 @@ final class CoveOverlayController: NSObject, NSWindowDelegate {
             presentation: presentation,
             to: panel
         )
+
+        guard !isWorkspaceSuppressed else {
+            panel.orderOut(nil)
+            return
+        }
 
         guard state.session.isVisible else {
             hide(panel: panel, state: state)

@@ -7,12 +7,18 @@ enum CoveUITestFixture: String, CaseIterable {
     case collapsedCue = "collapsed-cue"
     case minimalCue = "minimal-cue"
     case mixedTasks = "mixed-20"
+    case workspacePrimary = "workspace-primary"
+    case workspaceAgentOpenFallback = "workspace-agent-open-fallback"
+    case workspaceFavicon = "workspace-favicon"
+    case workspaceFaviconPrivacy = "workspace-favicon-privacy"
     case commandApproval = "command-approval"
     case fileApproval = "file-approval"
     case permissionApproval = "permission-approval"
     case singleQuestion = "single-question"
     case multiQuestion = "multi-question"
     case privacyRedacted = "privacy-redacted"
+    case privacyOffHiddenStatus = "privacy-off-hidden-status"
+    case privacyOffLockedWorkspace = "privacy-off-locked-workspace"
     case deliveryFailure = "delivery-failure"
     case openFailure = "open-failure"
     case archivedTasks = "archived-tasks"
@@ -125,8 +131,67 @@ struct CoveUITestConfiguration {
         return state
     }
 
+    var initialWorkspaceState: CoveWorkspaceState {
+        var workspace = CoveWorkspaceState()
+        guard fixture == .workspacePrimary
+            || fixture == .workspaceFavicon
+            || fixture == .workspaceFaviconPrivacy
+        else { return workspace }
+        if fixture == .workspaceFavicon || fixture == .workspaceFaviconPrivacy {
+            let root = CoveSessionIdentity(
+                source: .localCli,
+                hostId: nil,
+                sessionId: "fixture-favicon-root"
+            )!
+            workspace.observe(initialState.session.snapshots)
+            workspace.setLinks([
+                .init(
+                    label: "Loaded favicon",
+                    url: URL(string: "https://loaded-favicon.com/plan")!
+                ),
+                .init(
+                    label: "Fallback favicon",
+                    url: URL(string: "https://fallback-favicon.com/plan")!
+                ),
+            ], for: root)
+            return workspace
+        }
+        let root = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "fixture-agent-root"
+        )!
+        let child = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "fixture-agent-idle"
+        )!
+        workspace.observe(initialState.session.snapshots)
+        workspace.setLinks([
+            .init(
+                label: "Parent artifact",
+                url: URL(string: "https://parent-artifact.test/one")!
+            ),
+        ], for: root)
+        workspace.setLinks([
+            .init(
+                label: "Child artifact",
+                url: URL(string: "https://child-artifact.test/two")!
+            ),
+        ], for: child)
+        workspace.restoreArtifactOrder(Array(workspace.artifactOrderIDs().reversed()))
+        return workspace
+    }
+
     var settingsURL: URL {
         stateDirectory.appendingPathComponent("settings.json")
+    }
+
+    func writeMarker(_ value: String, named name: String) {
+        try? Data(value.utf8).write(
+            to: stateDirectory.appendingPathComponent(name),
+            options: .atomic
+        )
     }
 
     var themesURL: URL {
@@ -141,6 +206,10 @@ struct CoveUITestConfiguration {
 
     var dismissedSessionsURL: URL {
         stateDirectory.appendingPathComponent("dismissed-sessions.json")
+    }
+
+    var workspaceURL: URL {
+        stateDirectory.appendingPathComponent("workspace.json")
     }
 
     var runtimeURL: URL {
@@ -339,6 +408,37 @@ struct CoveUITestConfiguration {
     }
 }
 
+final class CoveUITestFaviconURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let png = Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )!
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host?.hasSuffix("favicon.com") == true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let data = url.host == "loaded-favicon.com" ? Self.png : Data()
+        let status = data.isEmpty ? 404 : 200
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": String(data.count)]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 enum CoveUITestDecisionError: LocalizedError {
     case simulatedFailure
 
@@ -390,12 +490,15 @@ final class CoveUITestDecisionRecorder: CoveDecisionSending, @unchecked Sendable
 final class CoveUITestTerminalJumpService: CoveTerminalJumping {
     private let recordJump: () -> Void
     private let failsJumps: Bool
+    private let failingSessionIDs: Set<String>
 
     init(
         failsJumps: Bool = false,
+        failingSessionIDs: Set<String> = [],
         recordJump: @escaping () -> Void = {}
     ) {
         self.failsJumps = failsJumps
+        self.failingSessionIDs = failingSessionIDs
         self.recordJump = recordJump
     }
 
@@ -408,9 +511,15 @@ final class CoveUITestTerminalJumpService: CoveTerminalJumping {
         nil
     }
 
+    func canJump(to snapshot: CoveSessionSnapshot) -> Bool {
+        !failsJumps
+            && !failingSessionIDs.contains(snapshot.sessionId ?? snapshot.snapshotId)
+    }
+
     func jump(to snapshot: CoveSessionSnapshot) -> CoveJumpResult {
         recordJump()
-        if failsJumps {
+        if failsJumps
+            || failingSessionIDs.contains(snapshot.sessionId ?? snapshot.snapshotId) {
             return CoveJumpResult(
                 focusedExactLocation: false,
                 message: "The exact originating Codex location is not currently available."
@@ -436,6 +545,7 @@ enum CoveUITestFixtures {
         var settings = CoveSettings(
             privacyMode: (
                 fixture == .privacyRedacted
+                    || fixture == .workspaceFaviconPrivacy
                     || fixture == .settingsPrivacyRedacted
             ) ? .on : .off,
             launchAtLogin: false,
@@ -470,6 +580,13 @@ enum CoveUITestFixtures {
             ]
         case .mixedTasks:
             snapshots = mixedSnapshots(now: now)
+        case .workspacePrimary:
+            snapshots = workspaceAgentSnapshots(now: now)
+            requests = [agentApproval()]
+        case .workspaceAgentOpenFallback:
+            snapshots = workspaceOpenFallbackSnapshots(now: now)
+        case .workspaceFavicon, .workspaceFaviconPrivacy:
+            snapshots = workspaceFaviconSnapshots(now: now)
         case .commandApproval:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
@@ -488,6 +605,11 @@ enum CoveUITestFixtures {
         case .privacyRedacted:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
+        case .privacyOffHiddenStatus:
+            requests = [approval(category: .command)]
+            snapshots = [snapshot(index: 1, status: .hidden, now: now)]
+        case .privacyOffLockedWorkspace:
+            snapshots = [snapshot(index: 1, status: .working, now: now)]
         case .deliveryFailure:
             requests = [approval(category: .command)]
             snapshots = [attentionSnapshot(status: .waitingApproval, now: now)]
@@ -523,6 +645,8 @@ enum CoveUITestFixtures {
                 palette: settings.palette
             ),
             pendingDirectRequests: requests,
+            privacyScene: fixture == .privacyOffLockedWorkspace
+                ? .locked : .normal,
             dismissedSessionIDs: dismissed
         )
     }
@@ -537,6 +661,168 @@ enum CoveUITestFixtures {
         return statuses.enumerated().map { index, status in
             snapshot(index: index + 1, status: status, now: now)
         }
+    }
+
+    private static func workspaceAgentSnapshots(
+        now: Date
+    ) -> [CoveSessionSnapshot] {
+        let rootID = "fixture-agent-root"
+        return [
+            CoveSessionSnapshot(
+                snapshotId: rootID,
+                status: .working,
+                priority: 40,
+                title: "Fixture parent task",
+                timestamp: now,
+                sessionId: rootID,
+                launchId: "fixture-agent-launch",
+                source: .localCli,
+                liveness: .live,
+                activeTurnId: "fixture-parent-turn",
+                controlRoute: .routedLocal
+            ),
+            CoveSessionSnapshot(
+                snapshotId: "fixture-agent-idle",
+                status: .idle,
+                priority: 5,
+                title: "Idle child agent",
+                timestamp: now.addingTimeInterval(-1),
+                sessionId: "fixture-agent-idle",
+                launchId: "fixture-agent-launch",
+                source: .localCli,
+                parentSessionId: rootID,
+                liveness: .live,
+                controlRoute: .localAppServer
+            ),
+            CoveSessionSnapshot(
+                snapshotId: "fixture-agent-active",
+                status: .active,
+                priority: 40,
+                title: "Active child agent",
+                latestOutput: "Initial child output",
+                timestamp: now.addingTimeInterval(-2),
+                sessionId: "fixture-agent-active",
+                launchId: "fixture-agent-launch",
+                source: .localCli,
+                parentSessionId: rootID,
+                liveness: .live,
+                activeTurnId: "fixture-child-turn",
+                controlRoute: .routedLocal
+            ),
+            CoveSessionSnapshot(
+                snapshotId: "fixture-agent-missing-turn",
+                status: .working,
+                priority: 40,
+                title: "Missing-turn child agent",
+                timestamp: now.addingTimeInterval(-3),
+                sessionId: "fixture-agent-missing-turn",
+                launchId: "fixture-agent-launch",
+                source: .localCli,
+                parentSessionId: rootID,
+                liveness: .live,
+                controlRoute: .localAppServer
+            ),
+            CoveSessionSnapshot(
+                snapshotId: "fixture-agent-pending",
+                status: .waitingApproval,
+                priority: 100,
+                title: "Pending child agent",
+                timestamp: now.addingTimeInterval(-4),
+                sessionId: "fixture-agent-pending",
+                launchId: "fixture-agent-launch",
+                source: .localCli,
+                parentSessionId: rootID,
+                liveness: .live,
+                activeTurnId: "fixture-pending-turn",
+                controlRoute: .routedLocal,
+                unread: true
+            ),
+            CoveSessionSnapshot(
+                snapshotId: "fixture-new-top-level",
+                status: .idle,
+                priority: 5,
+                title: "New top-level task",
+                timestamp: now.addingTimeInterval(-5),
+                sessionId: "fixture-new-top-level",
+                source: .codexDesktop,
+                liveness: .loaded,
+                controlRoute: .desktop
+            ),
+        ]
+    }
+
+    private static func workspaceOpenFallbackSnapshots(
+        now: Date
+    ) -> [CoveSessionSnapshot] {
+        let rootID = "fixture-open-root"
+        return [
+            CoveSessionSnapshot(
+                snapshotId: rootID,
+                status: .idle,
+                priority: 5,
+                title: "Openable parent task",
+                timestamp: now,
+                sessionId: rootID,
+                launchId: "fixture-open-launch",
+                source: .localCli,
+                liveness: .live,
+                controlRoute: .localAppServer
+            ),
+            CoveSessionSnapshot(
+                snapshotId: "fixture-open-child",
+                status: .idle,
+                priority: 5,
+                title: "Unavailable child location",
+                timestamp: now.addingTimeInterval(-1),
+                sessionId: "fixture-open-child",
+                launchId: "fixture-open-launch",
+                source: .localCli,
+                parentSessionId: rootID,
+                liveness: .live,
+                controlRoute: .localAppServer
+            ),
+        ]
+    }
+
+    private static func workspaceFaviconSnapshots(
+        now: Date
+    ) -> [CoveSessionSnapshot] {
+        [CoveSessionSnapshot(
+            snapshotId: "fixture-favicon-root",
+            status: .idle,
+            priority: 5,
+            title: "Favicon fixture task",
+            latestOutput: "Suggested https://suggestion-favicon.com/plan",
+            timestamp: now,
+            sessionId: "fixture-favicon-root",
+            launchId: "fixture-favicon-launch",
+            source: .localCli,
+            liveness: .live,
+            controlRoute: .localAppServer
+        )]
+    }
+
+    private static func agentApproval() -> CoveDirectRequest {
+        .approval(
+            CoveApprovalRequest(
+                schemaVersion: 1,
+                category: .command,
+                requestId: "fixture-agent-approval",
+                launchId: "fixture-agent-launch",
+                sessionId: "fixture-agent-pending",
+                turnId: "fixture-pending-turn",
+                source: .localCli,
+                title: "Review child-agent command",
+                detail: "Resolve this request before steering the child agent.",
+                choices: [
+                    approvalChoice(.accept, label: "Allow once"),
+                    approvalChoice(.decline, label: "Decline"),
+                ],
+                amendments: [],
+                permissionProfile: nil,
+                decisionSocket: "/fixture/agent-decision.sock"
+            )
+        )
     }
 
     private static func snapshot(
@@ -554,6 +840,9 @@ enum CoveUITestFixtures {
             sessionId: "fixture-task-\(index)",
             launchId: "fixture-launch-\(index)",
             source: index.isMultiple(of: 3) ? .codexDesktop : .localCli,
+            liveness: .live,
+            activeTurnId: index == 1 ? "fixture-active-turn" : nil,
+            controlRoute: index == 1 ? .routedLocal : nil,
             unread: [.waitingApproval, .waitingInput, .failed].contains(status)
         )
     }
@@ -572,6 +861,7 @@ enum CoveUITestFixtures {
             sessionId: "fixture-session",
             launchId: "fixture-launch",
             source: .localCli,
+            liveness: .live,
             unread: true
         )
     }

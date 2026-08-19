@@ -1,6 +1,6 @@
 cask "codex-cove" do
-  version "0.5.2"
-  sha256 "44e6c0159acef8dac936b67f25030d6872ed5387332eb24860613f7220e1ac6f"
+  version "0.9.0"
+  sha256 "a07361d7e6a53870920595fc3c806dd0d22be3dab450931a58da46dc5287fc14"
 
   url "https://github.com/cdimartino/codex-cove/releases/download/v#{version}/Codex-Cove-#{version}-macos-arm64.zip",
       verified: "github.com/cdimartino/codex-cove/"
@@ -46,7 +46,7 @@ cask "codex-cove" do
     Codex Cove is installed in ~/Applications so its user-local integration
     and Accessibility permission remain bound to one canonical app path.
 
-    Codex CLI 0.145.0 or newer must already be installed and available on PATH.
+    Codex CLI 0.147.0 or newer must already be installed and available on PATH.
     Add ~/bin to PATH if the codex-cove command is not available in new shells.
   EOS
 end

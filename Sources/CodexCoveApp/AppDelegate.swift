@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let maintenanceLaunchMode: CoveMaintenanceLaunchMode?
     private let instanceLock: CoveInstanceLock
     let store: CoveStore
+    let workspaceStore: CoveWorkspaceStore
     private let overlayController: CoveOverlayController
     private let broker: CoveUnixSocketBroker
     private let remoteRelayManager: CoveRemoteRelayManager
@@ -41,13 +42,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let dismissedSessionStore: CoveDismissedSessionStore
     private var usageHydrator: CoveAccountUsageHydrator?
     private var desktopThreadHydrator: CoveDesktopThreadHydrator?
+    private var desktopOwnedThreadController:
+        CoveDesktopOwnedThreadControlClient?
     private var desktopHydrationExcludedSessionIDs = Set<String>()
     private var lastSharedPrivacyMode: CovePrivacyMode?
     private var cancellables: Set<AnyCancellable> = []
     private var notificationTokens: [NSObjectProtocol] = []
     private var behaviorTimer: Timer?
-    private var inFlightReminderSessionIDs = Set<String>()
+    private var inFlightReminderIdentities = Set<CoveSessionIdentity>()
     private var settingsWindowController: NSWindowController?
+    private var workspaceWindowController: NSWindowController?
+    private var workspaceReconciliationTimer: Timer?
+    private var restoresOverlayAfterWorkspace = false
+    private struct RoutedThreadControlRoute {
+        var launchId: String
+        var socketPath: String
+        var route: CoveThreadControlRoute
+    }
+    /// Ephemeral only: private socket locations must never enter settings,
+    /// session metadata, diagnostics, or workspace persistence.
+    private var routedThreadControlRoutes: [
+        CoveSessionIdentity: RoutedThreadControlRoute
+    ] = [:]
     private var uiTestBackdropWindow: NSWindow?
     private var eventVisibilityPolicy = CoveEventVisibilityPolicy()
     private var completedInitialLaunch = false
@@ -138,15 +154,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 : { _ in true }
         )
         self.store = store
+        self.workspaceStore = CoveWorkspaceStore(
+            storage: CoveWorkspaceFileStorage(
+                url: uiTestConfiguration?.workspaceURL
+                    ?? CoveStateFilesystem.workspaceURL()
+            ),
+            initialState: uiTestConfiguration == nil
+                ? nil : uiTestConfiguration?.initialWorkspaceState,
+            writesEnabled: uiTestConfiguration == nil,
+            openArtifactURL: uiTestConfiguration == nil
+                ? { NSWorkspace.shared.open($0) }
+                : { _ in true }
+        )
+        uiTestConfiguration?.writeMarker("0", named: "jump-count.txt")
+        uiTestConfiguration?.writeMarker("", named: "thread-control.txt")
+        if let uiTestConfiguration,
+           uiTestConfiguration.fixture == .workspaceFavicon
+            || uiTestConfiguration.fixture == .workspaceFaviconPrivacy {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [CoveUITestFaviconURLProtocol.self]
+            let loader = CoveFaviconLoader(configuration: configuration)
+            let stateURL = uiTestConfiguration.stateDirectory
+                .appendingPathComponent("favicon-states.txt")
+            try? Data().write(to: stateURL, options: .atomic)
+            loader.onPresentation = { [weak store] url, context, loaded in
+                store?.recordFixtureFavicon(url, context: context, loaded: loaded)
+                if let states = store?.fixtureRecordedFaviconStates {
+                    try? Data(states.utf8).write(to: stateURL, options: .atomic)
+                }
+            }
+            CoveFaviconLoader.shared = loader
+        }
         self.overlayController = CoveOverlayController()
         self.broker = CoveUnixSocketBroker(socketPath: CoveDefaultPaths.socketPath)
         self.shortcuts = CoveKeyboardShortcutBroker()
         self.terminalJumpService = uiTestConfiguration == nil
             ? CoveSystemTerminalJumpService()
             : CoveUITestTerminalJumpService(
-                failsJumps: uiTestConfiguration?.fixture == .openFailure
+                failsJumps: uiTestConfiguration?.fixture == .openFailure,
+                failingSessionIDs: uiTestConfiguration?.fixture
+                    == .workspaceAgentOpenFallback
+                    ? ["fixture-open-child"] : []
             ) { [weak store] in
-                store?.recordFixtureJump()
+                let count = store?.recordFixtureJump() ?? 0
+                uiTestConfiguration?.writeMarker(
+                    String(count),
+                    named: "jump-count.txt"
+                )
             }
         self.metadataBridge = CoveMetadataBridge()
         self.dismissedSessionStore = CoveDismissedSessionStore(
@@ -175,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             Task { @MainActor in
                 guard let self else { return }
                 if self.completedInitialLaunch {
-                    self.showCove()
+                    self.showWorkspace()
                 } else {
                     self.revealRequestedDuringLaunch = true
                 }
@@ -223,6 +277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     message: "The exact originating Codex location is not currently available."
                 )
         }
+        store.onCanJumpToSession = { [weak self] snapshot in
+            self?.terminalJumpService.canJump(to: snapshot) == true
+        }
         store.onOpenDirectRequest = { [weak self] snapshot in
             self?.terminalJumpService.jump(to: snapshot)
                 ?? CoveJumpResult(
@@ -231,29 +288,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 )
         }
         if uiTestConfiguration == nil {
-            store.onMarkRead = { [weak self] sessionID in
-                self?.metadataBridge.markRead(sessionID: sessionID)
+            store.onMarkRead = { [weak self] identity in
+                self?.metadataBridge.markRead(identity: identity)
             }
-            store.onDismissSession = { [weak self] sessionID in
-                self?.archiveSession(sessionID) ?? false
+            store.onDismissSession = { [weak self] identity in
+                self?.archiveSession(identity) ?? false
             }
-            store.onDismissSessions = { [weak self] sessionIDs in
-                self?.archiveSessions(sessionIDs) ?? false
+            store.onDismissSessions = { [weak self] identities in
+                self?.archiveSessions(identities) ?? false
             }
-            store.onSetPinned = { [weak self] sessionID, pinned in
+            store.onSetPinned = { [weak self] identity, pinned in
                 self?.metadataBridge.setPinned(
-                    sessionID: sessionID,
+                    identity: identity,
                     pinned: pinned
                 ) ?? false
             }
-            store.onScheduleFollowUp = { [weak self] sessionID, date in
+            store.onScheduleFollowUp = { [weak self] identity, date in
                 self?.metadataBridge.scheduleReminder(
-                    sessionID: sessionID,
+                    identity: identity,
                     at: date
                 ) ?? false
             }
-            store.onCancelFollowUp = { [weak self] sessionID in
-                self?.metadataBridge.clearReminder(sessionID: sessionID) ?? false
+            store.onCancelFollowUp = { [weak self] identity in
+                self?.metadataBridge.clearReminder(identity: identity) ?? false
             }
         } else {
             // Fixture actions remain fully interactive while never writing to
@@ -267,6 +324,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         overlayController.attach(
             store: store,
+            onOpenWorkspace: { [weak self] identity in
+                self?.showWorkspace(selecting: identity, attention: identity)
+            },
             onOpenSettings: { [weak self] in
                 self?.showSettings()
             },
@@ -279,6 +339,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         store.$state
             .sink { [weak self] state in
                 self?.overlayController.update(with: state)
+            }
+            .store(in: &cancellables)
+
+        store.$state
+            .map(\.session.snapshots)
+            .removeDuplicates()
+            .sink { [weak self] snapshots in
+                self?.workspaceStore.reconcileMembership(with: snapshots)
             }
             .store(in: &cancellables)
 
@@ -305,9 +373,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // use applicationShouldHandleReopen below.
             overlayController.show()
         } else {
-            // Direct launch is deliberate interaction: reveal Cove long
-            // enough to be discoverable, then honor normal collapse/hide.
-            showCove()
+            // Direct launch is deliberate interaction. Workspace is the
+            // primary task surface; the island remains an ambient companion.
+            if uiTestConfiguration == nil
+                || uiTestConfiguration?.fixture == .workspacePrimary {
+                showWorkspace()
+            } else {
+                showCove()
+            }
         }
         completedInitialLaunch = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
@@ -319,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        showCove()
+        showWorkspace()
         return false
     }
 
@@ -352,6 +425,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         usageHydrator = nil
         desktopThreadHydrator?.stop()
         desktopThreadHydrator = nil
+        desktopOwnedThreadController?.stop()
+        desktopOwnedThreadController = nil
+        workspaceReconciliationTimer?.invalidate()
+        workspaceReconciliationTimer = nil
         shortcuts.stop()
         soundService.stop()
         notificationService?.onOpenSession = nil
@@ -422,11 +499,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         presentSettingsWindow(window, controller: controller)
     }
 
+    func showWorkspace() {
+        showWorkspace(selecting: nil, attention: nil)
+    }
+
+    func showWorkspace(
+        selecting identity: CoveSessionIdentity?,
+        attention: CoveSessionIdentity?
+    ) {
+        workspaceStore.reconcileMembership(with: store.state.session.snapshots)
+        if identity != nil || attention != nil {
+            workspaceStore.select(
+                identity ?? attention,
+                attention: attention
+            )
+        }
+        if let controller = workspaceWindowController,
+           let window = controller.window {
+            presentWorkspaceWindow(window, controller: controller)
+            return
+        }
+        let root = CoveWorkspaceWindowView(
+            store: store,
+            workspace: workspaceStore,
+            onClose: { [weak self] in self?.closeWorkspace() }
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 800),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(localized: "Codex Cove Workspace")
+        window.contentView = NSHostingView(rootView: root)
+        window.contentMinSize = NSSize(width: 900, height: 600)
+        window.isReleasedWhenClosed = false
+        window.identifier = .init("CodexCove.Workspace")
+        window.delegate = self
+        window.tabbingMode = .disallowed
+        let frameName = "CodexCove.Workspace.v1"
+        let restoredFrame = uiTestConfiguration == nil
+            ? window.setFrameUsingName(frameName)
+            : false
+        if uiTestConfiguration == nil {
+            window.setFrameAutosaveName(frameName)
+        }
+        if !restoredFrame { window.center() }
+        let controller = NSWindowController(window: window)
+        workspaceWindowController = controller
+        presentWorkspaceWindow(window, controller: controller)
+    }
+
+    func closeWorkspace() {
+        workspaceWindowController?.close()
+    }
+
     func windowWillClose(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow,
-              window === settingsWindowController?.window
-        else { return }
-        store.endSettingsPresentation()
+        guard let window = notification.object as? NSWindow else { return }
+        if window === settingsWindowController?.window {
+            store.endSettingsPresentation()
+        }
+        if window === workspaceWindowController?.window {
+            workspaceReconciliationTimer?.invalidate()
+            workspaceReconciliationTimer = nil
+            overlayController.setWorkspaceSuppressed(false)
+            if restoresOverlayAfterWorkspace {
+                overlayController.show()
+            }
+            restoresOverlayAfterWorkspace = false
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    private func presentWorkspaceWindow(
+        _ window: NSWindow,
+        controller: NSWindowController
+    ) {
+        if !window.isVisible {
+            restoresOverlayAfterWorkspace = overlayController.isVisible
+            overlayController.setWorkspaceSuppressed(true)
+        }
+        window.collectionBehavior = [.moveToActiveSpace, .managed]
+        window.level = .normal
+        window.hidesOnDeactivate = false
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        controller.showWindow(nil)
+        window.makeKeyAndOrderFront(nil)
+        updateCapturePrivacy(using: store.state, allowLockedExit: true)
+        desktopThreadHydrator?.reconcileLoadedDesktopThreads()
+        workspaceReconciliationTimer?.invalidate()
+        workspaceReconciliationTimer = Timer.scheduledTimer(
+            withTimeInterval: 30,
+            repeats: true
+        ) { [weak self, weak window] _ in
+            Task { @MainActor in
+                guard window?.isVisible == true else { return }
+                self?.desktopThreadHydrator?.reconcileLoadedDesktopThreads()
+            }
+        }
     }
 
     private func presentSettingsWindow(
@@ -510,7 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         withReplyEvent replyEvent: NSAppleEventDescriptor
     ) {
         guard completedInitialLaunch else { return }
-        showCove()
+        showWorkspace()
     }
 
     func collapseToMenuBar() {
@@ -548,14 +720,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 
-    private func archiveSession(_ sessionID: String) -> Bool {
-        archiveSessions([sessionID])
+    private func archiveSession(_ identity: CoveSessionIdentity) -> Bool {
+        archiveSessions([identity])
     }
 
-    private func archiveSessions(_ sessionIDs: [String]) -> Bool {
+    private func archiveSessions(_ identities: [CoveSessionIdentity]) -> Bool {
         do {
             var dismissed = try dismissedSessionStore.load()
-            dismissed.formUnion(sessionIDs)
+            dismissed.formUnion(identities.map(\.id))
             try dismissedSessionStore.save(dismissed)
             return true
         } catch {
@@ -597,7 +769,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     return "Doctor could not start: \(error.localizedDescription)"
                 }
             }.value
-            presentDoctor(text: report)
+            var combinedReport = report
+            let databaseAmbiguities = metadataBridge.diagnostics()?
+                .ambiguousLegacyIdentityCount ?? 0
+            let sidecarAmbiguities = store.state
+                .ambiguousLegacySessionIdentityCount
+            let ambiguityCount = databaseAmbiguities + sidecarAmbiguities
+            if ambiguityCount > 0 {
+                combinedReport += "\nWarning: \(ambiguityCount) legacy task metadata record(s) were preserved but not applied because their origin is ambiguous."
+            }
+            presentDoctor(text: combinedReport)
         }
     }
 
@@ -606,7 +787,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let alert = NSAlert()
         alert.messageText = "Codex Cove Doctor"
         alert.informativeText = String(text.prefix(8_000))
-        alert.alertStyle = text.contains("Fail") ? .warning : .informational
+        alert.alertStyle = text.contains("Fail") || text.contains("Warning")
+            ? .warning
+            : .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
@@ -620,7 +803,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // Codex, login-item, notification, sound, broker, relay, or
             // metadata integration. Their state and decision channel exist
             // only inside the per-test temporary directory/process.
+            workspaceStore.onControl = { [weak self] request, _ in
+                await MainActor.run {
+                    guard let self else { return }
+                    let value = self.store.recordFixtureThreadControl(request)
+                    self.uiTestConfiguration?.writeMarker(
+                        value,
+                        named: "thread-control.txt"
+                    )
+                }
+                return .accepted(
+                    turnId: request.operation == .start
+                        ? "fixture-started-turn" : request.expectedTurnId
+                )
+            }
             store.dispatch(.boot)
+            if uiTestConfiguration.fixture == .workspacePrimary {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    self?.store.dispatch(.receivedEnvelope(.init(
+                        eventId: "fixture-live-output-delta",
+                        kind: .appServer,
+                        timestamp: Date(),
+                        source: .localCli,
+                        sessionId: "fixture-agent-active",
+                        payload: .object([
+                            "method": .string("item/agentMessage/delta"),
+                            "params": .object([
+                                "delta": .string(" — live update arrived"),
+                            ]),
+                        ])
+                    )))
+                }
+            }
             if uiTestConfiguration.fixture.settingsPaneIdentifier != nil {
                 DispatchQueue.main.async { [weak self] in
                     self?.showSettings()
@@ -658,8 +872,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         startUsageHydration()
         startDesktopThreadHydration(restoredMetadata: restoredMetadata)
 
-        shortcuts.onToggleOverlay = { [weak self] in
-            self?.toggleOverlay()
+        shortcuts.onOpenWorkspace = { [weak self] in
+            self?.showWorkspace()
         }
         shortcuts.onToggleExpanded = { [weak self] in
             guard let self else { return }
@@ -708,7 +922,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 hostID: hostID,
                 in: self.store.state.session.snapshots
             ) {
-                _ = self.terminalJumpService.jump(to: snapshot)
+                self.showWorkspace(
+                    selecting: snapshot.sessionIdentity,
+                    attention: snapshot.sessionIdentity
+                )
+            } else if let source,
+                      let identity = CoveSessionIdentity(
+                        source: source,
+                        hostId: hostID,
+                        sessionId: sessionID
+                      ) {
+                self.showWorkspace(selecting: identity, attention: identity)
+            } else {
+                self.showWorkspace()
             }
             if let turnID, let source {
                 service.resolveAttention(
@@ -755,7 +981,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         updateCapturePrivacy(using: state)
     }
 
-    private func ingest(_ event: CoveWireEnvelope) {
+    private func ingest(_ incomingEvent: CoveWireEnvelope) {
+        let event = prepareThreadControlRoute(in: incomingEvent)
         guard !store.state.processedEventIDs.contains(event.processedEventKey) else {
             return
         }
@@ -782,20 +1009,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             }
             return
         }
-        if event.source != .codexDesktop,
-           event.sessionId != "unknown",
-           event.sessionId != "pending" {
-            desktopHydrationExcludedSessionIDs.insert(event.sessionId)
-        }
         let previousState = store.state
         terminalJumpService.observe(event)
         let terminalLocation = terminalJumpService
             .terminalLocationMetadata(for: event)
-        let isArchived = store.state.dismissedSessionIDs.contains(
-            event.sessionId == "pending"
+        let archivedIdentity = CoveSessionIdentity(
+            source: event.source,
+            hostId: event.hostId,
+            sessionId: event.sessionId == "pending"
                 ? event.launchId ?? event.sessionId
                 : event.sessionId
         )
+        let isArchived = archivedIdentity.map {
+            store.state.dismissedSessionIDs.contains($0.id)
+        } ?? false
         store.dispatch(.receivedEnvelope(event))
 
         if event.resolvedRequestID() != nil
@@ -885,6 +1112,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 
+    private func prepareThreadControlRoute(
+        in incoming: CoveWireEnvelope
+    ) -> CoveWireEnvelope {
+        guard incoming.sessionId != "unknown",
+              incoming.sessionId != "pending",
+              let identity = CoveSessionIdentity(
+                  source: incoming.source,
+                  hostId: incoming.hostId,
+                  sessionId: incoming.sessionId
+              ),
+              let launchId = incoming.launchId,
+              !launchId.isEmpty,
+              var payload = incoming.payload.objectValue
+        else { return incoming }
+
+        if payload["controlRoute"]?.stringValue
+            == CoveThreadControlRoute.localAppServer.rawValue {
+            return incoming
+        }
+
+        if payload["liveness"]?.stringValue == CoveSessionLiveness.closed.rawValue {
+            routedThreadControlRoutes.removeValue(forKey: identity)
+            return incoming
+        }
+
+        let advertisedPath: String?
+        let controlRoute: CoveThreadControlRoute
+        switch incoming.source {
+        case .localCli:
+            guard let decisionPath = payload["decisionSocket"]?.stringValue,
+                  decisionPath.hasPrefix("/")
+            else { return incoming }
+            advertisedPath = (decisionPath as NSString)
+                .deletingPathExtension + ".c"
+            controlRoute = .routedLocal
+        case .remoteCli:
+            guard let opaquePath = payload["threadControlSocket"]?.stringValue,
+                  opaquePath.hasPrefix("cove-remote-thread://")
+            else { return incoming }
+            advertisedPath = opaquePath
+            controlRoute = .routedRemote
+        case .codexDesktop:
+            return incoming
+        }
+        guard let advertisedPath else { return incoming }
+        routedThreadControlRoutes[identity] = .init(
+            launchId: launchId,
+            socketPath: advertisedPath,
+            route: controlRoute
+        )
+        payload["controlRoute"] = .string(controlRoute.rawValue)
+        payload["liveness"] = .string(CoveSessionLiveness.live.rawValue)
+        if let turnId = incoming.authoritativeStartedTurnID() {
+            payload["activeTurnId"] = .string(turnId)
+        } else if incoming.endsActiveTurn {
+            payload["activeTurnId"] = .null
+        }
+        var event = incoming
+        event.payload = .object(payload)
+        return event
+    }
+
     private func purgeInternalSession(
         _ sessionID: String,
         source: CoveWireSource,
@@ -913,17 +1202,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             source: source,
             hostID: hostID
         )
-        let stillRepresentsSession = store.state.session.snapshots.contains {
-            $0.snapshotId == sessionID || $0.sessionId == sessionID
-        } || store.state.pendingDirectRequests.contains {
-            $0.sessionId == sessionID
-        }
-        guard !stillRepresentsSession else { return }
-        inFlightReminderSessionIDs.remove(sessionID)
-        _ = metadataBridge.setPinned(sessionID: sessionID, pinned: false)
+        guard let identity = CoveSessionIdentity(
+            source: source,
+            hostId: hostID,
+            sessionId: sessionID
+        ) else { return }
+        inFlightReminderIdentities.remove(identity)
+        _ = metadataBridge.setPinned(identity: identity, pinned: false)
         do {
             var dismissed = try dismissedSessionStore.load()
-            if dismissed.remove(sessionID) != nil {
+            if dismissed.remove(identity.id) != nil {
                 try dismissedSessionStore.save(dismissed)
             }
         } catch {
@@ -967,7 +1255,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             let snapshotID = event.sessionId == "pending"
                 ? event.launchId ?? event.sessionId
                 : event.sessionId
-            let isArchived = store.state.dismissedSessionIDs.contains(snapshotID)
+            let isArchived = CoveSessionIdentity(
+                source: event.source,
+                hostId: event.hostId,
+                sessionId: snapshotID
+            ).map { store.state.dismissedSessionIDs.contains($0.id) } ?? false
             let focusedBundleIdentifier = NSWorkspace.shared.frontmostApplication?
                 .bundleIdentifier
             let suppressesAlerts = isArchived || store.shouldSuppressAlerts(
@@ -1127,7 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.5.2"
+                as? String ?? "0.9.0"
         ) else {
             return
         }
@@ -1142,33 +1434,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startDesktopThreadHydration(
         restoredMetadata: [CoveSessionMetadata]
     ) {
-        desktopHydrationExcludedSessionIDs.formUnion(
-            restoredMetadata.lazy
-                .filter { $0.source != .codexDesktop }
-                .map(\.sessionId)
-        )
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.5.2"
+                as? String ?? "0.9.0"
         ) else {
             return
         }
         let hydrator = CoveDesktopThreadHydrator(configuration: configuration)
         desktopThreadHydrator = hydrator
+        let controlClient = CoveDesktopOwnedThreadControlClient(
+            configuration: configuration,
+            runtimeDirectory: uiTestConfiguration?.runtimeURL
+                ?? URL(fileURLWithPath: CoveDefaultPaths.socketPath)
+                    .deletingLastPathComponent()
+        )
+        desktopOwnedThreadController = controlClient
+        controlClient.setEventHandler { [weak self] event in
+            Task { @MainActor [weak self] in self?.ingest(event) }
+        }
+        workspaceStore.onControl = { [weak self] request, route in
+            guard let self else { return .rejected(.unavailable) }
+            return await self.sendThreadControl(
+                request,
+                route: route,
+                desktopClient: controlClient
+            )
+        }
+        workspaceStore.onReconcileRequested = { [weak self] in
+            self?.desktopThreadHydrator?.reconcileLoadedDesktopThreads()
+        }
+        workspaceStore.onTargetRefreshRequested = { [weak self] identity in
+            guard let self else { return }
+            switch identity.source {
+            case .codexDesktop:
+                hydrator.hydrate(threadID: identity.sessionId)
+            case .localCli:
+                Task { [weak self] in
+                    let snapshot = await controlClient.inspectLocalTarget(identity)
+                    guard let self else { return }
+                    if let snapshot {
+                        self.store.dispatch(.receivedSnapshot(snapshot))
+                    }
+                    self.workspaceStore.finishControlRefresh(for: identity)
+                }
+            case .remoteCli:
+                self.workspaceStore.finishControlRefresh(for: identity)
+            }
+        }
         hydrator.start(
             onUpdate: { [weak self] result, threadID in
                 guard let self else { return }
                 switch result {
-                case let .available(snapshot):
-                    self.applyDesktopHydration(snapshot)
+                    case let .available(snapshot):
+                        self.applyDesktopHydration(snapshot)
                 case .unavailable(.hiddenApprovalReviewThread):
                     self.purgeInternalSession(
                         threadID,
                         source: .codexDesktop,
                         hostID: nil
                     )
-                case let .unavailable(failure):
-                    NSLog(
+                    case let .unavailable(failure):
+                        if let identity = CoveSessionIdentity(
+                            source: .codexDesktop,
+                            hostId: nil,
+                            sessionId: threadID
+                        ) {
+                            self.workspaceStore.finishControlRefresh(for: identity)
+                        }
+                        NSLog(
                         "Codex Cove: Desktop thread hydration unavailable for \(threadID): \(failure.rawValue)"
                     )
                 }
@@ -1184,7 +1517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                             hostID: nil
                         )
                     }
-                    batch.snapshots.forEach(self.applyDesktopHydration)
+                    self.applyDesktopReconciliation(batch)
                 case let .unavailable(failure):
                     NSLog(
                         "Codex Cove: Desktop thread discovery unavailable: \(failure.rawValue)"
@@ -1192,7 +1525,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 }
             }
         )
-        hydrator.discoverRecentDesktopThreads(limit: 3)
+        workspaceStore.refreshSelectedControlTarget()
+        hydrator.reconcileLoadedDesktopThreads()
         // Validate only records already known to have originated in Desktop.
         // Discovery owns unknown IDs; CLI and remote records retain their
         // persisted origin and are never queried by the Desktop hydrator.
@@ -1203,16 +1537,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
     }
 
+    private func sendThreadControl(
+        _ request: CoveThreadControlRequest,
+        route: CoveThreadControlRoute,
+        desktopClient: any CoveThreadControlling
+    ) async -> CoveThreadControlResult {
+        switch route {
+        case .desktop:
+            guard request.target.source == .codexDesktop else {
+                return .rejected(.wrongOrigin)
+            }
+            return await desktopClient.send(request)
+        case .localAppServer:
+            guard request.target.source == .localCli else {
+                return .rejected(.wrongOrigin)
+            }
+            return await desktopClient.send(request)
+        case .routedLocal:
+            guard request.target.source == .localCli,
+                  let liveRoute = routedThreadControlRoutes[request.target],
+                  liveRoute.route == .routedLocal
+            else { return .rejected(.staleRoute) }
+            return await CoveThreadControlSocketClient().send(
+                request,
+                launchId: liveRoute.launchId,
+                to: liveRoute.socketPath
+            )
+        case .routedRemote:
+            guard request.target.source == .remoteCli,
+                  let liveRoute = routedThreadControlRoutes[request.target],
+                  liveRoute.route == .routedRemote
+            else { return .rejected(.staleRoute) }
+            return await remoteRelayManager.sendThreadControl(
+                request,
+                launchId: liveRoute.launchId,
+                routePath: liveRoute.socketPath
+            )
+        }
+    }
+
     private func hydrateDesktopThreadIfNeeded(from event: CoveWireEnvelope) {
+        let sessionID = event.sessionSnapshot()?.sessionId ?? event.sessionId
         guard event.source == .codexDesktop,
               event.kind != .sessionSnapshot,
-              event.sessionId != "unknown",
-              event.sessionId != "pending",
-              CoveDesktopThreadClient.isSafeThreadIdentifier(event.sessionId)
+              sessionID != "unknown",
+              sessionID != "pending",
+              CoveDesktopThreadClient.isSafeThreadIdentifier(sessionID)
         else {
             return
         }
-        desktopThreadHydrator?.hydrate(threadID: event.sessionId)
+        desktopThreadHydrator?.hydrate(threadID: sessionID)
     }
 
     private func applyDesktopHydration(_ snapshot: CoveSessionSnapshot) {
@@ -1233,6 +1607,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             "latestOutput": snapshot.latestOutput.map(CoveJSONValue.string)
                 ?? .null,
             "unread": .bool(snapshot.unread),
+            "parentThreadId": snapshot.parentSessionId.map(CoveJSONValue.string)
+                ?? .null,
+            "parentProvenanceConflict": .bool(
+                snapshot.parentProvenanceConflict == true
+            ),
+            "liveness": snapshot.liveness.map { .string($0.rawValue) }
+                ?? .null,
+            "activeTurnId": snapshot.activeTurnId.map(CoveJSONValue.string)
+                ?? .null,
+            "controlRoute": snapshot.controlRoute.map { .string($0.rawValue) }
+                ?? .null,
         ]
         let timestampMilliseconds = Int(
             (snapshot.timestamp.timeIntervalSince1970 * 1_000).rounded()
@@ -1251,6 +1636,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         terminalJumpService.observe(envelope)
         store.dispatch(.receivedEnvelope(envelope))
         metadataBridge.record(envelope, state: store.state)
+        if let identity = snapshot.sessionIdentity {
+            workspaceStore.finishControlRefresh(for: identity)
+        }
+    }
+
+    private func applyDesktopReconciliation(
+        _ batch: CoveDesktopThreadDiscoveryBatch
+    ) {
+        batch.snapshots.forEach(applyDesktopHydration)
+        guard batch.loadedThreadSetIsComplete else { return }
+        let loaded = Set(batch.loadedThreadIDs)
+        for current in store.state.session.snapshots
+        where current.source == .codexDesktop {
+            let identity = current.sessionId ?? current.snapshotId
+            guard !loaded.contains(identity) else { continue }
+            var closed = current
+            closed.liveness = .closed
+            closed.controlRoute = nil
+            closed.activeTurnId = nil
+            closed.timestamp = max(closed.timestamp, Date())
+            store.dispatch(.receivedSnapshot(closed))
+        }
     }
 
     private func installEnvironmentObservers() {
@@ -1350,9 +1757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     else {
                         return
                     }
-                    self.desktopThreadHydrator?.discoverRecentDesktopThreads(
-                        limit: 3
-                    )
+                    self.desktopThreadHydrator?.reconcileLoadedDesktopThreads()
                 }
             }
         )
@@ -1399,14 +1804,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         let focusedBundleIdentifier = NSWorkspace.shared.frontmostApplication?
             .bundleIdentifier
         for metadata in metadataBridge.dueReminders() {
+            guard let identity = metadata.sessionIdentity else { continue }
             if let reminderAt = metadata.reminderAt,
                reminderAt < launchedAt {
-                _ = metadataBridge.clearReminder(sessionID: metadata.sessionId)
+                _ = metadataBridge.clearReminder(identity: identity)
                 continue
             }
-            guard !store.state.dismissedSessionIDs.contains(metadata.sessionId)
+            guard !store.state.dismissedSessionIDs.contains(identity.id)
             else { continue }
-            guard inFlightReminderSessionIDs.insert(metadata.sessionId).inserted
+            guard inFlightReminderIdentities.insert(identity).inserted
             else { continue }
             let snapshot = store.state.session.snapshots.first {
                 $0.sessionId == metadata.sessionId
@@ -1419,7 +1825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 for: snapshot,
                 focusedBundleIdentifier: focusedBundleIdentifier
             ) else {
-                inFlightReminderSessionIDs.remove(metadata.sessionId)
+                inFlightReminderIdentities.remove(identity)
                 continue
             }
             notificationService.notifyFollowUp(
@@ -1436,22 +1842,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 Task { @MainActor in
                     guard let self else { return }
                     guard delivered else {
-                        self.inFlightReminderSessionIDs.remove(
-                            metadata.sessionId
-                        )
+                        self.inFlightReminderIdentities.remove(identity)
                         return
                     }
                     // Clear only after the notification center accepted the
                     // request. If the durable clear fails, retain the in-flight
                     // marker to avoid duplicate delivery during this launch.
                     if self.metadataBridge.clearReminder(
-                        sessionID: metadata.sessionId
+                        identity: identity
                     ) {
-                        self.inFlightReminderSessionIDs.remove(
-                            metadata.sessionId
-                        )
+                        self.inFlightReminderIdentities.remove(identity)
                         self.store.didDeliverFollowUp(
-                            sessionID: metadata.sessionId
+                            identity: identity
                         )
                     }
                 }
@@ -1485,14 +1887,18 @@ private struct CoveDismissedSessionStore {
             throw CocoaError(.fileReadInvalidFileName)
         }
         let data = try Data(contentsOf: url)
-        guard data.count <= 256 * 1_024 else {
+        guard data.count <= CoveWorkspaceLimits.fileBytes else {
             throw CocoaError(.fileReadCorruptFile)
         }
         let document = try JSONDecoder().decode(Document.self, from: data)
-        guard document.schemaVersion == 1 else {
+        guard document.schemaVersion == 1 || document.schemaVersion == 2 else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        return Set(document.sessionIDs.prefix(1_000).filter(isValid))
+        return Set(
+            document.sessionIDs
+                .prefix(CoveWorkspaceLimits.storedIdentities)
+                .filter(isValid)
+        )
     }
 
     func save(_ sessionIDs: Set<String>) throws {
@@ -1503,12 +1909,16 @@ private struct CoveDismissedSessionStore {
             attributes: [.posixPermissions: 0o700]
         )
         let document = Document(
-            schemaVersion: 1,
+            schemaVersion: 2,
             sessionIDs: Array(sessionIDs.filter(isValid)).sorted()
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(document).write(to: url, options: .atomic)
+        let data = try encoder.encode(document)
+        guard data.count <= CoveWorkspaceLimits.fileBytes else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: url.path
@@ -1517,9 +1927,7 @@ private struct CoveDismissedSessionStore {
 
     private func isValid(_ value: String) -> Bool {
         !value.isEmpty
-            && value.utf8.count <= 512
-            && !value.contains("/")
-            && !value.contains("\\")
+            && value.utf8.count <= 2_048
             && !value.unicodeScalars.contains {
                 CharacterSet.controlCharacters.contains($0)
             }
