@@ -1402,7 +1402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.8.0"
+                as? String ?? "0.8.1"
         ) else {
             return
         }
@@ -1419,7 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ) {
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.8.0"
+                as? String ?? "0.8.1"
         ) else {
             return
         }

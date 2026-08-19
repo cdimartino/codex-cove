@@ -51,6 +51,8 @@ Start with the guide that matches what you are trying to do.
   completed and idle hook-observed local CLI tasks.
 - [Codex Cove 0.8.0 release notes](releases/v0.8.0.md) — editable and ordered
   artifacts, privacy-bounded favicons, and exact nested-agent control.
+- [Codex Cove 0.8.1 release notes](releases/v0.8.1.md) — fail-closed management
+  CLI help and uninstall argument validation.
 
 ## Version-specific engineering records
 
