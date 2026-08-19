@@ -24,10 +24,12 @@ APP_SOURCES=(
     Sources/CodexCoveApp/CoveImportedSoundStore.swift
     Sources/CodexCoveApp/CoveEditorWindowFocusing.swift
     Sources/CodexCoveApp/CoveMetadataBridge.swift
+    Sources/CodexCoveApp/CoveFaviconLoader.swift
     Sources/CodexCoveApp/CoveTerminalJumping.swift
     Sources/CodexCoveApp/CoveUITestSupport.swift
     Sources/CodexCoveApp/CoveSoundService.swift
     Sources/CodexCoveApp/CoveStore.swift
+    Sources/CodexCoveApp/CoveWorkspaceStore.swift
 )
 
 swiftc \
@@ -39,6 +41,8 @@ swiftc \
     -framework AppKit \
     -framework ApplicationServices \
     -framework AVFoundation \
+    -framework ImageIO \
+    -framework SwiftUI \
     -lsqlite3 \
     -o "$TEST_OUTPUT_DIRECTORY/CoveStoreFoundationTests"
 

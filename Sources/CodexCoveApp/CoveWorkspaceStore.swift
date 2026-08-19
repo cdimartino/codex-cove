@@ -1,26 +1,34 @@
+import AppKit
 import Foundation
 import CoveCore
 
 @MainActor
 final class CoveWorkspaceStore: ObservableObject {
     typealias ControlHandler = @Sendable (
-        CoveThreadControlRequest
+        CoveThreadControlRequest,
+        CoveThreadControlRoute
     ) async -> CoveThreadControlResult
 
     @Published private(set) var state: CoveWorkspaceState
     @Published var selectedIdentity: CoveSessionIdentity?
+    @Published private(set) var attentionIdentity: CoveSessionIdentity?
     @Published var query = ""
     @Published var sort: CoveWorkspaceSort = .manual
     @Published var filter = CoveWorkspaceFilter()
     @Published var composerText = ""
     @Published private(set) var isSending = false
+    @Published private(set) var refreshingControlIdentity: CoveSessionIdentity?
     @Published private(set) var message: String?
+    @Published private(set) var artifactSuggestions: [CoveWorkspaceArtifactSuggestion] = []
 
     var onControl: ControlHandler?
     var onReconcileRequested: (() -> Void)?
+    var onTargetRefreshRequested: ((CoveSessionIdentity) -> Void)?
 
     private let storage: any CoveWorkspaceStorage
     private let writesEnabled: Bool
+    private let openArtifactURL: (URL) -> Bool
+    private var artifactSuggestionTask: Task<Void, Never>?
 
     struct PreparedThreadControl: Equatable {
         var request: CoveThreadControlRequest
@@ -30,10 +38,12 @@ final class CoveWorkspaceStore: ObservableObject {
     init(
         storage: any CoveWorkspaceStorage = CoveWorkspaceFileStorage(),
         initialState: CoveWorkspaceState? = nil,
-        writesEnabled: Bool = true
+        writesEnabled: Bool = true,
+        openArtifactURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }
     ) {
         self.storage = storage
         self.writesEnabled = writesEnabled
+        self.openArtifactURL = openArtifactURL
         if let initialState {
             state = initialState
         } else {
@@ -60,6 +70,11 @@ final class CoveWorkspaceStore: ObservableObject {
                         ? identity : nil
                 }
             ),
+            dismissedIdentities: Set(
+                state.gridOrder.filter {
+                    coveState.dismissedSessionIDs.contains($0.id)
+                }
+            ),
             query: query,
             filter: filter,
             sort: sort,
@@ -68,21 +83,48 @@ final class CoveWorkspaceStore: ObservableObject {
     }
 
     func reconcileMembership(with snapshots: [CoveSessionSnapshot]) {
-        let identities = snapshots.compactMap { snapshot in
-            CoveWorkspaceProjection.isWorkspaceMember(snapshot)
-                ? snapshot.sessionIdentity : nil
-        }
-        if let selectedIdentity, !identities.contains(selectedIdentity) {
-            select(nil)
-        }
-        let missing = identities.filter { !state.gridOrder.contains($0) }
-        guard !missing.isEmpty else { return }
-        mutate { $0.ensureMembership(missing) }
+        mutate { $0.observe(snapshots) }
     }
 
-    func select(_ identity: CoveSessionIdentity?) {
+    func select(
+        _ identity: CoveSessionIdentity?,
+        attention attentionIdentity: CoveSessionIdentity? = nil
+    ) {
         if selectedIdentity != identity { composerText = "" }
         selectedIdentity = identity
+        self.attentionIdentity = attentionIdentity
+        clearArtifactSuggestions()
+        refreshSelectedControlTarget()
+    }
+
+    func refreshSelectedControlTarget() {
+        guard let identity = selectedIdentity,
+              let onTargetRefreshRequested else {
+            refreshingControlIdentity = nil
+            return
+        }
+        refreshingControlIdentity = identity
+        onTargetRefreshRequested(identity)
+    }
+
+    func finishControlRefresh(for identity: CoveSessionIdentity) {
+        if refreshingControlIdentity == identity {
+            refreshingControlIdentity = nil
+        }
+    }
+
+    func owningTaskIdentity(
+        for identity: CoveSessionIdentity,
+        coveState: CoveState
+    ) -> CoveSessionIdentity? {
+        CoveWorkspaceProjection(
+            snapshots: coveState.session.snapshots,
+            workspace: state,
+            pinnedIdentities: [],
+            dismissedIdentities: Set(
+                state.gridOrder.filter { coveState.dismissedSessionIDs.contains($0.id) }
+            )
+        ).owningTaskIdentity(for: identity)
     }
 
     func setView(_ view: CoveWorkspaceMode) {
@@ -112,6 +154,207 @@ final class CoveWorkspaceStore: ObservableObject {
         for identity: CoveSessionIdentity
     ) {
         mutate { $0.setLinks(links, for: identity) }
+    }
+
+    struct ArtifactReference: Identifiable, Equatable {
+        var ownerIdentity: CoveSessionIdentity
+        var link: CoveWorkspaceLink
+
+        var id: String { "\(ownerIdentity.id)\u{0}\(link.id)" }
+    }
+
+    func artifacts(
+        for rootIdentity: CoveSessionIdentity,
+        projection: CoveWorkspaceProjection
+    ) -> [ArtifactReference] {
+        let owner = projection.owningTaskIdentity(for: rootIdentity) ?? rootIdentity
+        var identities = [owner]
+        var index = 0
+        while index < identities.count {
+            let children = projection.item(identities[index])?.children ?? []
+            for child in children where !identities.contains(child) {
+                identities.append(child)
+            }
+            index += 1
+        }
+        return allArtifacts.filter { identities.contains($0.ownerIdentity) }
+    }
+
+    func addArtifact(
+        label: String,
+        url: URL,
+        to rootIdentity: CoveSessionIdentity,
+        requireExistingLocalFile: Bool = false
+    ) {
+        guard let canonical = CoveWorkspaceArtifactPolicy.canonicalPersistentURL(url),
+              !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              label.utf8.count <= CoveWorkspaceLimits.linkLabelBytes,
+              (!requireExistingLocalFile || !canonical.isFileURL
+                || CoveWorkspaceArtifactPolicy.safeExistingFileURL(canonical) != nil)
+        else {
+            message = "That artifact is not a safe supported link or local document."
+            return
+        }
+        var links = state.card(for: rootIdentity)?.links ?? []
+        guard links.count < CoveWorkspaceLimits.linksPerCard else {
+            message = "A task can contain at most \(CoveWorkspaceLimits.linksPerCard) artifacts."
+            return
+        }
+        guard !links.contains(where: {
+            CoveWorkspaceArtifactPolicy.canonicalPersistentURL($0.url) == canonical
+        }) else {
+            message = "That artifact is already attached to this task."
+            return
+        }
+        links.append(.init(
+            label: label.trimmingCharacters(in: .whitespacesAndNewlines),
+            url: canonical,
+            manualOrder: state.artifactOrderIDs().count
+        ))
+        setLinks(links, for: rootIdentity)
+    }
+
+    func removeArtifact(_ artifact: ArtifactReference) {
+        let links = (state.card(for: artifact.ownerIdentity)?.links ?? []).filter {
+            $0.id != artifact.link.id
+        }
+        setLinks(links, for: artifact.ownerIdentity)
+    }
+
+    func renameArtifact(_ artifact: ArtifactReference, label: String) {
+        let normalized = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              normalized.utf8.count <= CoveWorkspaceLimits.linkLabelBytes
+        else {
+            message = "An artifact label must be nonempty and at most \(CoveWorkspaceLimits.linkLabelBytes) bytes."
+            return
+        }
+        mutate { workspace in
+            guard let cardIndex = workspace.cards.firstIndex(where: {
+                $0.identity == artifact.ownerIdentity
+            }), let linkIndex = workspace.cards[cardIndex].links.firstIndex(where: {
+                $0.id == artifact.link.id
+            }) else { return }
+            workspace.cards[cardIndex].links[linkIndex].label = normalized
+        }
+    }
+
+    func moveArtifact(_ artifact: ArtifactReference, relativeOffset: Int) {
+        let ordered = allArtifacts
+        guard let index = ordered.firstIndex(where: { $0.id == artifact.id }) else {
+            return
+        }
+        let destination = min(max(0, index + relativeOffset), ordered.count - 1)
+        guard destination != index else { return }
+        var reordered = ordered
+        reordered.insert(reordered.remove(at: index), at: destination)
+        restoreArtifactOrder(reordered)
+    }
+
+    func moveArtifact(
+        _ artifact: ArtifactReference,
+        before destination: ArtifactReference
+    ) {
+        guard artifact.id != destination.id else { return }
+        var reordered = allArtifacts
+        guard let sourceIndex = reordered.firstIndex(where: { $0.id == artifact.id }),
+              let destinationIndex = reordered.firstIndex(where: { $0.id == destination.id })
+        else { return }
+        let moved = reordered.remove(at: sourceIndex)
+        reordered.insert(moved, at: sourceIndex < destinationIndex
+            ? destinationIndex - 1 : destinationIndex)
+        restoreArtifactOrder(reordered)
+    }
+
+    func moveArtifact(
+        _ artifact: ArtifactReference,
+        after destination: ArtifactReference
+    ) {
+        guard artifact.id != destination.id else { return }
+        var reordered = allArtifacts
+        guard let sourceIndex = reordered.firstIndex(where: { $0.id == artifact.id })
+        else { return }
+        let moved = reordered.remove(at: sourceIndex)
+        guard let destinationIndex = reordered.firstIndex(where: {
+            $0.id == destination.id
+        }) else { return }
+        reordered.insert(moved, at: destinationIndex + 1)
+        restoreArtifactOrder(reordered)
+    }
+
+    func restoreArtifactOrder(_ order: [ArtifactReference]) {
+        guard order.count == allArtifacts.count,
+              Set(order.map(\.id)) == Set(allArtifacts.map(\.id))
+        else { return }
+        mutate { $0.restoreArtifactOrder(order.map(\.id)) }
+    }
+
+    func openArtifact(_ artifact: ArtifactReference) {
+        guard let canonical = CoveWorkspaceArtifactPolicy.canonicalPersistentURL(artifact.link.url) else {
+            message = "This artifact has an unsafe destination."
+            return
+        }
+        let destination: URL
+        if canonical.isFileURL {
+            guard let local = CoveWorkspaceArtifactPolicy.safeExistingFileURL(canonical) else {
+                message = "This local artifact is unavailable or unsafe to open."
+                return
+            }
+            destination = local
+        } else {
+            destination = canonical
+        }
+        guard openArtifactURL(destination) else {
+            message = "macOS could not open this artifact."
+            return
+        }
+    }
+
+    var artifactOrder: [ArtifactReference] { allArtifacts }
+
+    private var allArtifacts: [ArtifactReference] {
+        let references = state.cards.flatMap { card in
+            card.links.map { ArtifactReference(ownerIdentity: card.identity, link: $0) }
+        }
+        let byID = Dictionary(uniqueKeysWithValues: references.map { ($0.id, $0) })
+        return state.artifactOrderIDs().compactMap { byID[$0] }
+    }
+
+    func refreshArtifactSuggestions(
+        for rootIdentity: CoveSessionIdentity,
+        projection: CoveWorkspaceProjection
+    ) {
+        let owner = projection.owningTaskIdentity(for: rootIdentity) ?? rootIdentity
+        var identities = [owner]
+        var index = 0
+        while index < identities.count {
+            let children = projection.item(identities[index])?.children ?? []
+            for child in children where !identities.contains(child) {
+                identities.append(child)
+            }
+            index += 1
+        }
+        let snapshots = identities.compactMap { projection.item($0)?.snapshot }
+        let existing = artifacts(for: owner, projection: projection).map(\.link)
+        artifactSuggestionTask?.cancel()
+        artifactSuggestionTask = Task {
+            let suggestions = await Task.detached {
+                CoveWorkspaceArtifactPolicy.suggestions(
+                    snapshots: snapshots,
+                    existingLinks: existing
+                )
+            }.value
+            guard !Task.isCancelled, self.selectedIdentity == rootIdentity else {
+                return
+            }
+            self.artifactSuggestions = suggestions
+        }
+    }
+
+    func clearArtifactSuggestions() {
+        artifactSuggestionTask?.cancel()
+        artifactSuggestionTask = nil
+        artifactSuggestions = []
     }
 
     func move(
@@ -268,11 +511,13 @@ final class CoveWorkspaceStore: ObservableObject {
         to snapshot: CoveSessionSnapshot,
         pendingRequests: [CoveDirectRequest]
     ) -> Bool {
-        !isSending
-            && snapshot.canAcceptThreadControl
-            && snapshot.sessionIdentity == selectedIdentity
+        let target = promptTarget(for: snapshot)
+        return !isSending
+            && refreshingControlIdentity != target.sessionIdentity
+            && target.canAcceptThreadControl
+            && target.sessionIdentity == selectedIdentity
             && pendingRequests.allSatisfy({
-                $0.sessionIdentity != snapshot.sessionIdentity
+                $0.sessionIdentity != target.sessionIdentity
             })
             && !composerText.trimmingCharacters(
                 in: .whitespacesAndNewlines
@@ -283,19 +528,20 @@ final class CoveWorkspaceStore: ObservableObject {
         to snapshot: CoveSessionSnapshot,
         pendingRequests: [CoveDirectRequest]
     ) -> PreparedThreadControl? {
+        let target = promptTarget(for: snapshot)
         guard canPrepareSend(
-            to: snapshot,
+            to: target,
             pendingRequests: pendingRequests
         ),
-              let identity = snapshot.sessionIdentity,
-              let route = snapshot.controlRoute
+              let identity = target.sessionIdentity,
+              let route = target.controlRoute
         else {
             message = "This task cannot accept a prompt here. Open it in Codex to continue."
             return nil
         }
         let operation: CoveThreadControlOperation
         let expectedTurnID: String?
-        if let activeTurnID = snapshot.activeTurnId {
+        if let activeTurnID = target.activeTurnId {
             operation = .steer
             expectedTurnID = activeTurnID
         } else {
@@ -323,12 +569,17 @@ final class CoveWorkspaceStore: ObservableObject {
         currentSnapshots: [CoveSessionSnapshot],
         pendingRequests: [CoveDirectRequest]
     ) {
+        guard let current = currentSnapshots.first(where: {
+            $0.sessionIdentity == prepared.request.target
+        }) else {
+            message = "The task changed before Send. Review its current state and try again."
+            return
+        }
+        let snapshot = promptTarget(for: current)
         guard !isSending,
+              refreshingControlIdentity != prepared.request.target,
               selectedIdentity == prepared.request.target,
               composerText == prepared.request.input,
-              let snapshot = currentSnapshots.first(where: {
-                  $0.sessionIdentity == prepared.request.target
-              }),
               snapshot.controlRoute == prepared.route,
               snapshot.canAcceptThreadControl,
               pendingRequests.allSatisfy({
@@ -350,7 +601,7 @@ final class CoveWorkspaceStore: ObservableObject {
         isSending = true
         message = nil
         Task {
-            let result = await onControl(prepared.request)
+            let result = await onControl(prepared.request, prepared.route)
             guard self.selectedIdentity == prepared.request.target else {
                 self.isSending = false
                 return
@@ -370,6 +621,16 @@ final class CoveWorkspaceStore: ObservableObject {
     }
 
     func clearMessage() { message = nil }
+
+    func promptTarget(for snapshot: CoveSessionSnapshot) -> CoveSessionSnapshot {
+        guard snapshot.controlRoute == nil,
+              snapshot.source == .localCli,
+              snapshot.activeTurnId == nil
+        else { return snapshot }
+        var target = snapshot
+        target.controlRoute = .localAppServer
+        return target
+    }
 
     private func mutate(_ body: (inout CoveWorkspaceState) -> Void) {
         var candidate = state

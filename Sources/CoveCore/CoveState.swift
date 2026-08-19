@@ -317,6 +317,9 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
     public var source: CoveWireSource?
     public var hostId: String?
     public var parentSessionId: String?
+    /// `true` means the event made conflicting parent claims; never inherit a
+    /// previous relationship in that case.
+    public var parentProvenanceConflict: Bool?
     /// Public app-server/broker liveness, kept separate from turn status.
     /// Nil denotes a legacy event that did not advertise liveness.
     public var liveness: CoveSessionLiveness?
@@ -340,6 +343,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         source: CoveWireSource? = nil,
         hostId: String? = nil,
         parentSessionId: String? = nil,
+        parentProvenanceConflict: Bool? = nil,
         liveness: CoveSessionLiveness? = nil,
         activeTurnId: String? = nil,
         controlRoute: CoveThreadControlRoute? = nil,
@@ -358,6 +362,7 @@ public struct CoveSessionSnapshot: Codable, Equatable, Sendable {
         self.source = source
         self.hostId = hostId
         self.parentSessionId = parentSessionId
+        self.parentProvenanceConflict = parentProvenanceConflict
         self.liveness = liveness
         self.activeTurnId = activeTurnId
         self.controlRoute = controlRoute
@@ -460,6 +465,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
     public var queueSectionOrder: [CoveQueueSection]
     public var collapsedQueueSections: Set<CoveQueueSection>
     public var workspaceAppearance: CoveWorkspaceAppearance
+    public var showWorkspaceCardResidents: Bool
+    public var animateWorkspaceCardResidents: Bool
 
     public init(
         themeFamily: CoveThemeFamily = .nativeGlass,
@@ -498,7 +505,9 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         showTokenMetrics: Bool = false,
         queueSectionOrder: [CoveQueueSection] = CoveQueueSection.allCases,
         collapsedQueueSections: Set<CoveQueueSection> = [.more],
-        workspaceAppearance: CoveWorkspaceAppearance = .system
+        workspaceAppearance: CoveWorkspaceAppearance = .system,
+        showWorkspaceCardResidents: Bool = true,
+        animateWorkspaceCardResidents: Bool = true
     ) {
         self.themeFamily = themeFamily
         self.palette = palette
@@ -544,6 +553,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         )
         self.collapsedQueueSections = collapsedQueueSections
         self.workspaceAppearance = workspaceAppearance
+        self.showWorkspaceCardResidents = showWorkspaceCardResidents
+        self.animateWorkspaceCardResidents = animateWorkspaceCardResidents
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -559,7 +570,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         case minimalIslandMode
         case showUsage, showProfileTokenUsage, showTokenMetrics
         case queueSectionOrder, collapsedQueueSections
-        case workspaceAppearance
+        case workspaceAppearance, showWorkspaceCardResidents
+        case animateWorkspaceCardResidents
     }
 
     public init(from decoder: Decoder) throws {
@@ -633,7 +645,15 @@ public struct CoveSettings: Codable, Equatable, Sendable {
             workspaceAppearance: try values.decodeIfPresent(
                 CoveWorkspaceAppearance.self,
                 forKey: .workspaceAppearance
-            ) ?? .system
+            ) ?? .system,
+            showWorkspaceCardResidents: try values.decodeIfPresent(
+                Bool.self,
+                forKey: .showWorkspaceCardResidents
+            ) ?? true,
+            animateWorkspaceCardResidents: try values.decodeIfPresent(
+                Bool.self,
+                forKey: .animateWorkspaceCardResidents
+            ) ?? true
         )
     }
 }
@@ -765,6 +785,8 @@ public enum CoveAction: Equatable, Sendable {
     case selectCustomTheme(CoveThemePalette)
     case clearCustomTheme
     case setResidentSet(CoveResidentSet)
+    case setShowWorkspaceCardResidents(Bool)
+    case setAnimateWorkspaceCardResidents(Bool)
     case setOpacity(CoveOpacityStyle)
     case setCollapsedOpacity(Double)
     case setExpandedOpacity(Double)
@@ -880,6 +902,10 @@ public enum CoveReducer {
             )
         case let .setResidentSet(residentSet):
             state.settings.residentSet = residentSet
+        case let .setShowWorkspaceCardResidents(value):
+            state.settings.showWorkspaceCardResidents = value
+        case let .setAnimateWorkspaceCardResidents(value):
+            state.settings.animateWorkspaceCardResidents = value
         case let .setOpacity(style):
             state.settings.opacityStyle = style
             state.settings.collapsedOpacity = style.collapsedAlpha
@@ -1080,15 +1106,36 @@ public enum CoveReducer {
             let decodedSnapshot = envelope.sessionSnapshot()
             let carriesSessionState = decodedSnapshot != nil || status != nil
             var acceptedStatusSnapshot = false
+            let outputDelta = envelope.assistantOutputDelta()
             if status == nil,
-               let latestOutput = envelope.latestAssistantOutput(),
+               (envelope.latestAssistantOutput() != nil || outputDelta != nil),
                var snapshot = state.session.snapshots.first(where: {
                    $0.sessionId == envelope.sessionId
                        && $0.originScope == envelope.originScope
                }) {
-                snapshot.latestOutput = latestOutput
+                if let outputDelta {
+                    snapshot.latestOutput = String(
+                        ((snapshot.latestOutput ?? "") + outputDelta).suffix(4_000)
+                    )
+                } else {
+                    snapshot.latestOutput = envelope.latestAssistantOutput()
+                }
                 snapshot.timestamp = envelope.timestamp
-                acceptedStatusSnapshot = accept(snapshot: snapshot, into: &state)
+                if envelope.advertisesLaunchID {
+                    snapshot.launchId = envelope.launchId
+                }
+                if envelope.advertisesParentSessionID {
+                    snapshot.parentSessionId = envelope.parentSessionID()
+                    snapshot.parentProvenanceConflict = envelope
+                        .hasConflictingParentSessionID
+                }
+                acceptedStatusSnapshot = accept(
+                    snapshot: snapshot,
+                    into: &state,
+                    preserveOmittedLaunchID: !envelope.advertisesLaunchID,
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID,
+                    preserveOmittedLatestOutput: !envelope.startsAssistantOutput
+                )
             }
             if var snapshot = decodedSnapshot {
                 if snapshot.unread,
@@ -1107,7 +1154,9 @@ public enum CoveReducer {
                 }
                 acceptedStatusSnapshot = accept(
                     snapshot: snapshot,
-                    into: &state
+                    into: &state,
+                    preserveOmittedLaunchID: !envelope.advertisesLaunchID,
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID
                 )
             } else if let status {
                 let snapshotID = envelope.sessionId == "pending"
@@ -1120,15 +1169,14 @@ public enum CoveReducer {
                 let payload = envelope.payload.objectValue ?? [:]
                 let liveness = payload["liveness"]?.stringValue.flatMap(
                     CoveSessionLiveness.init(rawValue:)
-                ) ?? existing?.liveness
+                )
                 let controlRoute = payload["controlRoute"]?.stringValue.flatMap(
                     CoveThreadControlRoute.init(rawValue:)
-                ) ?? existing?.controlRoute
+                )
                 let activeTurnId = envelope.endsActiveTurn
                     ? nil
                     : envelope.authoritativeStartedTurnID()
                         ?? payload["activeTurnId"]?.scalarStringValue
-                        ?? existing?.activeTurnId
                 let changedSinceAcknowledgement = existing == nil
                     || existing?.status != status.status
                     || (existing?.timestamp ?? .distantPast) < envelope.timestamp
@@ -1140,14 +1188,18 @@ public enum CoveReducer {
                         priority: status.priority,
                         title: display.title,
                         detail: display.body,
-                        latestOutput: envelope.latestAssistantOutput()
-                            ?? existing?.latestOutput,
+                        latestOutput: envelope.startsAssistantOutput
+                            ? nil
+                            : envelope.latestAssistantOutput()
+                                ?? existing?.latestOutput,
                         timestamp: envelope.timestamp,
                         sessionId: envelope.sessionId,
                         launchId: envelope.launchId,
                         source: envelope.source,
                         hostId: envelope.hostId,
                         parentSessionId: envelope.parentSessionID(),
+                        parentProvenanceConflict: envelope
+                            .hasConflictingParentSessionID,
                         liveness: liveness,
                         activeTurnId: activeTurnId,
                         controlRoute: controlRoute,
@@ -1157,7 +1209,10 @@ public enum CoveReducer {
                                     && changedSinceAcknowledgement
                             )
                     ),
-                    into: &state
+                    into: &state,
+                    preserveOmittedLaunchID: !envelope.advertisesLaunchID,
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID,
+                    preserveOmittedLatestOutput: !envelope.startsAssistantOutput
                 )
             }
 
@@ -1372,13 +1427,22 @@ public enum CoveReducer {
     @discardableResult
     private static func accept(
         snapshot: CoveSessionSnapshot,
-        into state: inout CoveState
+        into state: inout CoveState,
+        preserveOmittedLaunchID: Bool = true,
+        preserveOmittedParentID: Bool = true,
+        preserveOmittedLatestOutput: Bool = true
     ) -> Bool {
         if let identity = snapshot.sessionIdentity,
            state.dismissedSessionIDs.contains(identity.id) {
             return false
         }
-        guard upsert(snapshot: snapshot, into: &state) else {
+        guard upsert(
+            snapshot: snapshot,
+            into: &state,
+            preserveOmittedLaunchID: preserveOmittedLaunchID,
+            preserveOmittedParentID: preserveOmittedParentID,
+            preserveOmittedLatestOutput: preserveOmittedLatestOutput
+        ) else {
             return false
         }
         refreshActiveSnapshot(in: &state)
@@ -1600,7 +1664,10 @@ public enum CoveReducer {
     @discardableResult
     private static func upsert(
         snapshot: CoveSessionSnapshot,
-        into state: inout CoveState
+        into state: inout CoveState,
+        preserveOmittedLaunchID: Bool,
+        preserveOmittedParentID: Bool,
+        preserveOmittedLatestOutput: Bool
     ) -> Bool {
         // Snapshot IDs are unique only within a composite source/host origin.
         // The complete identity is now carried through every lookup, so a
@@ -1620,7 +1687,18 @@ public enum CoveReducer {
             }
         }
         var normalized = snapshot
-        if normalized.latestOutput == nil {
+        if let existing,
+           normalized.sessionIdentity == existing.sessionIdentity {
+            if normalized.launchId == nil, preserveOmittedLaunchID {
+                normalized.launchId = existing.launchId
+            }
+            if normalized.parentSessionId == nil,
+               preserveOmittedParentID,
+               normalized.parentProvenanceConflict != true {
+                normalized.parentSessionId = existing.parentSessionId
+            }
+        }
+        if normalized.latestOutput == nil, preserveOmittedLatestOutput {
             normalized.latestOutput = existing?.latestOutput
         }
         if normalized.status == .completed {

@@ -2,8 +2,9 @@ import Darwin
 import Foundation
 
 /// A bounded, persistent public app-server connection for turns initiated by
-/// Cove. Keeping the connection alive lets authoritative approval and question
-/// requests flow back through the existing Cove decision UI.
+/// Cove. It controls loaded Desktop tasks and validates hook-only local task
+/// identities before starting a new turn. Keeping the connection alive lets
+/// authoritative approval and question requests flow back through Cove.
 public final class CoveDesktopOwnedThreadControlClient:
     CoveThreadControlling,
     @unchecked Sendable
@@ -51,7 +52,8 @@ public final class CoveDesktopOwnedThreadControlClient:
         } catch {
             return .rejected(.invalidInput)
         }
-        guard request.target.source == .codexDesktop else {
+        guard request.target.source == .codexDesktop
+                || request.target.source == .localCli else {
             return .rejected(.wrongOrigin)
         }
         return await withCheckedContinuation { continuation in
@@ -61,6 +63,23 @@ public final class CoveDesktopOwnedThreadControlClient:
                     return
                 }
                 continuation.resume(returning: self.sendSynchronously(request))
+            }
+        }
+    }
+
+    /// Reads authoritative local task state without resuming it. This is used
+    /// to enable an exact Start/Steer control only after source and turn checks.
+    public func inspectLocalTarget(
+        _ target: CoveSessionIdentity
+    ) async -> CoveSessionSnapshot? {
+        guard target.source == .localCli else { return nil }
+        return await withCheckedContinuation { continuation in
+            controlQueue.async { [weak self] in
+                guard let self, self.ensureConnection() else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: self.localSnapshot(for: target))
             }
         }
     }
@@ -76,22 +95,106 @@ public final class CoveDesktopOwnedThreadControlClient:
         guard ensureDecisionListener(), ensureConnection() else {
             return .rejected(.unavailable)
         }
+        let needsLocalResume = request.target.source == .localCli
+            && request.operation == .start
+        if request.target.source == .codexDesktop,
+           request.operation == .start {
+            guard let thread = readThread(request.target.sessionId),
+                  hasDesktopRoot(thread, expectedID: request.target.sessionId)
+            else { return .rejected(.wrongOrigin) }
+            let status = thread["status"]?.objectValue?["type"]?
+                .scalarStringValue ?? ""
+            guard ["notLoaded", "idle"].contains(status) else {
+                return .rejected(.turnMismatch)
+            }
+            guard activeTurnState(for: request.target.sessionId) == .none else {
+                return .rejected(.turnMismatch)
+            }
+            _ = lock.withLock { activeTurns.removeValue(forKey: request.target) }
+        }
+        if request.target.source == .localCli {
+            switch request.operation {
+            case .start:
+                guard validateLocalTarget(request.target) else {
+                    return .rejected(.wrongOrigin)
+                }
+            case .steer:
+                break
+            }
+        }
         let route = lock.withLock { () -> OwnedRoute in
             if let existing = ownedRoutes[request.target] { return existing }
             let route = OwnedRoute(
-                launchId: "desktop-owned-\(UUID().uuidString.lowercased())"
+                launchId: "app-server-owned-\(UUID().uuidString.lowercased())"
             )
             ownedRoutes[request.target] = route
             return route
+        }
+        if needsLocalResume, !resumeLocalTarget(request.target) {
+            lock.withLock {
+                if ownedRoutes[request.target]?.launchId == route.launchId {
+                    ownedRoutes.removeValue(forKey: request.target)
+                    activeTurns.removeValue(forKey: request.target)
+                    pendingDecisions.removeValue(forKey: route.launchId)
+                }
+            }
+            return .rejected(.wrongOrigin)
+        }
+        if needsLocalResume {
+            guard activeTurnState(for: request.target.sessionId) == .none else {
+                lock.withLock {
+                    if ownedRoutes[request.target]?.launchId == route.launchId {
+                        ownedRoutes.removeValue(forKey: request.target)
+                        activeTurns.removeValue(forKey: request.target)
+                        pendingDecisions.removeValue(forKey: route.launchId)
+                    }
+                }
+                return .rejected(.turnMismatch)
+            }
+            _ = lock.withLock { activeTurns.removeValue(forKey: request.target) }
+        }
+        if lock.withLock({ pendingDecisions[route.launchId]?.isEmpty == false }) {
+            return .rejected(.pendingRequest)
+        }
+        if request.target.source == .localCli, request.operation == .steer {
+            guard let thread = readThread(request.target.sessionId),
+                  hasLocalCLIRoot(thread, expectedID: request.target.sessionId)
+            else { return .rejected(.wrongOrigin) }
+            guard !Self.hasPendingUserAction(thread) else {
+                return .rejected(.pendingRequest)
+            }
+            guard let expectedTurnID = request.expectedTurnId,
+                  activeTurnState(for: request.target.sessionId)
+                    == .active(expectedTurnID)
+            else { return .rejected(.turnMismatch) }
+            lock.withLock { activeTurns[request.target] = expectedTurnID }
+        }
+        if request.target.source == .codexDesktop, request.operation == .steer {
+            guard let thread = readThread(request.target.sessionId),
+                  hasDesktopRoot(thread, expectedID: request.target.sessionId)
+            else { return .rejected(.wrongOrigin) }
+            guard !Self.hasPendingUserAction(thread) else {
+                return .rejected(.pendingRequest)
+            }
+            guard let expectedTurnID = request.expectedTurnId,
+                  activeTurnState(for: request.target.sessionId)
+                    == .active(expectedTurnID)
+            else { return .rejected(.turnMismatch) }
+            lock.withLock { activeTurns[request.target] = expectedTurnID }
         }
         let knownActiveTurn = lock.withLock { activeTurns[request.target] }
         if request.operation == .start, knownActiveTurn != nil {
             return .rejected(.turnMismatch)
         }
-        if request.operation == .steer,
-           let knownActiveTurn,
-           knownActiveTurn != request.expectedTurnId {
-            return .rejected(.turnMismatch)
+        if request.operation == .steer {
+            if request.target.source == .localCli {
+                guard knownActiveTurn == request.expectedTurnId else {
+                    return .rejected(.turnMismatch)
+                }
+            } else if let knownActiveTurn,
+                      knownActiveTurn != request.expectedTurnId {
+                return .rejected(.turnMismatch)
+            }
         }
         var params: [String: Any] = [
             "threadId": request.target.sessionId,
@@ -137,6 +240,221 @@ public final class CoveDesktopOwnedThreadControlClient:
             return .accepted(turnId: turnId)
         }
     }
+
+    func validateLocalTarget(_ target: CoveSessionIdentity) -> Bool {
+        guard let thread = readThread(target.sessionId),
+              ["notLoaded", "idle"].contains(
+                  thread["status"]?.objectValue?["type"]?.scalarStringValue ?? ""
+              )
+        else { return false }
+        return hasLocalCLIRoot(thread, expectedID: target.sessionId)
+    }
+
+    func resumeLocalTarget(_ target: CoveSessionIdentity) -> Bool {
+        let resumed = rpc(
+            method: "thread/resume",
+            params: [
+                "threadId": target.sessionId,
+                "excludeTurns": true,
+            ]
+        )
+        guard case let .response(object) = resumed,
+              object["error"] == nil || object["error"] == .null,
+              let thread = object["result"]?.objectValue?["thread"]?.objectValue
+        else { return false }
+        return thread["id"]?.scalarStringValue == target.sessionId
+            && thread["status"]?.objectValue?["type"]?.scalarStringValue == "idle"
+            && hasLocalCLIRoot(thread, expectedID: target.sessionId)
+    }
+
+    func activeLocalTurn(for target: CoveSessionIdentity) -> String? {
+        guard let thread = readThread(target.sessionId),
+              hasLocalCLIRoot(thread, expectedID: target.sessionId)
+        else { return nil }
+        return activeTurnID(for: target.sessionId)
+    }
+
+    func activeTurnID(for threadID: String) -> String? {
+        guard case let .active(turnID) = activeTurnState(for: threadID) else {
+            return nil
+        }
+        return turnID
+    }
+
+    private func activeTurnState(for threadID: String) -> ActiveTurnState {
+        let response = rpc(
+            method: "thread/turns/list",
+            params: [
+                "threadId": threadID,
+                "limit": 8,
+                "sortDirection": "desc",
+                "itemsView": "summary",
+            ]
+        )
+        guard case let .response(object) = response,
+              object["error"] == nil || object["error"] == .null,
+              let turns = object["result"]?.objectValue?["data"]?.arrayValue
+        else { return .invalid }
+        let active = turns.filter {
+            $0.objectValue?["status"]?.scalarStringValue == "inProgress"
+        }
+        guard !active.isEmpty else { return .none }
+        guard active.count == 1,
+              let turnID = active[0].objectValue?["id"]?.scalarStringValue,
+              !turnID.isEmpty,
+              turnID.utf8.count <= 512
+        else { return .invalid }
+        return .active(turnID)
+    }
+
+    func localSnapshot(for target: CoveSessionIdentity) -> CoveSessionSnapshot? {
+        guard let thread = readThread(target.sessionId),
+              hasLocalCLIRoot(thread, expectedID: target.sessionId)
+        else { return nil }
+        let statusObject = thread["status"]?.objectValue ?? [:]
+        let rawStatus = statusObject["type"]?.scalarStringValue ?? ""
+        let flags = statusObject["activeFlags"]?.arrayValue?
+            .compactMap(\.scalarStringValue).map { $0.lowercased() } ?? []
+        let status: CoveSessionStatus
+        if flags.contains(where: { $0.contains("approval") }) {
+            status = .waitingApproval
+        } else if flags.contains(where: { $0.contains("input") }) {
+            status = .waitingInput
+        } else if flags.contains(where: { $0.contains("compact") }) {
+            status = .compacting
+        } else {
+            status = switch rawStatus {
+            case "active": .active
+            case "systemError": .failed
+            default: .idle
+            }
+        }
+        let priority: Int = switch status {
+        case .waitingApproval: 100
+        case .waitingInput: 95
+        case .failed: 90
+        case .compacting: 60
+        case .active, .working: 40
+        default: 5
+        }
+        let activeTurn = status == .active
+            || status == .working
+            || status == .waitingApproval
+            || status == .waitingInput
+            || status == .compacting
+            ? activeTurnID(for: target.sessionId) : nil
+        let timestamp = thread["updatedAt"]?.intValue.map {
+            Date(timeIntervalSince1970: TimeInterval($0))
+        } ?? Date()
+        return CoveSessionSnapshot(
+            snapshotId: target.sessionId,
+            status: status,
+            priority: priority,
+            title: thread["name"]?.stringValue
+                ?? thread["title"]?.stringValue
+                ?? thread["preview"]?.stringValue
+                ?? "Codex task",
+            timestamp: timestamp,
+            sessionId: target.sessionId,
+            source: .localCli,
+            parentSessionId: CoveThreadProvenance.parentID(in: thread),
+            parentProvenanceConflict: CoveThreadProvenance
+                .hasConflictingParentID(in: thread),
+            liveness: .loaded,
+            activeTurnId: activeTurn,
+            controlRoute: .localAppServer
+        )
+    }
+
+    func readThread(_ threadID: String) -> [String: CoveJSONValue]? {
+        guard CoveDesktopThreadClient.isSafeThreadIdentifier(threadID) else {
+            return nil
+        }
+        let read = rpc(
+            method: "thread/read",
+            params: ["threadId": threadID, "includeTurns": false]
+        )
+        guard case let .response(object) = read,
+              object["error"] == nil || object["error"] == .null,
+              let thread = object["result"]?.objectValue?["thread"]?.objectValue,
+              thread["id"]?.scalarStringValue == threadID
+        else { return nil }
+        return thread
+    }
+
+    func hasLocalCLIRoot(
+        _ initial: [String: CoveJSONValue],
+        expectedID: String
+    ) -> Bool {
+        var current = initial
+        var expected = expectedID
+        var visited = Set<String>()
+        for _ in 0..<32 {
+            guard current["id"]?.scalarStringValue == expected,
+                  visited.insert(expected).inserted,
+                  !CoveThreadProvenance.hasConflictingParentID(in: current),
+                  !CoveThreadProvenance.isExcludedAgent(current)
+            else { return false }
+            if !CoveThreadProvenance.isThreadSpawnAgent(current) {
+                return current["source"]?.scalarStringValue == "cli"
+            }
+            guard
+                  let parent = CoveThreadProvenance.parentID(in: current),
+                  CoveDesktopThreadClient.isSafeThreadIdentifier(parent),
+                  !visited.contains(parent),
+                  let parentThread = readThread(parent)
+            else { return false }
+            current = parentThread
+            expected = parent
+        }
+        return false
+    }
+
+    func hasDesktopRoot(
+        _ initial: [String: CoveJSONValue],
+        expectedID: String
+    ) -> Bool {
+        var current = initial
+        var expected = expectedID
+        var visited = Set<String>()
+        for _ in 0..<32 {
+            guard current["id"]?.scalarStringValue == expected,
+                  visited.insert(expected).inserted,
+                  !CoveThreadProvenance.hasConflictingParentID(in: current),
+                  !CoveThreadProvenance.isExcludedAgent(current)
+            else { return false }
+            if !CoveThreadProvenance.isThreadSpawnAgent(current) {
+                return CoveDesktopThreadSnapshotParser
+                    .isConfidentlyDesktopOpenable(current)
+            }
+            guard let parent = CoveThreadProvenance.parentID(in: current),
+                  CoveDesktopThreadClient.isSafeThreadIdentifier(parent),
+                  !visited.contains(parent),
+                  let parentThread = readThread(parent)
+            else { return false }
+            current = parentThread
+            expected = parent
+        }
+        return false
+    }
+
+    static func hasPendingUserAction(_ thread: [String: CoveJSONValue]) -> Bool {
+        let status = thread["status"]?.objectValue ?? [:]
+        let type = status["type"]?.scalarStringValue?.lowercased() ?? ""
+        let flags = status["activeFlags"]?.arrayValue?
+            .compactMap(\.scalarStringValue).map { $0.lowercased() } ?? []
+        return type.contains("approval")
+            || type.contains("input")
+            || flags.contains(where: {
+                $0.contains("approval") || $0.contains("input")
+            })
+    }
+}
+
+private enum ActiveTurnState: Equatable {
+    case none
+    case active(String)
+    case invalid
 }
 
 private extension CoveDesktopOwnedThreadControlClient {
@@ -493,11 +811,12 @@ private extension CoveDesktopOwnedThreadControlClient {
         }
         guard lock.withLock({ connection?.generation == generation }),
               let sessionId = Self.sessionId(in: object),
-              let identity = CoveSessionIdentity(
-                  source: .codexDesktop,
-                  hostId: nil,
-                  sessionId: sessionId
-              )
+              let identity = lock.withLock({ () -> CoveSessionIdentity? in
+                  let matches = ownedRoutes.keys.filter {
+                      $0.sessionId == sessionId
+                  }
+                  return matches.count == 1 ? matches[0] : nil
+              })
         else { return }
         let method = object["method"]?.stringValue ?? ""
         let eventTurnId = object["params"]?.objectValue?["turnId"]?
@@ -546,18 +865,26 @@ private extension CoveDesktopOwnedThreadControlClient {
             .appServer
         }
         let envelope = CoveWireEnvelope(
-            eventId: "desktop-owned-\(UUID().uuidString.lowercased())",
+            eventId: "app-server-owned-\(UUID().uuidString.lowercased())",
             kind: kind,
             timestamp: Date(),
-            source: .codexDesktop,
+            source: identity.source,
             sessionId: sessionId,
             turnId: eventTurnId,
             launchId: route.launchId,
             payload: .object([
                 "message": .object(object),
                 "decisionSocket": .string(decisionSocketPath),
-                "liveness": .string(CoveSessionLiveness.loaded.rawValue),
-                "controlRoute": .string(CoveThreadControlRoute.desktop.rawValue),
+                "liveness": .string(
+                    identity.source == .codexDesktop
+                        ? CoveSessionLiveness.loaded.rawValue
+                        : CoveSessionLiveness.live.rawValue
+                ),
+                "controlRoute": .string(
+                    identity.source == .codexDesktop
+                        ? CoveThreadControlRoute.desktop.rawValue
+                        : CoveThreadControlRoute.localAppServer.rawValue
+                ),
             ])
         )
         let handler = lock.withLock { eventHandler }

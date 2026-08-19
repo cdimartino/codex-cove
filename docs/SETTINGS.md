@@ -58,6 +58,10 @@ Transparency can still force an opaque presentation.
 individual resident automatically and stably; residents are not selected
 manually per task.
 
+**Show residents on Workspace cards** controls whether Grid and Board cards
+include that task's resident. **Animate active card residents** independently
+pauses movement on those cards.
+
 Active residents animate with character-specific activities. Attention and
 terminal states use static icon-integrated callouts. Reduce Motion disables
 nonessential animation.

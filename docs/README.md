@@ -45,6 +45,16 @@ Start with the guide that matches what you are trying to do.
   inline help system.
 - [Codex Cove 0.6.1 release notes](releases/v0.6.1.md) — Workspace appearance
   controls and clearer privacy-redaction guidance and recovery.
+- [Codex Cove 0.7.0 release notes](releases/v0.7.0.md) — Workspace-first
+  supervision, retained tasks, and parent-owned artifacts.
+- [Codex Cove 0.7.1 release notes](releases/v0.7.1.md) — prompting for
+  completed and idle hook-observed local CLI tasks.
+- [Codex Cove 0.8.0 release notes](releases/v0.8.0.md) — editable and ordered
+  artifacts, privacy-bounded favicons, and exact nested-agent control.
+- [Codex Cove 0.8.1 release notes](releases/v0.8.1.md) — fail-closed management
+  CLI help and uninstall argument validation.
+- [Codex Cove 0.9.0 release notes](releases/v0.9.0.md) — live agent output and
+  animated residents on Workspace cards.
 
 ## Version-specific engineering records
 

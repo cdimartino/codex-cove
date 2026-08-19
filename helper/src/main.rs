@@ -958,6 +958,25 @@ fn management_remote_install(args: &[String]) -> io::Result<i32> {
 }
 
 fn management_install(args: &[String], uninstall: bool) -> io::Result<i32> {
+    if args
+        .iter()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        print_help();
+        return Ok(0);
+    }
+    if uninstall
+        && let Some(argument) = args
+            .iter()
+            .skip(1)
+            .find(|arg| !matches!(arg.as_str(), "--plan" | "--keep-settings" | "--keep-app"))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown uninstall argument {argument}"),
+        ));
+    }
     let layout = install::InstallLayout::current()?;
     let keep_settings = args.iter().any(|arg| arg == "--keep-settings");
     let keep_app = args.iter().any(|arg| arg == "--keep-app");

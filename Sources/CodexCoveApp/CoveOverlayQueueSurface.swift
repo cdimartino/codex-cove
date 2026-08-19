@@ -15,7 +15,7 @@ struct CoveQueueSurfaceView: View {
 
     let state: CoveState
     let redactsSensitiveContent: Bool
-    let onOpenWorkspace: @MainActor () -> Void
+    let onOpenWorkspace: @MainActor (CoveSessionIdentity?) -> Void
     let onOpenSettings: @MainActor () -> Void
     let onRestoreArchived: @MainActor (String?) -> Void
 
@@ -275,8 +275,9 @@ struct CoveQueueSurfaceView: View {
                             isReminderScheduled: item.identity.map {
                                 store.reminders[$0] != nil
                             } ?? false,
-                            onSelect: { open(item) },
-                            onFocus: { focus(item) }
+                            onSelect: { openWorkspace(item) },
+                            onFocus: { focus(item) },
+                            onOpenInCodex: { openInCodex(item) }
                         )
                         .environmentObject(store)
                     }
@@ -413,7 +414,7 @@ struct CoveQueueSurfaceView: View {
 
             archivedSection
 
-            Button(action: onOpenWorkspace) {
+            Button { onOpenWorkspace(nil) } label: {
                 Label("Open Workspace…", systemImage: "square.grid.2x2.fill")
                     .coveOverlayFont(state.theme, .body)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -754,10 +755,15 @@ struct CoveQueueSurfaceView: View {
 
     private func openSelectedItem() {
         guard let selectedItem else { return }
-        open(selectedItem)
+        openInCodex(selectedItem)
     }
 
-    private func open(_ item: CoveQueueItem) {
+    private func openWorkspace(_ item: CoveQueueItem) {
+        selectedID = item.id
+        onOpenWorkspace(item.identity)
+    }
+
+    private func openInCodex(_ item: CoveQueueItem) {
         selectedID = item.id
         if let request = item.directRequest {
             store.openInCodex(for: request)
@@ -828,6 +834,7 @@ private struct CoveQueueTaskRow: View {
     let isReminderScheduled: Bool
     let onSelect: () -> Void
     let onFocus: () -> Void
+    let onOpenInCodex: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -911,7 +918,7 @@ private struct CoveQueueTaskRow: View {
             .accessibilityLabel(
                 "\(item.status.displayName), \(CoveQueueCopy.title(for: item, redactsSensitiveContent: redactsSensitiveContent))"
             )
-            .accessibilityHint("Opens this task in Codex")
+            .accessibilityHint("Opens this task in Workspace")
 
             Button(action: onFocus) {
                 Text(item.directRequest == nil ? "Details" : "Review")
@@ -948,6 +955,12 @@ private struct CoveQueueTaskRow: View {
 
     @ViewBuilder
     private var quickActions: some View {
+        Button("Open in Codex", action: onOpenInCodex)
+            .accessibilityIdentifier(
+                actionAccessibilityIdentifier("open-in-codex")
+            )
+        Divider()
+
         Button(item.isPinned ? "Unpin" : "Pin") {
             guard let snapshot = item.snapshot else { return }
             store.togglePinned(snapshot)
@@ -1277,6 +1290,7 @@ struct CoveFixtureAccessibilityMarkers: View {
     let stateDirectory: String
     let decisionAttemptCount: Int
     let jumpCount: Int
+    let threadControl: String
     let queueSectionOrder: [CoveQueueSection]
     let textScale: Double
 
@@ -1293,6 +1307,10 @@ struct CoveFixtureAccessibilityMarkers: View {
             marker(
                 value: "\(jumpCount)",
                 identifier: "cove.fixture.jump-count"
+            )
+            marker(
+                value: threadControl,
+                identifier: "cove.fixture.thread-control"
             )
             marker(
                 value: queueSectionOrder
@@ -2547,7 +2565,7 @@ private struct CoveDecisionDeliveryView: View {
     }
 }
 
-private struct CoveSessionOpenFailureView: View {
+struct CoveSessionOpenFailureView: View {
     let message: String
     let theme: CoveThemePalette
     let redactsSensitiveContent: Bool

@@ -1,12 +1,14 @@
 # Workspace Help
 
-Workspace is Codex Cove's full-window view for supervising many Codex tasks at
-once. It uses the same live state, privacy rules, approvals, remote relays, and
-exact-origin navigation as the island.
+Workspace is Codex Cove's primary full-window view for supervising many Codex
+tasks at once. It uses the same live state, privacy rules, approvals, remote
+relays, and exact-origin navigation as the island, which remains an ambient
+attention companion.
 
 ## Open and close Workspace
 
-Open Workspace from any of these places:
+Direct launch, Dock reopen, notification click, and a queue-row click open
+Workspace. You can also open it from:
 
 - the menu-bar wave menu: **Open Workspace…**;
 - the island queue's **More** section: **Open Workspace…**; or
@@ -29,12 +31,13 @@ Workspace shows:
 - live local CLI tasks observed through Cove's broker or public hooks; and
 - live tasks from configured remote Cove relays.
 
-Idle tasks stay visible while their Desktop or CLI session remains open. A
-closed successful task leaves Workspace. A closed failed or interrupted task
-stays visible until you mark it read or archive it.
+Authoritatively loaded or live tasks are enrolled in Workspace even while its
+window is closed. Once enrolled, a task stays visible until you archive it.
+When Cove no longer has current task state, it is marked **Retained** instead
+of being shown with a guessed status or activity time.
 
 New tasks enter the end of Grid's saved manual order and Board's **Inbox**.
-Aliases, tags, links, order, and Board placement remain available if the same
+Aliases, tags, artifacts, order, and Board placement remain available if the same
 exact task identity is seen again.
 
 ## Toolbar
@@ -76,7 +79,14 @@ task metadata or saved prompt content.
 Grid lays out parent task cards responsively as the window resizes. A card shows
 its Cove alias or current upstream title, status, source and remote host, last
 activity, unread and pin state, tags and link badges, and the number of
-descendant agents needing attention.
+descendant agents needing attention. It also shows a bounded excerpt of the
+newest parent-or-descendant agent output and updates that excerpt as public
+app-server output deltas arrive. Output excerpts are memory-only and disappear
+under privacy redaction.
+
+Each card can show its task's stably assigned resident. Use **Settings →
+Residents** to hide card residents or pause their active-state movement.
+macOS Reduce Motion always pauses that movement.
 
 Manual ordering can change only when:
 
@@ -127,8 +137,13 @@ Cove attaches an agent only when Codex provides an authoritative
 `parentThreadId` within the same local, Desktop, or selected remote origin. It
 never infers a parent from similar names, output, or timing.
 
-Each hierarchy row shows the agent's status and an exact **Open in Codex**
-button. Missing parents and cycles appear under **Unattached agents**.
+Each hierarchy row shows the agent's status. Select the row to inspect, start,
+or steer that exact agent; the owning task card remains highlighted and the
+full hierarchy stays available. **Open in Codex** first targets the exact
+selected agent. If it has no independent location, Cove reports that failure
+and may offer a separately labeled **Open Parent Location** action for a
+verified same-origin parent. Missing parents, conflicting parent claims, and
+cycles remain under **Unattached agents** rather than being guessed.
 
 ## Workspace details
 
@@ -143,14 +158,32 @@ Enter comma-separated tags and press Return. Tags are deduplicated
 case-insensitively and sorted for stable display. A card can hold up to 32 tags,
 each up to 64 UTF-8 bytes.
 
-### Links
+### Artifacts
 
+Artifacts are parent-task context. The inspector lists every attached web link,
+local file, and folder with its real host or path plus **Open** and **Remove**.
+Edit a saved label in place; press Return or move focus to save, or Escape to
+restore the saved value. Drag rows or use **Move Earlier**/**Move Later** to
+change the single order shared by the parent and its agents. Reordering is
+undoable.
 Enter a short label and an absolute `http://` or `https://` URL, then choose
-**Add**. URLs with embedded user names or passwords are rejected. A card can
-hold up to 32 links, each up to 2,048 UTF-8 bytes.
+**Add Link**, or choose **Add File or Folder…** for local plans such as an
+`EXECPLAN.md`. URLs with embedded user names or passwords, remote file URLs,
+packages, apps, scripts, executables, and special files are rejected.
 
-Links are manual context only. Cove stores no Jira, Confluence, Slack, GitHub,
-GitLab, Gerrit, Grafana, or other connector credentials.
+Saved web links attempt to display the host's HTTPS `/favicon.ico` in the
+inspector and card badges. Cove sends no cookies, credentials, saved path, query,
+or fragment, follows no redirects, and keeps successful icons only in bounded
+process memory. Missing, invalid, local/private-host, or oversized icons retain
+the generic link symbol. Suggestions never trigger a favicon request before you
+add them. Showing cards or the artifact inspector can therefore contact the
+hosts of links you explicitly saved.
+
+Suggestions are confirmation-only: Cove looks only at bounded live assistant
+output from the selected parent and its authoritative agents. It never scans a
+repository, transcript, prompt, or private Codex storage, and it never opens or
+saves a suggestion until you choose **Add**. Cove stores no Jira, Confluence,
+Slack, GitHub, GitLab, Gerrit, Grafana, or other connector credentials.
 
 ## Prompt library
 
@@ -184,21 +217,32 @@ prompt once. It does not retry automatically.
 Send is unavailable when:
 
 - an approval or question is pending for the task;
-- the task is hook-only;
 - the route or exact origin is stale;
 - an active turn lacks its authoritative turn ID;
 - the server does not support the required public operation; or
 - another send is already in progress.
 
+For a local CLI task observed only through hooks, Cove first uses the public
+local Codex app-server to read that exact thread without resuming it. Spawned
+agents are accepted only when their bounded, non-cyclic parent chain ends at an
+exact CLI root. Cove also reads the bounded turn summary: idle/completed state
+enables **Start Turn**, while active state enables **Steer Active Turn** only
+with the exact current turn ID. Before delivery it repeats the same source and
+turn checks. Missing, conflicting, review/compact, or stale provenance remains
+unavailable.
+
 Cove rechecks the target, operation, route, turn ID, pending requests, and
 composer text at confirmation time. If anything changed, Send fails visibly.
+The public Codex `turn/start` operation has no atomic idle precondition, so a
+different client starting that same task in the final delivery race can cause
+Codex itself to treat the submitted input as a steer.
 An uncertain result means the transport may have delivered the prompt; inspect
 the task in Codex before deciding whether to try again.
 
 ## Read, pin, remind, and archive
 
-- **Mark Read** acknowledges Cove's unread state. A closed failed or
-  interrupted task then leaves Workspace.
+- **Mark Read** acknowledges Cove's unread state without removing a retained
+  task from Workspace.
 - **Pin** affects Cove ordering only.
 - **Remind Me** schedules one local, one-shot notification using the delay from
   **Settings → General**.
@@ -210,7 +254,7 @@ the task in Codex before deciding whether to try again.
 
 The following explicitly user-authored Workspace content is durable:
 
-- aliases, tags, and validated links;
+- aliases, tags, and validated web/local artifacts;
 - Grid order, Board columns, and assignments;
 - saved prompt templates; and
 - the last selected Grid or Board view.

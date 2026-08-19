@@ -52,7 +52,8 @@ plus content the user explicitly saves in the Workspace:
 - imported theme definitions and manifest-owned audio copies;
 - helper configuration, install checksums, and explicitly selected SSH aliases;
   and
-- Workspace aliases, tags, validated HTTP(S) links, Grid/Board organization,
+- Workspace aliases, tags, validated HTTP(S)/local-file artifacts and their
+  global manual order, Grid/Board organization,
   and named prompt-library templates that the user explicitly saves.
 
 Workspace content is a deliberate durable local exception to the general
@@ -71,10 +72,16 @@ copied into Cove configuration.
 
 Cove never deletes, archives, edits, or creates Codex tasks or transcripts.
 Mark-read, pin, reminder, and archive actions affect Cove metadata only.
-Workspace aliases, tags, links, and workflow columns are likewise Cove-only.
+Workspace aliases, tags, artifacts, and workflow columns are likewise Cove-only.
 An explicit Workspace Send may start an idle turn or steer the exact active
 turn through the public app-server, but the native Codex client remains
 authoritative for unsupported decisions and task state.
+
+Workspace cards may display a bounded, in-memory excerpt of the newest output
+from their parent task or an attached descendant. These excerpts are never
+written to Workspace storage, diagnostics, logs, notifications, fixtures, or
+release artifacts, and privacy redaction removes them from rendering and
+Accessibility.
 
 ## Privacy controls
 
@@ -118,6 +125,14 @@ approval decisions.
   and session ID. Cove never routes by an opaque session ID alone.
 - Idle tasks allow only `turn/start`. Active tasks allow only `turn/steer` with
   the exact currently observed turn ID.
+- A completed or idle hook-only local task may use `turn/start` only after a
+  no-turn public `thread/read` returns the exact selected thread ID in a safe
+  state, followed by an exact `thread/resume` with turns excluded. Missing,
+  mismatched, or non-idle tasks fail closed; active hook-only tasks are never
+  sent through Cove's explicit steer operation without an exact owned turn ID.
+  Codex's public `turn/start` has no idle compare-and-swap: an external client
+  starting the same thread in the final delivery race may cause Codex itself to
+  treat the submitted input as a steer.
 - A pending approval or question disables Send until it is resolved.
 - Local and remote brokers accept only bounded start/steer frames for sessions
   and launches they observed. Clients cannot submit arbitrary app-server
@@ -125,9 +140,9 @@ approval decisions.
 - A state change between preview and delivery rejects the request. Timeout or
   disconnect is reported as uncertain, and Cove never retries a prompt
   automatically.
-- Hook-only sessions, stale routes, ambiguous origins, unsupported servers,
-  and missing active-turn IDs keep native Codex authoritative and expose an
-  exact Open action instead.
+- Active hook-only sessions, stale routes, ambiguous origins, unsupported
+  servers, and missing active-turn IDs keep native Codex authoritative and
+  expose an exact Open action instead.
 
 ## Filesystem and IPC protections
 
@@ -223,11 +238,21 @@ service, or Cove-hosted backend. Public account usage is read through the local
 Codex app-server; Codex itself remains responsible for its own authenticated
 network traffic.
 
-The only Cove-initiated network transport is SSH to aliases explicitly stored
-with `codex-cove remote add`. Relay commands use strict host-key checking,
+The only Cove-initiated network transports are SSH to aliases explicitly stored
+with `codex-cove remote add` and favicon requests for web links the user saved
+in Workspace. Relay commands use strict host-key checking,
 `BatchMode=yes`, a bounded connection timeout, and bounded keepalive probes. No
 password prompt is hidden behind the app, and Cove does not enumerate SSH
 configuration.
+
+Favicon requests use only `https://<saved-host>/favicon.ico`; artifact paths,
+queries, fragments, cookies, credentials, redirects, IP literals, and local or
+single-label hostnames are excluded. Transfers use an ephemeral session, a
+five-second timeout, a 256 KiB cap, bounded ImageIO decoding, and a 128-entry
+memory-only cache. Suggestions and privacy-redacted views do not initiate these
+requests. Displaying non-redacted cards or the artifact inspector can expose the
+user's IP address and request timing to saved-link hosts; Cove uses no favicon
+proxy or hosted service.
 
 Homebrew and a web browser may separately contact GitHub to obtain a tap or
 release. That package-manager download is not runtime network behavior by the

@@ -35,6 +35,7 @@ public enum CoveSessionLiveness: String, Codable, Sendable {
 
 public enum CoveThreadControlRoute: String, Codable, Sendable {
     case desktop
+    case localAppServer
     case routedLocal
     case routedRemote
 }
@@ -55,15 +56,20 @@ public struct CoveWorkspaceLink: Codable, Equatable, Hashable, Sendable,
     public var id: String
     public var label: String
     public var url: URL
+    /// A Workspace-global rank. `nil` is only valid while decoding older
+    /// documents or for a not-yet-saved suggestion.
+    public var manualOrder: Int?
 
     public init(
         id: String = UUID().uuidString,
         label: String,
-        url: URL
+        url: URL,
+        manualOrder: Int? = nil
     ) {
         self.id = id
         self.label = label
         self.url = url
+        self.manualOrder = manualOrder
     }
 }
 
@@ -73,6 +79,9 @@ public struct CoveWorkspaceCardState: Codable, Equatable, Sendable,
     public var alias: String?
     public var tags: [String]
     public var links: [CoveWorkspaceLink]
+    /// Opaque, same-origin parent identity retained without task content so a
+    /// closed child remains grouped under its Workspace owner after restart.
+    public var parentSessionId: String?
 
     public var id: CoveSessionIdentity { identity }
 
@@ -80,12 +89,36 @@ public struct CoveWorkspaceCardState: Codable, Equatable, Sendable,
         identity: CoveSessionIdentity,
         alias: String? = nil,
         tags: [String] = [],
-        links: [CoveWorkspaceLink] = []
+        links: [CoveWorkspaceLink] = [],
+        parentSessionId: String? = nil
     ) {
         self.identity = identity
         self.alias = alias
         self.tags = tags
         self.links = links
+        self.parentSessionId = parentSessionId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case identity, alias, tags, links, parentSessionId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        identity = try container.decode(CoveSessionIdentity.self, forKey: .identity)
+        alias = try container.decodeIfPresent(String.self, forKey: .alias)
+        tags = try container.decode([String].self, forKey: .tags)
+        links = try container.decode([CoveWorkspaceLink].self, forKey: .links)
+        parentSessionId = try container.decodeIfPresent(String.self, forKey: .parentSessionId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(identity, forKey: .identity)
+        try container.encodeIfPresent(alias, forKey: .alias)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(links, forKey: .links)
+        try container.encodeIfPresent(parentSessionId, forKey: .parentSessionId)
     }
 }
 
@@ -129,7 +162,7 @@ public struct CovePromptTemplate: Codable, Equatable, Sendable, Identifiable {
 /// this file may contain the local aliases, organizational metadata, and saved
 /// prompt templates the user chose to retain.
 public struct CoveWorkspaceState: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 3
     public static let inboxColumnID = "inbox"
 
     public var schemaVersion: Int
@@ -181,6 +214,21 @@ public struct CoveWorkspaceState: Codable, Equatable, Sendable {
         }
     }
 
+    public mutating func observe(_ snapshots: [CoveSessionSnapshot]) {
+        let observed = snapshots.compactMap { snapshot -> (CoveSessionIdentity, String?)? in
+            guard CoveWorkspaceProjection.isWorkspaceMember(snapshot),
+                  let identity = snapshot.sessionIdentity
+            else { return nil }
+            return (identity, snapshot.parentSessionId)
+        }
+        ensureMembership(observed.map(\.0))
+        for (identity, parentSessionId) in observed {
+            mutateCard(identity) { card in
+                card.parentSessionId = parentSessionId
+            }
+        }
+    }
+
     public mutating func setAlias(
         _ alias: String?,
         for identity: CoveSessionIdentity
@@ -203,6 +251,42 @@ public struct CoveWorkspaceState: Codable, Equatable, Sendable {
         for identity: CoveSessionIdentity
     ) {
         mutateCard(identity) { $0.links = links }
+        normalizeArtifactOrder()
+    }
+
+    /// Stable internal identifiers for the Workspace-wide artifact sequence.
+    /// Link IDs are scoped to their owning task, so the owner is part of each
+    /// identifier.
+    public func artifactOrderIDs() -> [String] {
+        let ordered = legacyArtifactOrder()
+        return ordered.sorted { lhs, rhs in
+            switch (lhs.link.manualOrder, rhs.link.manualOrder) {
+            case let (left?, right?) where left != right:
+                return left < right
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            default:
+                return lhs.fallbackOrder < rhs.fallbackOrder
+            }
+        }.map(\.id)
+    }
+
+    /// Gives every persisted artifact a unique, contiguous Workspace-global
+    /// rank while preserving the current order whenever one already exists.
+    public mutating func normalizeArtifactOrder() {
+        applyArtifactOrder(artifactOrderIDs())
+    }
+
+    /// Restores a complete artifact sequence, preserving each link and owner.
+    /// Invalid or incomplete restores are ignored so Undo cannot discard data.
+    public mutating func restoreArtifactOrder(_ ids: [String]) {
+        let existing = artifactOrderIDs()
+        guard ids.count == existing.count, Set(ids) == Set(existing) else {
+            return
+        }
+        applyArtifactOrder(ids)
     }
 
     public mutating func assign(
@@ -232,6 +316,121 @@ public struct CoveWorkspaceState: Codable, Equatable, Sendable {
             mutation(&card)
             cards.append(card)
         }
+    }
+
+    private struct OrderedArtifact {
+        var id: String
+        var link: CoveWorkspaceLink
+        var fallbackOrder: Int
+    }
+
+    /// Schema v1/v2 had per-card link arrays only. Rebuild their closest
+    /// display order from the retained grid and same-origin parent metadata,
+    /// then append records that cannot be placed in that hierarchy.
+    private func legacyArtifactOrder() -> [OrderedArtifact] {
+        var cardsByIdentity = [CoveSessionIdentity: CoveWorkspaceCardState]()
+        for card in cards where cardsByIdentity[card.identity] == nil {
+            cardsByIdentity[card.identity] = card
+        }
+        let displayedIdentities = Set(gridOrder)
+        var claimedParents = Set<CoveSessionIdentity>()
+        var requestedParents = [CoveSessionIdentity: CoveSessionIdentity]()
+        for card in cards where requestedParents[card.identity] == nil {
+            guard let parentSessionId = card.parentSessionId else { continue }
+            claimedParents.insert(card.identity)
+            guard let parent = CoveSessionIdentity(
+                source: card.identity.source,
+                hostId: card.identity.remoteHostId,
+                sessionId: parentSessionId
+            ),
+                  parent != card.identity
+            else { continue }
+            requestedParents[card.identity] = parent
+        }
+        var parents: [CoveSessionIdentity: CoveSessionIdentity] = [:]
+        for (child, parent) in requestedParents
+        where displayedIdentities.contains(child)
+            && displayedIdentities.contains(parent)
+            && !createsArtifactCycle(
+                child: child,
+                parent: parent,
+                parents: requestedParents
+            ) {
+            parents[child] = parent
+        }
+        var children: [CoveSessionIdentity: [CoveSessionIdentity]] = [:]
+        for (child, parent) in parents {
+            children[parent, default: []].append(child)
+        }
+        for parent in children.keys {
+            children[parent]?.sort()
+        }
+        var hierarchy = [CoveSessionIdentity]()
+        var visited = Set<CoveSessionIdentity>()
+        for root in gridOrder where parents[root] == nil
+            && !claimedParents.contains(root)
+            && visited.insert(root).inserted {
+            var family = [root]
+            var index = 0
+            while index < family.count {
+                for child in children[family[index]] ?? []
+                where visited.insert(child).inserted {
+                    family.append(child)
+                }
+                index += 1
+            }
+            hierarchy.append(contentsOf: family)
+        }
+        for identity in cards.map(\.identity) where visited.insert(identity).inserted {
+            hierarchy.append(identity)
+        }
+        return hierarchy.enumerated().flatMap { hierarchyIndex, identity in
+            (cardsByIdentity[identity]?.links ?? []).enumerated().map {
+                linkIndex, link in
+                OrderedArtifact(
+                    id: Self.artifactOrderID(owner: identity, linkID: link.id),
+                    link: link,
+                    fallbackOrder: hierarchyIndex * (CoveWorkspaceLimits.linksPerCard + 1) + linkIndex
+                )
+            }
+        }
+    }
+
+    private mutating func applyArtifactOrder(_ ids: [String]) {
+        var ranks = [String: Int]()
+        for (index, id) in ids.enumerated() where ranks[id] == nil {
+            ranks[id] = index
+        }
+        for cardIndex in cards.indices {
+            for linkIndex in cards[cardIndex].links.indices {
+                let id = Self.artifactOrderID(
+                    owner: cards[cardIndex].identity,
+                    linkID: cards[cardIndex].links[linkIndex].id
+                )
+                cards[cardIndex].links[linkIndex].manualOrder = ranks[id]
+            }
+        }
+    }
+
+    private static func artifactOrderID(
+        owner: CoveSessionIdentity,
+        linkID: String
+    ) -> String {
+        "\(owner.id)\u{0}\(linkID)"
+    }
+
+    private func createsArtifactCycle(
+        child: CoveSessionIdentity,
+        parent: CoveSessionIdentity,
+        parents: [CoveSessionIdentity: CoveSessionIdentity]
+    ) -> Bool {
+        var cursor: CoveSessionIdentity? = parent
+        var visited = Set<CoveSessionIdentity>()
+        while let current = cursor, visited.insert(current).inserted {
+            if current == child { return true }
+            cursor = parents[current]
+        }
+        return cursor != nil
     }
 }
 
@@ -282,7 +481,7 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
-        let state = try decoder.decode(
+        var state = try decoder.decode(
             CoveWorkspaceState.self,
             from: Data(contentsOf: url)
         )
@@ -291,6 +490,12 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
                 found: state.schemaVersion,
                 supported: CoveWorkspaceState.currentSchemaVersion
             )
+        }
+        if state.schemaVersion == 1 || state.schemaVersion == 2 {
+            // v3 adds a global artifact rank. v1/v2 only had per-card arrays,
+            // so normalize their deterministic hierarchy order before saving.
+            state.normalizeArtifactOrder()
+            state.schemaVersion = CoveWorkspaceState.currentSchemaVersion
         }
         try Self.validate(state)
         try CoveSecureFilesystem.enforcePermissions(
@@ -388,9 +593,17 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
         guard state.assignments.allSatisfy({ columnIDs.contains($0.columnId) }) else {
             throw CovePersistenceError.invalidWorkspace(field: "assignments.columnId")
         }
+        var artifactOrders = [Int]()
         for card in state.cards {
             if let alias = card.alias {
                 try validateText(alias, field: "cards.alias", max: CoveWorkspaceLimits.aliasBytes)
+            }
+            if let parentSessionId = card.parentSessionId {
+                try validateText(
+                    parentSessionId,
+                    field: "cards.parentSessionId",
+                    max: CoveWorkspaceLimits.opaqueIDBytes
+                )
             }
             guard card.tags.count <= CoveWorkspaceLimits.tagsPerCard,
                   card.links.count <= CoveWorkspaceLimits.linksPerCard
@@ -403,16 +616,15 @@ public struct CoveWorkspaceFileStorage: CoveWorkspaceStorage {
             for link in card.links {
                 try validateText(link.id, field: "cards.links.id", max: CoveWorkspaceLimits.opaqueIDBytes)
                 try validateText(link.label, field: "cards.links.label", max: CoveWorkspaceLimits.linkLabelBytes)
-                let absolute = link.url.absoluteString
-                guard absolute.utf8.count <= CoveWorkspaceLimits.linkURLBytes,
-                      let scheme = link.url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https",
-                      link.url.host != nil,
-                      link.url.user == nil,
-                      link.url.password == nil
+                guard let manualOrder = link.manualOrder, manualOrder >= 0 else {
+                    throw CovePersistenceError.invalidWorkspace(field: "cards.links.manualOrder")
+                }
+                artifactOrders.append(manualOrder)
+                guard CoveWorkspaceArtifactPolicy.canonicalPersistentURL(link.url) != nil
                 else { throw CovePersistenceError.invalidWorkspace(field: "cards.links.url") }
             }
         }
+        try validateUnique(artifactOrders, field: "cards.links.manualOrder")
     }
 
     private static func validateIdentities(
@@ -504,12 +716,16 @@ public struct CoveWorkspaceItem: Equatable, Sendable, Identifiable {
     public var links: [CoveWorkspaceLink]
     public var columnID: String
     public var isPinned: Bool
+    public var isRetainedOnly: Bool
     public var descendantAttentionCount: Int
     public var children: [CoveSessionIdentity]
+    public var latestOutput: String?
+    public var latestOutputIdentity: CoveSessionIdentity?
+    public var latestOutputTitle: String?
 
     public var id: CoveSessionIdentity { identity }
     public var displayName: String { alias ?? snapshot.title }
-    public var isControllable: Bool { snapshot.canAcceptThreadControl }
+    public var isControllable: Bool { !isRetainedOnly && snapshot.canAcceptThreadControl }
 }
 
 /// Pure, origin-safe dashboard membership and hierarchy projection.
@@ -517,20 +733,23 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
     public var items: [CoveWorkspaceItem]
     public var roots: [CoveSessionIdentity]
     public var unattachedAgents: [CoveSessionIdentity]
+    private var owners: [CoveSessionIdentity: CoveSessionIdentity]
 
     public init(
         snapshots: [CoveSessionSnapshot],
         workspace: CoveWorkspaceState,
         pinnedIdentities: Set<CoveSessionIdentity> = [],
+        dismissedIdentities: Set<CoveSessionIdentity> = [],
         query: String = "",
         filter: CoveWorkspaceFilter = .init(),
         sort: CoveWorkspaceSort = .manual,
         redactSensitiveContent: Bool = false
     ) {
-        let latest = Dictionary(
+        var latest = Dictionary(
             snapshots.compactMap { snapshot -> (CoveSessionIdentity, CoveSessionSnapshot)? in
                 guard let identity = snapshot.sessionIdentity,
-                      Self.isWorkspaceMember(snapshot)
+                      workspace.gridOrder.contains(identity)
+                        || Self.isWorkspaceMember(snapshot)
                 else { return nil }
                 return (identity, snapshot)
             },
@@ -538,14 +757,34 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 lhs.timestamp >= rhs.timestamp ? lhs : rhs
             }
         )
+        var retained = Set<CoveSessionIdentity>()
+        for identity in workspace.gridOrder where latest[identity] == nil {
+            latest[identity] = Self.retainedSnapshot(
+                identity,
+                parentSessionId: workspace.card(for: identity)?.parentSessionId
+            )
+            retained.insert(identity)
+        }
         let identities = Set(latest.keys)
-        let requestedParent = Dictionary(
-            uniqueKeysWithValues: latest.compactMap { identity, snapshot in
-                snapshot.parentIdentity.map { (identity, $0) }
+        var unattached = Set(latest.compactMap { identity, snapshot in
+            snapshot.parentProvenanceConflict == true ? identity : nil
+        })
+        let requestedParent: [CoveSessionIdentity: CoveSessionIdentity] = Dictionary(
+            uniqueKeysWithValues: latest.compactMap { identity, snapshot -> (CoveSessionIdentity, CoveSessionIdentity)? in
+                guard snapshot.parentProvenanceConflict != true else { return nil }
+                let parentSessionId = snapshot.parentSessionId
+                    ?? workspace.card(for: identity)?.parentSessionId
+                guard let parentSessionId,
+                      let parent = CoveSessionIdentity(
+                        source: identity.source,
+                        hostId: identity.remoteHostId,
+                        sessionId: parentSessionId
+                      )
+                else { return nil }
+                return (identity, parent)
             }
         )
         var validParent: [CoveSessionIdentity: CoveSessionIdentity] = [:]
-        var unattached = Set<CoveSessionIdentity>()
         for (child, parent) in requestedParent {
             guard identities.contains(parent), parent != child,
                   !Self.createsCycle(child: child, parent: parent, parents: requestedParent)
@@ -555,18 +794,76 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
             }
             validParent[child] = parent
         }
+        func owner(of identity: CoveSessionIdentity) -> CoveSessionIdentity {
+            var cursor = identity
+            var visited = Set<CoveSessionIdentity>()
+            while let parent = validParent[cursor], visited.insert(cursor).inserted {
+                cursor = parent
+            }
+            return cursor
+        }
+        let ownerByIdentity = Dictionary(
+            uniqueKeysWithValues: identities.map { ($0, owner(of: $0)) }
+        )
+        func isSuppressed(_ identity: CoveSessionIdentity) -> Bool {
+            var cursor: CoveSessionIdentity? = identity
+            var visited = Set<CoveSessionIdentity>()
+            while let current = cursor, visited.insert(current).inserted {
+                if dismissedIdentities.contains(current) { return true }
+                cursor = validParent[current]
+            }
+            return false
+        }
+        let visibleIdentities = identities.filter { !isSuppressed($0) }
+        let visibleSet = Set(visibleIdentities)
         var children: [CoveSessionIdentity: [CoveSessionIdentity]] = [:]
-        for (child, parent) in validParent {
+        for (child, parent) in validParent
+        where visibleSet.contains(child) && visibleSet.contains(parent) {
             children[parent, default: []].append(child)
         }
-        let attention = Self.descendantAttention(latest: latest, children: children)
+        let visibleLatest = Dictionary(
+            uniqueKeysWithValues: visibleIdentities.compactMap { identity in
+                latest[identity].map { (identity, $0) }
+            }
+        )
+        let attention = Self.descendantAttention(latest: visibleLatest, children: children)
+        var outputByOwner: [CoveSessionIdentity: (
+            identity: CoveSessionIdentity,
+            output: String,
+            timestamp: Date,
+            title: String
+        )] = [:]
+        if !redactSensitiveContent {
+            for (identity, snapshot) in visibleLatest {
+                guard let owner = ownerByIdentity[identity],
+                      let output = snapshot.latestOutput?.trimmingCharacters(
+                          in: .whitespacesAndNewlines
+                      ),
+                      !output.isEmpty else { continue }
+                let current = outputByOwner[owner]
+                if let current,
+                   snapshot.timestamp < current.timestamp
+                    || (snapshot.timestamp == current.timestamp
+                        && identity >= current.identity) {
+                    continue
+                }
+                outputByOwner[owner] = (
+                    identity,
+                    output,
+                    snapshot.timestamp,
+                    workspace.card(for: identity)?.alias ?? snapshot.title
+                )
+            }
+        }
         let columnNames = Dictionary(uniqueKeysWithValues: workspace.columns.map { ($0.id, $0.name) })
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let order = Dictionary(uniqueKeysWithValues: workspace.gridOrder.enumerated().map { ($1, $0) })
-        var projected = latest.compactMap { identity, snapshot -> CoveWorkspaceItem? in
+        var projected = visibleLatest.compactMap { identity, snapshot -> CoveWorkspaceItem? in
             let card = workspace.card(for: identity)
             let columnID = workspace.columnID(for: identity)
-            let item = CoveWorkspaceItem(
+            let output = ownerByIdentity[identity] == identity
+                ? outputByOwner[identity] : nil
+            return CoveWorkspaceItem(
                 identity: identity,
                 snapshot: snapshot,
                 alias: card?.alias,
@@ -574,17 +871,13 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 links: card?.links ?? [],
                 columnID: columnID,
                 isPinned: pinnedIdentities.contains(identity),
+                isRetainedOnly: retained.contains(identity),
                 descendantAttentionCount: attention[identity] ?? 0,
-                children: (children[identity] ?? []).sorted()
+                children: (children[identity] ?? []).sorted(),
+                latestOutput: output?.output,
+                latestOutputIdentity: output?.identity,
+                latestOutputTitle: output?.title
             )
-            guard Self.matches(
-                item,
-                query: normalizedQuery,
-                filter: filter,
-                columnName: columnNames[columnID],
-                redact: redactSensitiveContent
-            ) else { return nil }
-            return item
         }
         projected.sort { lhs, rhs in
             switch sort {
@@ -616,29 +909,65 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 return left == right ? lhs.identity < rhs.identity : left < right
             }
         }
-        let visible = Set(projected.map(\.identity))
-        self.items = projected
-        self.roots = projected.map(\.identity).filter {
-            validParent[$0].map { !visible.contains($0) } ?? true
+        let itemsByIdentity = Dictionary(
+            uniqueKeysWithValues: projected.map { ($0.identity, $0) }
+        )
+        let rootCandidates = projected.map(\.identity).filter {
+            validParent[$0].map { !visibleSet.contains($0) } ?? true
         }
-        self.unattachedAgents = unattached.intersection(visible).sorted()
+        let visibleRoots = rootCandidates.filter { root in
+            projected.contains { item in
+                ownerByIdentity[item.identity] == root
+                    && Self.matches(
+                        item,
+                        query: normalizedQuery,
+                        filter: filter,
+                        columnName: columnNames[item.columnID],
+                        redact: redactSensitiveContent
+                    )
+            }
+        }
+        self.items = projected
+        self.roots = visibleRoots
+        self.unattachedAgents = unattached.intersection(visibleSet).sorted()
+        self.owners = ownerByIdentity.filter { itemsByIdentity[$0.key] != nil }
     }
 
     public func item(_ identity: CoveSessionIdentity) -> CoveWorkspaceItem? {
         items.first { $0.identity == identity }
     }
 
+    public func owningTaskIdentity(
+        for identity: CoveSessionIdentity
+    ) -> CoveSessionIdentity? {
+        owners[identity]
+    }
+
     public static func isWorkspaceMember(_ snapshot: CoveSessionSnapshot) -> Bool {
         switch snapshot.liveness {
         case .loaded, .live:
             return true
-        case .closed:
-            return snapshot.unread
-                && (snapshot.status == .failed || snapshot.status == .interrupted)
-        case nil:
-            return snapshot.unread
-                && (snapshot.status == .failed || snapshot.status == .interrupted)
+        case .closed, nil:
+            return false
         }
+    }
+
+    private static func retainedSnapshot(
+        _ identity: CoveSessionIdentity,
+        parentSessionId: String?
+    ) -> CoveSessionSnapshot {
+        CoveSessionSnapshot(
+            snapshotId: identity.sessionId,
+            status: .hidden,
+            priority: 0,
+            title: "Codex task",
+            timestamp: .distantPast,
+            sessionId: identity.sessionId,
+            source: identity.source,
+            hostId: identity.remoteHostId,
+            parentSessionId: parentSessionId,
+            liveness: .closed
+        )
     }
 
     private static func createsCycle(
@@ -680,7 +1009,10 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
         redact: Bool
     ) -> Bool {
         let snapshot = item.snapshot
-        if !filter.statuses.isEmpty && !filter.statuses.contains(snapshot.status) { return false }
+        if !filter.statuses.isEmpty
+            && (item.isRetainedOnly || !filter.statuses.contains(snapshot.status)) {
+            return false
+        }
         if filter.unreadOnly && !snapshot.unread { return false }
         if filter.pinnedOnly && !item.isPinned { return false }
         if filter.controllableOnly && !item.isControllable { return false }
@@ -694,7 +1026,7 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
             if !filter.tags.isEmpty && !filter.tags.map({ $0.lowercased() }).allSatisfy(itemTags.contains) { return false }
         }
         guard !query.isEmpty else { return true }
-        var values = [snapshot.status.rawValue]
+        var values = item.isRetainedOnly ? ["retained"] : [snapshot.status.rawValue]
         if !redact {
             values.append(contentsOf: [
                 item.identity.source.rawValue,
@@ -703,7 +1035,9 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 columnName ?? "",
                 item.displayName,
             ] + item.tags)
-            values.append(contentsOf: item.links.flatMap { [$0.label, $0.url.host ?? ""] })
+            values.append(contentsOf: item.links.flatMap {
+                [$0.label, $0.url.host ?? $0.url.lastPathComponent]
+            })
         }
         return values.contains { $0.lowercased().contains(query) }
     }
@@ -778,6 +1112,9 @@ public extension CoveSessionSnapshot {
     /// steer without guessing an active turn identifier.
     var canAcceptThreadControl: Bool {
         guard controlRoute != nil else { return false }
+        if status == .waitingApproval || status == .waitingInput {
+            return false
+        }
         if activeTurnId != nil { return true }
         switch status {
         case .working, .active, .waitingApproval, .waitingInput, .blocked,

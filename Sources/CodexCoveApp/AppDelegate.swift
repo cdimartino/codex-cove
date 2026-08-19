@@ -160,18 +160,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     ?? CoveStateFilesystem.workspaceURL()
             ),
             initialState: uiTestConfiguration == nil
-                ? nil : CoveWorkspaceState(),
-            writesEnabled: uiTestConfiguration == nil
+                ? nil : uiTestConfiguration?.initialWorkspaceState,
+            writesEnabled: uiTestConfiguration == nil,
+            openArtifactURL: uiTestConfiguration == nil
+                ? { NSWorkspace.shared.open($0) }
+                : { _ in true }
         )
+        uiTestConfiguration?.writeMarker("0", named: "jump-count.txt")
+        uiTestConfiguration?.writeMarker("", named: "thread-control.txt")
+        if let uiTestConfiguration,
+           uiTestConfiguration.fixture == .workspaceFavicon
+            || uiTestConfiguration.fixture == .workspaceFaviconPrivacy {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [CoveUITestFaviconURLProtocol.self]
+            let loader = CoveFaviconLoader(configuration: configuration)
+            let stateURL = uiTestConfiguration.stateDirectory
+                .appendingPathComponent("favicon-states.txt")
+            try? Data().write(to: stateURL, options: .atomic)
+            loader.onPresentation = { [weak store] url, context, loaded in
+                store?.recordFixtureFavicon(url, context: context, loaded: loaded)
+                if let states = store?.fixtureRecordedFaviconStates {
+                    try? Data(states.utf8).write(to: stateURL, options: .atomic)
+                }
+            }
+            CoveFaviconLoader.shared = loader
+        }
         self.overlayController = CoveOverlayController()
         self.broker = CoveUnixSocketBroker(socketPath: CoveDefaultPaths.socketPath)
         self.shortcuts = CoveKeyboardShortcutBroker()
         self.terminalJumpService = uiTestConfiguration == nil
             ? CoveSystemTerminalJumpService()
             : CoveUITestTerminalJumpService(
-                failsJumps: uiTestConfiguration?.fixture == .openFailure
+                failsJumps: uiTestConfiguration?.fixture == .openFailure,
+                failingSessionIDs: uiTestConfiguration?.fixture
+                    == .workspaceAgentOpenFallback
+                    ? ["fixture-open-child"] : []
             ) { [weak store] in
-                store?.recordFixtureJump()
+                let count = store?.recordFixtureJump() ?? 0
+                uiTestConfiguration?.writeMarker(
+                    String(count),
+                    named: "jump-count.txt"
+                )
             }
         self.metadataBridge = CoveMetadataBridge()
         self.dismissedSessionStore = CoveDismissedSessionStore(
@@ -200,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             Task { @MainActor in
                 guard let self else { return }
                 if self.completedInitialLaunch {
-                    self.showCove()
+                    self.showWorkspace()
                 } else {
                     self.revealRequestedDuringLaunch = true
                 }
@@ -248,6 +277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     message: "The exact originating Codex location is not currently available."
                 )
         }
+        store.onCanJumpToSession = { [weak self] snapshot in
+            self?.terminalJumpService.canJump(to: snapshot) == true
+        }
         store.onOpenDirectRequest = { [weak self] snapshot in
             self?.terminalJumpService.jump(to: snapshot)
                 ?? CoveJumpResult(
@@ -292,8 +324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         overlayController.attach(
             store: store,
-            onOpenWorkspace: { [weak self] in
-                self?.showWorkspace()
+            onOpenWorkspace: { [weak self] identity in
+                self?.showWorkspace(selecting: identity, attention: identity)
             },
             onOpenSettings: { [weak self] in
                 self?.showSettings()
@@ -307,6 +339,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         store.$state
             .sink { [weak self] state in
                 self?.overlayController.update(with: state)
+            }
+            .store(in: &cancellables)
+
+        store.$state
+            .map(\.session.snapshots)
+            .removeDuplicates()
+            .sink { [weak self] snapshots in
+                self?.workspaceStore.reconcileMembership(with: snapshots)
             }
             .store(in: &cancellables)
 
@@ -333,9 +373,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // use applicationShouldHandleReopen below.
             overlayController.show()
         } else {
-            // Direct launch is deliberate interaction: reveal Cove long
-            // enough to be discoverable, then honor normal collapse/hide.
-            showCove()
+            // Direct launch is deliberate interaction. Workspace is the
+            // primary task surface; the island remains an ambient companion.
+            if uiTestConfiguration == nil
+                || uiTestConfiguration?.fixture == .workspacePrimary {
+                showWorkspace()
+            } else {
+                showCove()
+            }
         }
         completedInitialLaunch = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
@@ -347,7 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        showCove()
+        showWorkspace()
         return false
     }
 
@@ -455,6 +500,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func showWorkspace() {
+        showWorkspace(selecting: nil, attention: nil)
+    }
+
+    func showWorkspace(
+        selecting identity: CoveSessionIdentity?,
+        attention: CoveSessionIdentity?
+    ) {
+        workspaceStore.reconcileMembership(with: store.state.session.snapshots)
+        if identity != nil || attention != nil {
+            workspaceStore.select(
+                identity ?? attention,
+                attention: attention
+            )
+        }
         if let controller = workspaceWindowController,
            let window = controller.window {
             presentWorkspaceWindow(window, controller: controller)
@@ -623,7 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         withReplyEvent replyEvent: NSAppleEventDescriptor
     ) {
         guard completedInitialLaunch else { return }
-        showCove()
+        showWorkspace()
     }
 
     func collapseToMenuBar() {
@@ -744,13 +803,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             // Codex, login-item, notification, sound, broker, relay, or
             // metadata integration. Their state and decision channel exist
             // only inside the per-test temporary directory/process.
-            workspaceStore.onControl = { request in
-                .accepted(
+            workspaceStore.onControl = { [weak self] request, _ in
+                await MainActor.run {
+                    guard let self else { return }
+                    let value = self.store.recordFixtureThreadControl(request)
+                    self.uiTestConfiguration?.writeMarker(
+                        value,
+                        named: "thread-control.txt"
+                    )
+                }
+                return .accepted(
                     turnId: request.operation == .start
                         ? "fixture-started-turn" : request.expectedTurnId
                 )
             }
             store.dispatch(.boot)
+            if uiTestConfiguration.fixture == .workspacePrimary {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    self?.store.dispatch(.receivedEnvelope(.init(
+                        eventId: "fixture-live-output-delta",
+                        kind: .appServer,
+                        timestamp: Date(),
+                        source: .localCli,
+                        sessionId: "fixture-agent-active",
+                        payload: .object([
+                            "method": .string("item/agentMessage/delta"),
+                            "params": .object([
+                                "delta": .string(" — live update arrived"),
+                            ]),
+                        ])
+                    )))
+                }
+            }
             if uiTestConfiguration.fixture.settingsPaneIdentifier != nil {
                 DispatchQueue.main.async { [weak self] in
                     self?.showSettings()
@@ -788,8 +872,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         startUsageHydration()
         startDesktopThreadHydration(restoredMetadata: restoredMetadata)
 
-        shortcuts.onToggleOverlay = { [weak self] in
-            self?.toggleOverlay()
+        shortcuts.onOpenWorkspace = { [weak self] in
+            self?.showWorkspace()
         }
         shortcuts.onToggleExpanded = { [weak self] in
             guard let self else { return }
@@ -838,7 +922,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 hostID: hostID,
                 in: self.store.state.session.snapshots
             ) {
-                _ = self.terminalJumpService.jump(to: snapshot)
+                self.showWorkspace(
+                    selecting: snapshot.sessionIdentity,
+                    attention: snapshot.sessionIdentity
+                )
+            } else if let source,
+                      let identity = CoveSessionIdentity(
+                        source: source,
+                        hostId: hostID,
+                        sessionId: sessionID
+                      ) {
+                self.showWorkspace(selecting: identity, attention: identity)
+            } else {
+                self.showWorkspace()
             }
             if let turnID, let source {
                 service.resolveAttention(
@@ -1030,6 +1126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
               !launchId.isEmpty,
               var payload = incoming.payload.objectValue
         else { return incoming }
+
+        if payload["controlRoute"]?.stringValue
+            == CoveThreadControlRoute.localAppServer.rawValue {
+            return incoming
+        }
 
         if payload["liveness"]?.stringValue == CoveSessionLiveness.closed.rawValue {
             routedThreadControlRoutes.removeValue(forKey: identity)
@@ -1318,7 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.6.1"
+                as? String ?? "0.9.0"
         ) else {
             return
         }
@@ -1335,7 +1436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ) {
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.6.1"
+                as? String ?? "0.9.0"
         ) else {
             return
         }
@@ -1351,30 +1452,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         controlClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in self?.ingest(event) }
         }
-        workspaceStore.onControl = { [weak self] request in
+        workspaceStore.onControl = { [weak self] request, route in
             guard let self else { return .rejected(.unavailable) }
             return await self.sendThreadControl(
                 request,
+                route: route,
                 desktopClient: controlClient
             )
         }
         workspaceStore.onReconcileRequested = { [weak self] in
             self?.desktopThreadHydrator?.reconcileLoadedDesktopThreads()
         }
+        workspaceStore.onTargetRefreshRequested = { [weak self] identity in
+            guard let self else { return }
+            switch identity.source {
+            case .codexDesktop:
+                hydrator.hydrate(threadID: identity.sessionId)
+            case .localCli:
+                Task { [weak self] in
+                    let snapshot = await controlClient.inspectLocalTarget(identity)
+                    guard let self else { return }
+                    if let snapshot {
+                        self.store.dispatch(.receivedSnapshot(snapshot))
+                    }
+                    self.workspaceStore.finishControlRefresh(for: identity)
+                }
+            case .remoteCli:
+                self.workspaceStore.finishControlRefresh(for: identity)
+            }
+        }
         hydrator.start(
             onUpdate: { [weak self] result, threadID in
                 guard let self else { return }
                 switch result {
-                case let .available(snapshot):
-                    self.applyDesktopHydration(snapshot)
+                    case let .available(snapshot):
+                        self.applyDesktopHydration(snapshot)
                 case .unavailable(.hiddenApprovalReviewThread):
                     self.purgeInternalSession(
                         threadID,
                         source: .codexDesktop,
                         hostID: nil
                     )
-                case let .unavailable(failure):
-                    NSLog(
+                    case let .unavailable(failure):
+                        if let identity = CoveSessionIdentity(
+                            source: .codexDesktop,
+                            hostId: nil,
+                            sessionId: threadID
+                        ) {
+                            self.workspaceStore.finishControlRefresh(for: identity)
+                        }
+                        NSLog(
                         "Codex Cove: Desktop thread hydration unavailable for \(threadID): \(failure.rawValue)"
                     )
                 }
@@ -1398,6 +1525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 }
             }
         )
+        workspaceStore.refreshSelectedControlTarget()
         hydrator.reconcileLoadedDesktopThreads()
         // Validate only records already known to have originated in Desktop.
         // Discovery owns unknown IDs; CLI and remote records retain their
@@ -1411,42 +1539,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
     private func sendThreadControl(
         _ request: CoveThreadControlRequest,
+        route: CoveThreadControlRoute,
         desktopClient: any CoveThreadControlling
     ) async -> CoveThreadControlResult {
-        switch request.target.source {
-        case .codexDesktop:
+        switch route {
+        case .desktop:
+            guard request.target.source == .codexDesktop else {
+                return .rejected(.wrongOrigin)
+            }
             return await desktopClient.send(request)
-        case .localCli:
-            guard let route = routedThreadControlRoutes[request.target],
-                  route.route == .routedLocal
+        case .localAppServer:
+            guard request.target.source == .localCli else {
+                return .rejected(.wrongOrigin)
+            }
+            return await desktopClient.send(request)
+        case .routedLocal:
+            guard request.target.source == .localCli,
+                  let liveRoute = routedThreadControlRoutes[request.target],
+                  liveRoute.route == .routedLocal
             else { return .rejected(.staleRoute) }
             return await CoveThreadControlSocketClient().send(
                 request,
-                launchId: route.launchId,
-                to: route.socketPath
+                launchId: liveRoute.launchId,
+                to: liveRoute.socketPath
             )
-        case .remoteCli:
-            guard let route = routedThreadControlRoutes[request.target],
-                  route.route == .routedRemote
+        case .routedRemote:
+            guard request.target.source == .remoteCli,
+                  let liveRoute = routedThreadControlRoutes[request.target],
+                  liveRoute.route == .routedRemote
             else { return .rejected(.staleRoute) }
             return await remoteRelayManager.sendThreadControl(
                 request,
-                launchId: route.launchId,
-                routePath: route.socketPath
+                launchId: liveRoute.launchId,
+                routePath: liveRoute.socketPath
             )
         }
     }
 
     private func hydrateDesktopThreadIfNeeded(from event: CoveWireEnvelope) {
+        let sessionID = event.sessionSnapshot()?.sessionId ?? event.sessionId
         guard event.source == .codexDesktop,
               event.kind != .sessionSnapshot,
-              event.sessionId != "unknown",
-              event.sessionId != "pending",
-              CoveDesktopThreadClient.isSafeThreadIdentifier(event.sessionId)
+              sessionID != "unknown",
+              sessionID != "pending",
+              CoveDesktopThreadClient.isSafeThreadIdentifier(sessionID)
         else {
             return
         }
-        desktopThreadHydrator?.hydrate(threadID: event.sessionId)
+        desktopThreadHydrator?.hydrate(threadID: sessionID)
     }
 
     private func applyDesktopHydration(_ snapshot: CoveSessionSnapshot) {
@@ -1469,6 +1609,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             "unread": .bool(snapshot.unread),
             "parentThreadId": snapshot.parentSessionId.map(CoveJSONValue.string)
                 ?? .null,
+            "parentProvenanceConflict": .bool(
+                snapshot.parentProvenanceConflict == true
+            ),
             "liveness": snapshot.liveness.map { .string($0.rawValue) }
                 ?? .null,
             "activeTurnId": snapshot.activeTurnId.map(CoveJSONValue.string)
@@ -1493,6 +1636,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         terminalJumpService.observe(envelope)
         store.dispatch(.receivedEnvelope(envelope))
         metadataBridge.record(envelope, state: store.state)
+        if let identity = snapshot.sessionIdentity {
+            workspaceStore.finishControlRefresh(for: identity)
+        }
     }
 
     private func applyDesktopReconciliation(
@@ -1741,14 +1887,18 @@ private struct CoveDismissedSessionStore {
             throw CocoaError(.fileReadInvalidFileName)
         }
         let data = try Data(contentsOf: url)
-        guard data.count <= 256 * 1_024 else {
+        guard data.count <= CoveWorkspaceLimits.fileBytes else {
             throw CocoaError(.fileReadCorruptFile)
         }
         let document = try JSONDecoder().decode(Document.self, from: data)
         guard document.schemaVersion == 1 || document.schemaVersion == 2 else {
             throw CocoaError(.fileReadCorruptFile)
         }
-        return Set(document.sessionIDs.prefix(1_000).filter(isValid))
+        return Set(
+            document.sessionIDs
+                .prefix(CoveWorkspaceLimits.storedIdentities)
+                .filter(isValid)
+        )
     }
 
     func save(_ sessionIDs: Set<String>) throws {
@@ -1764,7 +1914,11 @@ private struct CoveDismissedSessionStore {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(document).write(to: url, options: .atomic)
+        let data = try encoder.encode(document)
+        guard data.count <= CoveWorkspaceLimits.fileBytes else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: url.path

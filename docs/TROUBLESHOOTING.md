@@ -348,8 +348,12 @@ Frequent causes:
   fix merely to bypass the gate; rerun `make deps` and the relevant tests.
 - remote targets fail: install rustup, Zig, and `cargo-zigbuild`, and ensure the
   same rustup toolchain supplies both Cargo and rustc.
-- `make ui-test` refuses to start: unlock the macOS console and use full Xcode
-  26.6 or newer.
+- `make ui-test` refuses to start: quit Codex/ChatGPT (or use a separate
+  unlocked macOS VM/Mac), unlock the macOS console, and use full Xcode
+  26.6 or newer. If Codex must stay open on the validated Xcode 26.6 build
+  `17F113`, use `make ui-test-legacy-ax`; it is an explicit private,
+  runner-wide legacy Accessibility fallback rather than a supported per-app
+  exclusion, and it refuses every other Xcode build.
 - Xcode project membership changed: regenerate only after intentional edits with
   `xcodegen generate --spec XcodeProject.yml --project .` and review the diff.
 
