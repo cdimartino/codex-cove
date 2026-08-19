@@ -57,7 +57,7 @@ public struct CoveDesktopThreadHydrationConfiguration: Equatable, Sendable {
         realCodexURL: URL,
         requestTimeout: TimeInterval = defaultRequestTimeout,
         maximumLineBytes: Int = defaultMaximumLineBytes,
-        clientVersion: String = "0.8.0"
+        clientVersion: String = "0.8.1"
     ) {
         self.realCodexURL = realCodexURL
         self.requestTimeout = min(30, max(0.25, requestTimeout))
@@ -68,7 +68,7 @@ public struct CoveDesktopThreadHydrationConfiguration: Equatable, Sendable {
     public static func installed(
         configurationURL: URL = defaultInstalledConfigurationURL(),
         requestTimeout: TimeInterval = defaultRequestTimeout,
-        clientVersion: String = "0.8.0"
+        clientVersion: String = "0.8.1"
     ) throws -> Self {
         struct InstalledHelperConfiguration: Decodable {
             var realCodex: String?
