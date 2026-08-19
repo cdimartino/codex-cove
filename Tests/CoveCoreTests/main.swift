@@ -2014,6 +2014,8 @@ struct CoveCoreSmokeTests {
         CoveReducer.reduce(&state, .setCollapsedWidth(210))
         CoveReducer.reduce(&state, .setTextScale(1.5))
         CoveReducer.reduce(&state, .setWorkspaceAppearance(.dark))
+        CoveReducer.reduce(&state, .setShowWorkspaceCardResidents(false))
+        CoveReducer.reduce(&state, .setAnimateWorkspaceCardResidents(false))
         CoveReducer.reduce(&state, .setSquareTopCorners(false))
         CoveReducer.reduce(
             &state,
@@ -2033,6 +2035,8 @@ struct CoveCoreSmokeTests {
         precondition(state.settings.collapsedWidth == 210)
         precondition(state.settings.textScale == 1.5)
         precondition(state.settings.workspaceAppearance == .dark)
+        precondition(!state.settings.showWorkspaceCardResidents)
+        precondition(!state.settings.animateWorkspaceCardResidents)
         precondition(!state.settings.squareTopCorners)
         precondition(
             state.settings.queueSectionOrder
@@ -2073,6 +2077,8 @@ struct CoveCoreSmokeTests {
         precondition(!settings.showTokenMetrics)
         precondition(settings.residentSet == .dungeonAndDragons)
         precondition(settings.workspaceAppearance == .system)
+        precondition(settings.showWorkspaceCardResidents)
+        precondition(settings.animateWorkspaceCardResidents)
 
         let encodedSettings = try JSONEncoder().encode(state.settings)
         let decodedSettings = try JSONDecoder().decode(
@@ -2080,6 +2086,8 @@ struct CoveCoreSmokeTests {
             from: encodedSettings
         )
         precondition(decodedSettings.workspaceAppearance == .dark)
+        precondition(!decodedSettings.showWorkspaceCardResidents)
+        precondition(!decodedSettings.animateWorkspaceCardResidents)
     }
 
     static func testDesktopThreadHydrationParsing() throws {
@@ -3369,6 +3377,79 @@ struct CoveCoreSmokeTests {
         }
         precondition(snapshot?.latestOutput == "Finished the requested work.")
         precondition(snapshot?.title == "Codex task")
+
+        func appServer(
+            _ method: String,
+            id: String,
+            timestamp: TimeInterval,
+            params: [String: CoveJSONValue]
+        ) -> CoveWireEnvelope {
+            CoveWireEnvelope(
+                eventId: id,
+                kind: .appServer,
+                timestamp: Date(timeIntervalSince1970: timestamp),
+                source: .localCli,
+                sessionId: "output-session",
+                payload: .object([
+                    "method": .string(method),
+                    "params": .object(params),
+                ])
+            )
+        }
+
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(appServer(
+                "item/started",
+                id: "output-started",
+                timestamp: 12,
+                params: ["item": .object(["type": .string("agentMessage")])]
+            ))
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput == nil)
+        for (index, delta) in ["Streaming ", "output"].enumerated() {
+            CoveReducer.reduce(
+                &state,
+                .receivedEnvelope(appServer(
+                    "item/agentMessage/delta",
+                    id: "output-delta-\(index)",
+                    timestamp: 13 + Double(index),
+                    params: ["delta": .string(delta)]
+                ))
+            )
+        }
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput == "Streaming output")
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(appServer(
+                "item/agentMessage/delta",
+                id: "output-bounded",
+                timestamp: 15,
+                params: ["delta": .string(String(repeating: "x", count: 4_100))]
+            ))
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput?.count == 4_000)
+        CoveReducer.reduce(
+            &state,
+            .receivedEnvelope(appServer(
+                "item/completed",
+                id: "output-completed",
+                timestamp: 16,
+                params: ["item": .object([
+                    "type": .string("agentMessage"),
+                    "text": .string("Authoritative final output"),
+                ])]
+            ))
+        )
+        precondition(state.session.snapshots.first {
+            $0.sessionId == "output-session"
+        }?.latestOutput == "Authoritative final output")
     }
 
     static func testSnapshotOriginCollisionFailsClosed() throws {
@@ -5051,14 +5132,17 @@ struct CoveCoreSmokeTests {
             _ identity: CoveSessionIdentity,
             parent: String? = nil,
             status: CoveSessionStatus = .idle,
-            liveness: CoveSessionLiveness = .loaded
+            liveness: CoveSessionLiveness = .loaded,
+            latestOutput: String? = nil,
+            activityOffset: TimeInterval = 0
         ) -> CoveSessionSnapshot {
             .init(
                 snapshotId: identity.sessionId,
                 status: status,
                 priority: status == .waitingInput ? 95 : 5,
                 title: identity.sessionId,
-                timestamp: now,
+                latestOutput: latestOutput,
+                timestamp: now.addingTimeInterval(activityOffset),
                 sessionId: identity.sessionId,
                 source: identity.source,
                 hostId: identity.remoteHostId,
@@ -5090,10 +5174,20 @@ struct CoveCoreSmokeTests {
         var conflictingParent = snapshot(conflicted)
         conflictingParent.parentProvenanceConflict = true
         let snapshots = [
-            snapshot(root),
-            snapshot(child, parent: root.sessionId),
+            snapshot(root, latestOutput: "Root output"),
+            snapshot(
+                child,
+                parent: root.sessionId,
+                latestOutput: "Fresh child output",
+                activityOffset: 2
+            ),
             unreadGrandchild,
-            snapshot(orphan, parent: "missing"),
+            snapshot(
+                orphan,
+                parent: "missing",
+                latestOutput: "Unrelated orphan output",
+                activityOffset: 3
+            ),
             conflictingParent,
             snapshot(cycleA, parent: cycleB.sessionId),
             snapshot(cycleB, parent: cycleA.sessionId),
@@ -5119,6 +5213,10 @@ struct CoveCoreSmokeTests {
                 == [orphan, conflicted, cycleA, cycleB]
         )
         precondition(complete.item(root)?.children == [child])
+        precondition(complete.item(root)?.latestOutput == "Fresh child output")
+        precondition(complete.item(root)?.latestOutputIdentity == child)
+        precondition(complete.item(root)?.latestOutputTitle == child.sessionId)
+        precondition(complete.item(orphan)?.latestOutput == "Unrelated orphan output")
         precondition(complete.owningTaskIdentity(for: conflicted) == conflicted)
         precondition(complete.item(sameRawOtherOrigin)?.children.isEmpty == true)
         let redacted = CoveWorkspaceProjection(
@@ -5147,6 +5245,10 @@ struct CoveCoreSmokeTests {
             redactSensitiveContent: true
         )
         precondition(redactedSensitiveFilters.items.count == snapshots.count)
+        precondition(redactedSensitiveFilters.items.allSatisfy {
+            $0.latestOutput == nil && $0.latestOutputIdentity == nil
+                && $0.latestOutputTitle == nil
+        })
 
         func identities(
             _ filter: CoveWorkspaceFilter,

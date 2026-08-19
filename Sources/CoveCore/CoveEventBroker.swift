@@ -721,6 +721,19 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         return String(trimmed.prefix(4_000))
     }
 
+    public var startsAssistantOutput: Bool {
+        effectiveMethod == "item/started"
+            && requestParameters["item"]?.objectValue?["type"]?.stringValue
+                == "agentMessage"
+    }
+
+    public func assistantOutputDelta() -> String? {
+        guard effectiveMethod == "item/agentMessage/delta",
+              let delta = requestParameters["delta"]?.stringValue,
+              !delta.isEmpty else { return nil }
+        return String(delta.suffix(4_000))
+    }
+
     public func resolvedRequestID() -> CoveRequestID? {
         guard effectiveMethod == "serverRequest/resolved" || kind == .serverRequestResolved else {
             return nil

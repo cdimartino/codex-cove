@@ -77,6 +77,12 @@ An explicit Workspace Send may start an idle turn or steer the exact active
 turn through the public app-server, but the native Codex client remains
 authoritative for unsupported decisions and task state.
 
+Workspace cards may display a bounded, in-memory excerpt of the newest output
+from their parent task or an attached descendant. These excerpts are never
+written to Workspace storage, diagnostics, logs, notifications, fixtures, or
+release artifacts, and privacy redaction removes them from rendering and
+Accessibility.
+
 ## Privacy controls
 
 - **Privacy On** redacts content in Cove surfaces and notification output.

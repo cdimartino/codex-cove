@@ -719,6 +719,9 @@ public struct CoveWorkspaceItem: Equatable, Sendable, Identifiable {
     public var isRetainedOnly: Bool
     public var descendantAttentionCount: Int
     public var children: [CoveSessionIdentity]
+    public var latestOutput: String?
+    public var latestOutputIdentity: CoveSessionIdentity?
+    public var latestOutputTitle: String?
 
     public var id: CoveSessionIdentity { identity }
     public var displayName: String { alias ?? snapshot.title }
@@ -824,12 +827,42 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
             }
         )
         let attention = Self.descendantAttention(latest: visibleLatest, children: children)
+        var outputByOwner: [CoveSessionIdentity: (
+            identity: CoveSessionIdentity,
+            output: String,
+            timestamp: Date,
+            title: String
+        )] = [:]
+        if !redactSensitiveContent {
+            for (identity, snapshot) in visibleLatest {
+                guard let owner = ownerByIdentity[identity],
+                      let output = snapshot.latestOutput?.trimmingCharacters(
+                          in: .whitespacesAndNewlines
+                      ),
+                      !output.isEmpty else { continue }
+                let current = outputByOwner[owner]
+                if let current,
+                   snapshot.timestamp < current.timestamp
+                    || (snapshot.timestamp == current.timestamp
+                        && identity >= current.identity) {
+                    continue
+                }
+                outputByOwner[owner] = (
+                    identity,
+                    output,
+                    snapshot.timestamp,
+                    workspace.card(for: identity)?.alias ?? snapshot.title
+                )
+            }
+        }
         let columnNames = Dictionary(uniqueKeysWithValues: workspace.columns.map { ($0.id, $0.name) })
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let order = Dictionary(uniqueKeysWithValues: workspace.gridOrder.enumerated().map { ($1, $0) })
         var projected = visibleLatest.compactMap { identity, snapshot -> CoveWorkspaceItem? in
             let card = workspace.card(for: identity)
             let columnID = workspace.columnID(for: identity)
+            let output = ownerByIdentity[identity] == identity
+                ? outputByOwner[identity] : nil
             return CoveWorkspaceItem(
                 identity: identity,
                 snapshot: snapshot,
@@ -840,7 +873,10 @@ public struct CoveWorkspaceProjection: Equatable, Sendable {
                 isPinned: pinnedIdentities.contains(identity),
                 isRetainedOnly: retained.contains(identity),
                 descendantAttentionCount: attention[identity] ?? 0,
-                children: (children[identity] ?? []).sorted()
+                children: (children[identity] ?? []).sorted(),
+                latestOutput: output?.output,
+                latestOutputIdentity: output?.identity,
+                latestOutputTitle: output?.title
             )
         }
         projected.sort { lhs, rhs in

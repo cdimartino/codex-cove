@@ -465,6 +465,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
     public var queueSectionOrder: [CoveQueueSection]
     public var collapsedQueueSections: Set<CoveQueueSection>
     public var workspaceAppearance: CoveWorkspaceAppearance
+    public var showWorkspaceCardResidents: Bool
+    public var animateWorkspaceCardResidents: Bool
 
     public init(
         themeFamily: CoveThemeFamily = .nativeGlass,
@@ -503,7 +505,9 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         showTokenMetrics: Bool = false,
         queueSectionOrder: [CoveQueueSection] = CoveQueueSection.allCases,
         collapsedQueueSections: Set<CoveQueueSection> = [.more],
-        workspaceAppearance: CoveWorkspaceAppearance = .system
+        workspaceAppearance: CoveWorkspaceAppearance = .system,
+        showWorkspaceCardResidents: Bool = true,
+        animateWorkspaceCardResidents: Bool = true
     ) {
         self.themeFamily = themeFamily
         self.palette = palette
@@ -549,6 +553,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         )
         self.collapsedQueueSections = collapsedQueueSections
         self.workspaceAppearance = workspaceAppearance
+        self.showWorkspaceCardResidents = showWorkspaceCardResidents
+        self.animateWorkspaceCardResidents = animateWorkspaceCardResidents
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -564,7 +570,8 @@ public struct CoveSettings: Codable, Equatable, Sendable {
         case minimalIslandMode
         case showUsage, showProfileTokenUsage, showTokenMetrics
         case queueSectionOrder, collapsedQueueSections
-        case workspaceAppearance
+        case workspaceAppearance, showWorkspaceCardResidents
+        case animateWorkspaceCardResidents
     }
 
     public init(from decoder: Decoder) throws {
@@ -638,7 +645,15 @@ public struct CoveSettings: Codable, Equatable, Sendable {
             workspaceAppearance: try values.decodeIfPresent(
                 CoveWorkspaceAppearance.self,
                 forKey: .workspaceAppearance
-            ) ?? .system
+            ) ?? .system,
+            showWorkspaceCardResidents: try values.decodeIfPresent(
+                Bool.self,
+                forKey: .showWorkspaceCardResidents
+            ) ?? true,
+            animateWorkspaceCardResidents: try values.decodeIfPresent(
+                Bool.self,
+                forKey: .animateWorkspaceCardResidents
+            ) ?? true
         )
     }
 }
@@ -770,6 +785,8 @@ public enum CoveAction: Equatable, Sendable {
     case selectCustomTheme(CoveThemePalette)
     case clearCustomTheme
     case setResidentSet(CoveResidentSet)
+    case setShowWorkspaceCardResidents(Bool)
+    case setAnimateWorkspaceCardResidents(Bool)
     case setOpacity(CoveOpacityStyle)
     case setCollapsedOpacity(Double)
     case setExpandedOpacity(Double)
@@ -885,6 +902,10 @@ public enum CoveReducer {
             )
         case let .setResidentSet(residentSet):
             state.settings.residentSet = residentSet
+        case let .setShowWorkspaceCardResidents(value):
+            state.settings.showWorkspaceCardResidents = value
+        case let .setAnimateWorkspaceCardResidents(value):
+            state.settings.animateWorkspaceCardResidents = value
         case let .setOpacity(style):
             state.settings.opacityStyle = style
             state.settings.collapsedOpacity = style.collapsedAlpha
@@ -1085,13 +1106,20 @@ public enum CoveReducer {
             let decodedSnapshot = envelope.sessionSnapshot()
             let carriesSessionState = decodedSnapshot != nil || status != nil
             var acceptedStatusSnapshot = false
+            let outputDelta = envelope.assistantOutputDelta()
             if status == nil,
-               let latestOutput = envelope.latestAssistantOutput(),
+               (envelope.latestAssistantOutput() != nil || outputDelta != nil),
                var snapshot = state.session.snapshots.first(where: {
                    $0.sessionId == envelope.sessionId
                        && $0.originScope == envelope.originScope
                }) {
-                snapshot.latestOutput = latestOutput
+                if let outputDelta {
+                    snapshot.latestOutput = String(
+                        ((snapshot.latestOutput ?? "") + outputDelta).suffix(4_000)
+                    )
+                } else {
+                    snapshot.latestOutput = envelope.latestAssistantOutput()
+                }
                 snapshot.timestamp = envelope.timestamp
                 if envelope.advertisesLaunchID {
                     snapshot.launchId = envelope.launchId
@@ -1105,7 +1133,8 @@ public enum CoveReducer {
                     snapshot: snapshot,
                     into: &state,
                     preserveOmittedLaunchID: !envelope.advertisesLaunchID,
-                    preserveOmittedParentID: !envelope.advertisesParentSessionID
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID,
+                    preserveOmittedLatestOutput: !envelope.startsAssistantOutput
                 )
             }
             if var snapshot = decodedSnapshot {
@@ -1159,8 +1188,10 @@ public enum CoveReducer {
                         priority: status.priority,
                         title: display.title,
                         detail: display.body,
-                        latestOutput: envelope.latestAssistantOutput()
-                            ?? existing?.latestOutput,
+                        latestOutput: envelope.startsAssistantOutput
+                            ? nil
+                            : envelope.latestAssistantOutput()
+                                ?? existing?.latestOutput,
                         timestamp: envelope.timestamp,
                         sessionId: envelope.sessionId,
                         launchId: envelope.launchId,
@@ -1180,7 +1211,8 @@ public enum CoveReducer {
                     ),
                     into: &state,
                     preserveOmittedLaunchID: !envelope.advertisesLaunchID,
-                    preserveOmittedParentID: !envelope.advertisesParentSessionID
+                    preserveOmittedParentID: !envelope.advertisesParentSessionID,
+                    preserveOmittedLatestOutput: !envelope.startsAssistantOutput
                 )
             }
 
@@ -1397,7 +1429,8 @@ public enum CoveReducer {
         snapshot: CoveSessionSnapshot,
         into state: inout CoveState,
         preserveOmittedLaunchID: Bool = true,
-        preserveOmittedParentID: Bool = true
+        preserveOmittedParentID: Bool = true,
+        preserveOmittedLatestOutput: Bool = true
     ) -> Bool {
         if let identity = snapshot.sessionIdentity,
            state.dismissedSessionIDs.contains(identity.id) {
@@ -1407,7 +1440,8 @@ public enum CoveReducer {
             snapshot: snapshot,
             into: &state,
             preserveOmittedLaunchID: preserveOmittedLaunchID,
-            preserveOmittedParentID: preserveOmittedParentID
+            preserveOmittedParentID: preserveOmittedParentID,
+            preserveOmittedLatestOutput: preserveOmittedLatestOutput
         ) else {
             return false
         }
@@ -1632,7 +1666,8 @@ public enum CoveReducer {
         snapshot: CoveSessionSnapshot,
         into state: inout CoveState,
         preserveOmittedLaunchID: Bool,
-        preserveOmittedParentID: Bool
+        preserveOmittedParentID: Bool,
+        preserveOmittedLatestOutput: Bool
     ) -> Bool {
         // Snapshot IDs are unique only within a composite source/host origin.
         // The complete identity is now carried through every lookup, so a
@@ -1663,7 +1698,7 @@ public enum CoveReducer {
                 normalized.parentSessionId = existing.parentSessionId
             }
         }
-        if normalized.latestOutput == nil {
+        if normalized.latestOutput == nil, preserveOmittedLatestOutput {
             normalized.latestOutput = existing?.latestOutput
         }
         if normalized.status == .completed {

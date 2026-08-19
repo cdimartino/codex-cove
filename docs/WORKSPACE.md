@@ -79,7 +79,14 @@ task metadata or saved prompt content.
 Grid lays out parent task cards responsively as the window resizes. A card shows
 its Cove alias or current upstream title, status, source and remote host, last
 activity, unread and pin state, tags and link badges, and the number of
-descendant agents needing attention.
+descendant agents needing attention. It also shows a bounded excerpt of the
+newest parent-or-descendant agent output and updates that excerpt as public
+app-server output deltas arrive. Output excerpts are memory-only and disappear
+under privacy redaction.
+
+Each card can show its task's stably assigned resident. Use **Settings →
+Residents** to hide card residents or pause their active-state movement.
+macOS Reduce Motion always pauses that movement.
 
 Manual ordering can change only when:
 

@@ -818,6 +818,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 )
             }
             store.dispatch(.boot)
+            if uiTestConfiguration.fixture == .workspacePrimary {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                    self?.store.dispatch(.receivedEnvelope(.init(
+                        eventId: "fixture-live-output-delta",
+                        kind: .appServer,
+                        timestamp: Date(),
+                        source: .localCli,
+                        sessionId: "fixture-agent-active",
+                        payload: .object([
+                            "method": .string("item/agentMessage/delta"),
+                            "params": .object([
+                                "delta": .string(" — live update arrived"),
+                            ]),
+                        ])
+                    )))
+                }
+            }
             if uiTestConfiguration.fixture.settingsPaneIdentifier != nil {
                 DispatchQueue.main.async { [weak self] in
                     self?.showSettings()
@@ -1402,7 +1419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private func startUsageHydration() {
         guard let configuration = try? CoveAccountUsageConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.8.1"
+                as? String ?? "0.9.0"
         ) else {
             return
         }
@@ -1419,7 +1436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     ) {
         guard let configuration = try? CoveDesktopThreadHydrationConfiguration.installed(
             clientVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-                as? String ?? "0.8.1"
+                as? String ?? "0.9.0"
         ) else {
             return
         }

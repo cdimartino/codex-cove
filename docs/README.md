@@ -53,6 +53,8 @@ Start with the guide that matches what you are trying to do.
   artifacts, privacy-bounded favicons, and exact nested-agent control.
 - [Codex Cove 0.8.1 release notes](releases/v0.8.1.md) — fail-closed management
   CLI help and uninstall argument validation.
+- [Codex Cove 0.9.0 release notes](releases/v0.9.0.md) — live agent output and
+  animated residents on Workspace cards.
 
 ## Version-specific engineering records
 

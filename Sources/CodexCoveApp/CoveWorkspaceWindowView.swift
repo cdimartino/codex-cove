@@ -3,6 +3,7 @@ import CoveCore
 
 struct CoveWorkspaceWindowView: View {
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: CoveStore
     @ObservedObject var workspace: CoveWorkspaceStore
     let onClose: @MainActor () -> Void
@@ -312,6 +313,10 @@ struct CoveWorkspaceWindowView: View {
         let card = CoveWorkspaceCard(
             item: item,
             redactsSensitiveContent: redactsSensitiveContent,
+            resident: workspaceCardResident(for: item),
+            residentTheme: store.state.theme,
+            reduceResidentMotion: reduceMotion
+                || !store.state.settings.animateWorkspaceCardResidents,
             isSelected: selectedRootIdentity == item.identity,
             onSelect: { workspace.select(item.identity) }
         )
@@ -343,6 +348,7 @@ struct CoveWorkspaceWindowView: View {
                         items: items(in: entry.element.id),
                         selectedRootIdentity: selectedRootIdentity,
                         redactsSensitiveContent: redactsSensitiveContent,
+                        reduceMotion: reduceMotion,
                         store: store,
                         workspace: workspace
                     )
@@ -542,6 +548,17 @@ struct CoveWorkspaceWindowView: View {
         visibleCardItems.filter { $0.columnID == columnID }
     }
 
+    private func workspaceCardResident(
+        for item: CoveWorkspaceItem
+    ) -> CovePixelCharacter? {
+        guard !redactsSensitiveContent,
+              store.state.settings.showWorkspaceCardResidents else { return nil }
+        return CovePixelCharacter.assigned(
+            to: item.identity.sessionId,
+            set: store.state.settings.residentSet
+        )
+    }
+
     /// Parent tasks own cards. Authoritatively attached agents remain in the
     /// inspector hierarchy; a search that hides their parent can still promote
     /// the matching descendant to a temporary result card.
@@ -569,6 +586,9 @@ struct CoveWorkspaceWindowView: View {
 private struct CoveWorkspaceCard: View {
     let item: CoveWorkspaceItem
     let redactsSensitiveContent: Bool
+    let resident: CovePixelCharacter?
+    let residentTheme: CoveThemePalette
+    let reduceResidentMotion: Bool
     let isSelected: Bool
     let onSelect: () -> Void
 
@@ -600,7 +620,7 @@ private struct CoveWorkspaceCard: View {
                 : "\(item.displayName), \(item.snapshot.status.displayName), \(item.identity.source.displayName)"
         )
         .accessibilityHint("Opens the task inspector without marking it read")
-        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityValue(cardAccessibilityValue)
         .accessibilityIdentifier(
             redactsSensitiveContent
                 ? "cove.workspace.card.redacted"
@@ -612,6 +632,21 @@ private struct CoveWorkspaceCard: View {
         VStack(alignment: .leading, spacing: 10) {
             cardHeader
             statusRow
+            if let outputPreview {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(outputTitle)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(outputPreview)
+                        .font(.caption)
+                        .lineLimit(4)
+                        .multilineTextAlignment(.leading)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityHidden(true)
+            }
             CoveWorkspaceOriginRow(
                 item: item,
                 redactsSensitiveContent: redactsSensitiveContent
@@ -629,6 +664,16 @@ private struct CoveWorkspaceCard: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
             Spacer(minLength: 8)
+            if let resident {
+                CovePixelCharacterBubble(
+                    character: resident,
+                    status: item.snapshot.status,
+                    theme: residentTheme,
+                    reduceMotion: reduceResidentMotion,
+                    size: 42
+                )
+                .accessibilityHidden(true)
+            }
             if item.isPinned { Image(systemName: "pin.fill") }
             if item.snapshot.unread {
                 Circle().fill(.blue).frame(width: 8, height: 8)
@@ -654,6 +699,26 @@ private struct CoveWorkspaceCard: View {
 
     private var showsBadges: Bool {
         !redactsSensitiveContent && (!item.tags.isEmpty || !item.links.isEmpty)
+    }
+
+    private var outputPreview: String? {
+        guard !redactsSensitiveContent, let output = item.latestOutput else {
+            return nil
+        }
+        let normalized = output.split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard !normalized.isEmpty else { return nil }
+        return String(normalized.suffix(360))
+    }
+
+    private var cardAccessibilityValue: String {
+        [isSelected ? "Selected" : nil, outputPreview.map { "\(outputTitle): \($0)" }]
+            .compactMap { $0 }
+            .joined(separator: ". ")
+    }
+
+    private var outputTitle: String {
+        item.latestOutputTitle.map { "\($0) output" } ?? "Agent output"
     }
 }
 
@@ -692,6 +757,7 @@ private struct CoveWorkspaceBoardColumn: View {
     let items: [CoveWorkspaceItem]
     let selectedRootIdentity: CoveSessionIdentity?
     let redactsSensitiveContent: Bool
+    let reduceMotion: Bool
     @ObservedObject var store: CoveStore
     @ObservedObject var workspace: CoveWorkspaceStore
 
@@ -710,6 +776,16 @@ private struct CoveWorkspaceBoardColumn: View {
                         CoveWorkspaceCard(
                             item: item,
                             redactsSensitiveContent: redactsSensitiveContent,
+                            resident: redactsSensitiveContent
+                                || !store.state.settings.showWorkspaceCardResidents
+                                ? nil
+                                : CovePixelCharacter.assigned(
+                                    to: item.identity.sessionId,
+                                    set: store.state.settings.residentSet
+                                ),
+                            residentTheme: store.state.theme,
+                            reduceResidentMotion: reduceMotion
+                                || !store.state.settings.animateWorkspaceCardResidents,
                             isSelected: selectedRootIdentity == item.identity,
                             onSelect: { workspace.select(item.identity) }
                         )
