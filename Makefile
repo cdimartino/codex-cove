@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 XCODE_DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
-.PHONY: deps bootstrap build test ui-test swift-test socket-broker-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test release-notes-test release-workflow-test run icon sounds themes remote-artifacts package package-with-remote install install-with-remote signing-identity doctor candidate-write candidate-verify verify-release-version verify-release-readiness release-assets clean
+.PHONY: deps bootstrap build test ui-test-build ui-test-legacy-ax ui-test swift-test socket-broker-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test release-notes-test release-workflow-test run icon sounds themes remote-artifacts package package-with-remote install install-with-remote signing-identity doctor candidate-write candidate-verify verify-release-version verify-release-readiness release-assets clean
 
 deps:
 	swift package resolve --disable-sandbox
@@ -51,9 +51,27 @@ release-workflow-test:
 
 test: swift-test socket-broker-test launch-at-login-test store-foundation-test milestone13-test milestone2-test helper-test extension-test homebrew-test release-notes-test release-workflow-test
 
+ui-test-build:
+	DEVELOPER_DIR="$(XCODE_DEVELOPER_DIR)" xcodebuild -project CodexCoveUITests.xcodeproj \
+		-scheme CodexCoveUITests \
+		-destination 'platform=macOS' \
+		-derivedDataPath DerivedData \
+		build-for-testing
+
+ui-test-legacy-ax: ui-test-build
+	XCODE_DEVELOPER_DIR="$(XCODE_DEVELOPER_DIR)" ./Tests/run-ui-tests-legacy-ax.sh
+
 ui-test:
-	@if [ -n "$$(/usr/bin/lsappinfo find bundleID=com.openai.codex 2>/dev/null)" ]; then \
-		echo "Quit Codex/ChatGPT, then run make ui-test from Terminal; macOS XCTest can crash the running app during automation teardown." >&2; \
+	@if [ "$${CODEX_INTERNAL_ORIGINATOR_OVERRIDE:-}" = "Codex Desktop" ]; then \
+		echo "Run make ui-test after quitting Codex/ChatGPT, or use the private Xcode 26.6 fallback make ui-test-legacy-ax; normal macOS XCTest Automation Mode can crash the running app during teardown." >&2; \
+		exit 2; \
+	fi
+	@codex_location=$$(/usr/bin/lsappinfo find bundleID=com.openai.codex 2>/dev/null) || { \
+		echo "Unable to verify whether Codex/ChatGPT is running; UI tests were not started." >&2; \
+		exit 2; \
+	}; \
+	if [ -n "$$codex_location" ]; then \
+		echo "Run make ui-test after quitting Codex/ChatGPT, or use the private Xcode 26.6 fallback make ui-test-legacy-ax; normal macOS XCTest Automation Mode can crash the running app during teardown." >&2; \
 		exit 2; \
 	fi
 	@locked=$$(ioreg -n Root -d1 -a 2>/dev/null | plutil -extract IOConsoleLocked raw -o - - 2>/dev/null) || { \

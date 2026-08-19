@@ -97,6 +97,136 @@ public enum CoveWireSource: String, Codable, CaseIterable, Sendable {
     case remoteCli
 }
 
+/// Extracts only mutually consistent parent claims from public app-server
+/// thread shapes. A conflicting chain is untrusted rather than guessed.
+public enum CoveThreadProvenance {
+    public static func parentID(in thread: [String: CoveJSONValue]) -> String? {
+        let values = parentClaims(in: thread)
+        return values.count == 1 ? values.first : nil
+    }
+
+    public static func hasConflictingParentID(
+        in thread: [String: CoveJSONValue]
+    ) -> Bool {
+        parentClaims(in: thread).count > 1
+    }
+
+    public static func advertisesParentID(
+        in thread: [String: CoveJSONValue]
+    ) -> Bool {
+        let threads = threadObjects(in: thread)
+        if threads.contains(where: { value in
+            ["parentThreadId", "parentSessionId", "parent_thread_id"]
+                .contains(where: { value.keys.contains($0) })
+        }) {
+            return true
+        }
+        return sourceObjects(in: thread).contains { source in
+            guard let subagent = subagentObject(in: source) else {
+                return false
+            }
+            let spawn = subagent["thread_spawn"]?.objectValue
+                ?? subagent["threadSpawn"]?.objectValue
+            return spawn.map { value in
+                value.keys.contains("parent_thread_id")
+                    || value.keys.contains("parentThreadId")
+            } ?? false
+        }
+    }
+
+    private static func parentClaims(
+        in thread: [String: CoveJSONValue]
+    ) -> Set<String> {
+        let direct = threadObjects(in: thread).flatMap { value in
+            [
+                value["parentThreadId"]?.scalarStringValue,
+                value["parentSessionId"]?.scalarStringValue,
+                value["parent_thread_id"]?.scalarStringValue,
+            ]
+        }
+        let spawned = sourceObjects(in: thread).compactMap { source in
+            let subagent = subagentObject(in: source)
+            return subagent?["thread_spawn"]?.objectValue?["parent_thread_id"]?
+                .scalarStringValue
+                ?? subagent?["threadSpawn"]?.objectValue?["parentThreadId"]?
+                    .scalarStringValue
+        }
+        let values: Set<String> = Set((direct + spawned).compactMap { value -> String? in
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        })
+        return values
+    }
+
+    public static func isExcludedAgent(_ thread: [String: CoveJSONValue]) -> Bool {
+        for source in sourceObjects(in: thread) {
+            if source["custom"] != nil { return true }
+            guard let subagent = subagentObject(in: source) else { continue }
+            if subagent["other"] != nil
+                || ["review", "compact", "guardian", "custom"]
+                    .contains(where: { subagent.keys.contains($0) }) {
+                return true
+            }
+        }
+        let values = threadObjects(in: thread).flatMap { value -> [String?] in
+            let source = value["source"]?.objectValue ?? [:]
+            let subagent = subagentObject(in: source)
+            return [
+                value["source"]?.scalarStringValue,
+                value["sourceKind"]?.scalarStringValue,
+                source["kind"]?.scalarStringValue,
+                source["subAgent"]?.scalarStringValue,
+                source["subagent"]?.scalarStringValue,
+                source["sub_agent"]?.scalarStringValue,
+                subagent?["other"]?.scalarStringValue,
+            ]
+        }.compactMap {
+            $0?.replacingOccurrences(of: "_", with: "")
+                .replacingOccurrences(of: "-", with: "")
+                .lowercased()
+        }
+        return values.contains { value in
+            value == "guardian"
+                || value == "review"
+                || value == "compact"
+                || value == "memoryconsolidation"
+                || value == "custom"
+                || value == "subagentreview"
+                || value == "subagentcompact"
+                || value == "subagentother"
+        }
+    }
+
+    public static func isThreadSpawnAgent(_ thread: [String: CoveJSONValue]) -> Bool {
+        sourceObjects(in: thread).contains { source in
+            let subagent = subagentObject(in: source)
+            return subagent?["thread_spawn"]?.objectValue != nil
+                || subagent?["threadSpawn"]?.objectValue != nil
+        }
+    }
+
+    private static func threadObjects(
+        in thread: [String: CoveJSONValue]
+    ) -> [[String: CoveJSONValue]] {
+        [thread, thread["thread"]?.objectValue].compactMap { $0 }
+    }
+
+    private static func sourceObjects(
+        in thread: [String: CoveJSONValue]
+    ) -> [[String: CoveJSONValue]] {
+        threadObjects(in: thread).compactMap { $0["source"]?.objectValue }
+    }
+
+    private static func subagentObject(
+        in source: [String: CoveJSONValue]
+    ) -> [String: CoveJSONValue]? {
+        source["subAgent"]?.objectValue
+            ?? source["subagent"]?.objectValue
+            ?? source["sub_agent"]?.objectValue
+    }
+}
+
 /// An open string type: newer helpers and Codex versions can add event kinds
 /// without making an older Cove app drop the complete envelope.
 public struct CoveWireEventKind: RawRepresentable, Codable, Equatable, Hashable, Sendable {
@@ -142,9 +272,12 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
     public var source: CoveWireSource
     public var sessionId: String
     public var turnId: String?
-    public var launchId: String?
+    public var launchId: String? {
+        didSet { launchIDWasAdvertised = true }
+    }
     public var hostId: String?
     public var payload: CoveJSONValue
+    private var launchIDWasAdvertised: Bool
 
     public init(
         schemaVersion: Int = 1,
@@ -168,6 +301,53 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         self.launchId = launchId
         self.hostId = hostId
         self.payload = payload
+        self.launchIDWasAdvertised = launchId != nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, eventId, kind, timestamp, source, sessionId
+        case turnId, launchId, hostId, payload
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        eventId = try container.decode(String.self, forKey: .eventId)
+        kind = try container.decode(CoveWireEventKind.self, forKey: .kind)
+        timestamp = try container.decode(Date.self, forKey: .timestamp)
+        source = try container.decode(CoveWireSource.self, forKey: .source)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+        launchIDWasAdvertised = container.contains(.launchId)
+        launchId = try container.decodeIfPresent(String.self, forKey: .launchId)
+        hostId = try container.decodeIfPresent(String.self, forKey: .hostId)
+        payload = try container.decode(CoveJSONValue.self, forKey: .payload)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(eventId, forKey: .eventId)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(source, forKey: .source)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encodeIfPresent(turnId, forKey: .turnId)
+        if let launchId {
+            try container.encode(launchId, forKey: .launchId)
+        } else if launchIDWasAdvertised {
+            try container.encodeNil(forKey: .launchId)
+        }
+        try container.encodeIfPresent(hostId, forKey: .hostId)
+        try container.encode(payload, forKey: .payload)
+    }
+
+    public var advertisesLaunchID: Bool {
+        launchIDWasAdvertised
+    }
+
+    public var advertisesParentSessionID: Bool {
+        CoveThreadProvenance.advertisesParentID(in: requestParameters)
     }
 
     public func displayEvent() -> CoveEvent {
@@ -334,10 +514,41 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
                 source: source,
                 hostId: hostId,
                 parentSessionId: parentSessionID(),
+                parentProvenanceConflict: CoveThreadProvenance
+                    .hasConflictingParentID(in: object),
                 liveness: object["liveness"]?.stringValue.flatMap(
                     CoveSessionLiveness.init(rawValue:)
                 ),
                 activeTurnId: object["activeTurnId"]?.scalarStringValue,
+                controlRoute: object["controlRoute"]?.stringValue.flatMap(
+                    CoveThreadControlRoute.init(rawValue:)
+                )
+            )
+        }
+        if effectiveMethod == "thread/started",
+           let thread = requestParameters["thread"]?.objectValue,
+           let threadID = thread["id"]?.scalarStringValue,
+           !threadID.isEmpty {
+            return .init(
+                schemaVersion: schemaVersion,
+                snapshotId: threadID,
+                status: .working,
+                priority: 40,
+                title: thread["name"]?.stringValue
+                    ?? thread["title"]?.stringValue
+                    ?? "Codex task",
+                detail: thread["cwd"]?.stringValue,
+                timestamp: timestamp,
+                sessionId: threadID,
+                launchId: launchId,
+                source: source,
+                hostId: hostId,
+                parentSessionId: CoveThreadProvenance.parentID(in: thread),
+                parentProvenanceConflict: CoveThreadProvenance
+                    .hasConflictingParentID(in: thread),
+                liveness: object["liveness"]?.stringValue.flatMap(
+                    CoveSessionLiveness.init(rawValue:)
+                ),
                 controlRoute: object["controlRoute"]?.stringValue.flatMap(
                     CoveThreadControlRoute.init(rawValue:)
                 )
@@ -358,6 +569,8 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
             source: source,
             hostId: hostId,
             parentSessionId: parentSessionID(),
+            parentProvenanceConflict: object["parentProvenanceConflict"]?.boolValue
+                ?? hasConflictingParentSessionID,
             liveness: object["liveness"]?.stringValue.flatMap(
                 CoveSessionLiveness.init(rawValue:)
             ),
@@ -472,7 +685,7 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         }
 
         let mapped: (CoveSessionStatus, Int, String)? = switch method {
-        case "turn/started", "item/started":
+        case "thread/started", "turn/started", "item/started":
             (.working, 40, "Working")
         case "thread/compacted", "turn/compacted":
             (.compacting, 60, "Compacting")
@@ -549,10 +762,11 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
     }
 
     public func parentSessionID() -> String? {
-        let params = requestParameters
-        return params["parentThreadId"]?.scalarStringValue
-            ?? params["parentSessionId"]?.scalarStringValue
-            ?? params["parent_thread_id"]?.scalarStringValue
+        CoveThreadProvenance.parentID(in: requestParameters)
+    }
+
+    public var hasConflictingParentSessionID: Bool {
+        CoveThreadProvenance.hasConflictingParentID(in: requestParameters)
     }
 
     /// Returns only an ID carried by the authoritative turn-start event. Cove
@@ -642,9 +856,9 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         )
     }
 
-    /// Internal approval-review threads are implementation details of Codex's
-    /// automated approval reviewer. They are not user tasks and must never
-    /// become Cove sessions, attention requests, notifications, or history.
+    /// Internal review, compact, guardian, and custom threads are Codex
+    /// implementation details. They must never become Cove sessions,
+    /// attention requests, notifications, or history.
     ///
     /// Hook payloads expose the stable `codex-auto-review` model marker. The
     /// app-server exposes the canonical sub-agent source marker
@@ -678,9 +892,9 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         isHookPermissionRequest
     }
 
-    /// Canonical app-server thread identifier for an internal reviewer. Hook
-    /// events intentionally return nil because subagent hooks share the parent
-    /// session id; caching that id would incorrectly hide the parent task.
+    /// Canonical app-server thread identifier for a hidden internal agent.
+    /// Hook events intentionally return nil because subagent hooks share the
+    /// parent session id; caching that id would incorrectly hide the parent.
     public var approvalReviewSubagentThreadID: String? {
         for thread in approvalReviewThreadObjects
         where Self.isApprovalReviewThreadObject(thread) {
@@ -789,11 +1003,7 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
         if isApprovalReviewModel(thread["model"]?.scalarStringValue) {
             return true
         }
-        guard let source = thread["source"]?.objectValue else { return false }
-        let subagent = source["subAgent"]?.objectValue
-            ?? source["subagent"]?.objectValue
-            ?? source["sub_agent"]?.objectValue
-        return subagent?["other"]?.scalarStringValue == "guardian"
+        return CoveThreadProvenance.isExcludedAgent(thread)
     }
 
     private var firstQuestionObject: [String: CoveJSONValue]? {
@@ -911,10 +1121,9 @@ public struct CoveWireEnvelope: Codable, Equatable, Sendable {
 
 }
 
-/// Stateful ingestion filter for Codex-internal approval review traffic.
-/// A canonical thread-start event teaches the policy the reviewer's thread id;
-/// later turn/status events for that id stay hidden even when Codex omits the
-/// source object from those follow-up messages.
+/// Stateful ingestion filter for Codex-internal agent traffic. A canonical
+/// thread-start event teaches the policy the agent's thread id; later events
+/// for that id stay hidden when Codex omits source from follow-up messages.
 public struct CoveEventVisibilityPolicy: Equatable, Sendable {
     private var hiddenApprovalReviewThreadKeys: Set<String>
 

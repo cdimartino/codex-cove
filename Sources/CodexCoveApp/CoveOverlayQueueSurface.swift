@@ -1290,6 +1290,7 @@ struct CoveFixtureAccessibilityMarkers: View {
     let stateDirectory: String
     let decisionAttemptCount: Int
     let jumpCount: Int
+    let threadControl: String
     let queueSectionOrder: [CoveQueueSection]
     let textScale: Double
 
@@ -1306,6 +1307,10 @@ struct CoveFixtureAccessibilityMarkers: View {
             marker(
                 value: "\(jumpCount)",
                 identifier: "cove.fixture.jump-count"
+            )
+            marker(
+                value: threadControl,
+                identifier: "cove.fixture.thread-control"
             )
             marker(
                 value: queueSectionOrder
@@ -2560,7 +2565,7 @@ private struct CoveDecisionDeliveryView: View {
     }
 }
 
-private struct CoveSessionOpenFailureView: View {
+struct CoveSessionOpenFailureView: View {
     let message: String
     let theme: CoveThemePalette
     let redactsSensitiveContent: Bool

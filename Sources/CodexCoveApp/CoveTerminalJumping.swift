@@ -45,6 +45,7 @@ protocol CoveTerminalJumping: AnyObject {
     func terminalLocationMetadata(
         for envelope: CoveWireEnvelope
     ) -> CoveTerminalLocationMetadata?
+    func canJump(to snapshot: CoveSessionSnapshot) -> Bool
     @discardableResult func jump(to snapshot: CoveSessionSnapshot) -> CoveJumpResult
     @discardableResult func jumpToCurrent() -> CoveJumpResult
 }
@@ -294,6 +295,33 @@ final class CoveSystemTerminalJumpService: CoveTerminalJumping {
             focusedExactLocation: false,
             message: "The exact originating Codex location is not currently available."
         )
+    }
+
+    func canJump(to snapshot: CoveSessionSnapshot) -> Bool {
+        if snapshot.source == .codexDesktop,
+           let sessionID = snapshot.sessionId {
+            return CoveDesktopThreadClient.isSafeThreadIdentifier(sessionID)
+        }
+        if let launchID = snapshot.launchId {
+            guard let launchKey = Self.launchKey(
+                      launchID: launchID,
+                      source: snapshot.source,
+                      hostID: snapshot.hostId
+                  ), let sessionID = snapshot.sessionId,
+                  let location = launches[launchKey]
+            else { return false }
+            return location.sessionIDs.contains(sessionID)
+        }
+        guard let sessionID = snapshot.sessionId,
+              let origin = CoveOriginScope(
+                  source: snapshot.source,
+                  hostId: snapshot.hostId
+              )
+        else { return false }
+        return launches.values.filter {
+            $0.sessionIDs.contains(sessionID)
+                && CoveOriginScope(source: $0.source, hostId: $0.hostID) == origin
+        }.count == 1
     }
 
     @discardableResult

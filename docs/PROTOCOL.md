@@ -39,8 +39,8 @@ client remains the visible fallback through `codex://threads/<thread-id>`.
 
 - Cove does not read or write private Codex session storage.
 - Cove persists content-free session metadata plus explicitly user-saved
-  Workspace aliases, tags, validated HTTP(S)/local-file artifacts, workflow
-  state, and prompt templates.
+  Workspace aliases, tags, validated HTTP(S)/local-file artifacts and manual
+  order, workflow state, and prompt templates. Favicon bytes remain memory-only.
   Unsaved and submitted prompts, commands, diffs, and responses remain
   memory-only.
 - Unknown request methods and unsupported hook events are handed back to native

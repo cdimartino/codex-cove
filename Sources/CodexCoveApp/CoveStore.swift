@@ -6,6 +6,7 @@ import CoveCore
 @MainActor
 final class CoveStore: ObservableObject {
     var onJumpToSession: ((CoveSessionSnapshot) -> CoveJumpResult)?
+    var onCanJumpToSession: ((CoveSessionSnapshot) -> Bool)?
     var onOpenDirectRequest: ((CoveSessionSnapshot) -> CoveJumpResult)?
     var onMarkRead: ((CoveSessionIdentity) -> Void)?
     var onDismissSession: ((CoveSessionIdentity) -> Bool)?
@@ -24,6 +25,8 @@ final class CoveStore: ObservableObject {
     @Published private(set) var decisionAttemptCount = 0
     @Published private(set) var fixtureRecordedDecisionCount = 0
     @Published private(set) var fixtureRecordedJumpCount = 0
+    @Published private(set) var fixtureRecordedThreadControl = ""
+    private(set) var fixtureRecordedFaviconStates = ""
     @Published private(set) var soundPreferences: CoveSoundPreferences
     @Published private(set) var customThemes: [CoveThemePalette] = []
     @Published private(set) var themePreview: CoveThemePalette?
@@ -225,8 +228,36 @@ final class CoveStore: ObservableObject {
         fixtureRecordedDecisionCount = max(0, count)
     }
 
-    func recordFixtureJump() {
+    @discardableResult
+    func recordFixtureJump() -> Int {
         fixtureRecordedJumpCount += 1
+        return fixtureRecordedJumpCount
+    }
+
+    @discardableResult
+    func recordFixtureThreadControl(_ request: CoveThreadControlRequest) -> String {
+        fixtureRecordedThreadControl = [
+            request.target.source.rawValue,
+            request.target.remoteHostId ?? "",
+            request.target.sessionId,
+            request.operation.rawValue,
+            request.expectedTurnId ?? "",
+        ].joined(separator: "|")
+        return fixtureRecordedThreadControl
+    }
+
+    private var fixtureFaviconStates: [String: String] = [:]
+
+    func recordFixtureFavicon(
+        _ url: URL,
+        context: String,
+        loaded: Bool
+    ) {
+        let key = "\(context):\(url.host ?? "unknown")"
+        fixtureFaviconStates[key] = loaded ? "loaded" : "fallback"
+        fixtureRecordedFaviconStates = fixtureFaviconStates.keys.sorted().map {
+            "\($0)=\(fixtureFaviconStates[$0] ?? "")"
+        }.joined(separator: ",")
     }
 
     @discardableResult
@@ -672,13 +703,16 @@ final class CoveStore: ObservableObject {
     }
 
     @discardableResult
-    func open(_ snapshot: CoveSessionSnapshot) -> Bool {
+    func open(
+        _ snapshot: CoveSessionSnapshot,
+        reportingFor reportedSnapshot: CoveSessionSnapshot? = nil
+    ) -> Bool {
         let result = onJumpToSession?(snapshot) ?? CoveJumpResult(
             focusedExactLocation: false,
             message: "The exact originating Codex location is not currently available."
         )
         guard result.focusedExactLocation else {
-            sessionOpenFailureIdentity = snapshot.sessionIdentity
+            sessionOpenFailureIdentity = (reportedSnapshot ?? snapshot).sessionIdentity
             sessionOpenFailureMessage = result.message
             return false
         }
@@ -687,6 +721,10 @@ final class CoveStore: ObservableObject {
         dispatch(.markRead(identity))
         onMarkRead?(identity)
         return true
+    }
+
+    func canOpen(_ snapshot: CoveSessionSnapshot) -> Bool {
+        onCanJumpToSession?(snapshot) == true
     }
 
     func sessionOpenFailureMessage(

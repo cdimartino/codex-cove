@@ -521,6 +521,326 @@ final class CodexCoveUITests: XCTestCase {
     }
 
     @MainActor
+    func testWorkspaceTargetsNestedAgentsAndNewTopLevelTasks() {
+        let app = launchFixture("workspace-primary")
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let rootCard = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Fixture parent task")
+        ).firstMatch
+        XCTAssertTrue(rootCard.waitForExistence(timeout: 2))
+        rootCard.click()
+
+        let inspector = element("cove.workspace.inspector", in: app)
+        XCTAssertTrue(inspector.waitForExistence(timeout: 2))
+        let inspectorScroll = inspector.scrollViews.firstMatch
+        selectWorkspaceAgent(
+            "Idle child agent",
+            rootCard: rootCard,
+            window: window,
+            scrollView: inspectorScroll,
+            app: app
+        )
+        XCTAssertEqual(stringValue(of: rootCard), "Selected")
+        XCTAssertTrue(text("Idle child agent", in: app).exists)
+
+        let composer = element("cove.workspace.composer", in: app)
+        for _ in 0..<8 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(composer.isHittable)
+        composer.click()
+        composer.typeText("Start the child again.")
+        let send = element("cove.workspace.send", in: app)
+        XCTAssertEqual(send.label, "Start Turn")
+        XCTAssertTrue(send.isEnabled)
+        send.click()
+        XCTAssertTrue(text("Send this prompt to Idle child agent?", in: app).exists)
+        element("cove.workspace.confirm-send", in: app).click()
+        XCTAssertTrue(text("Turn started.", in: app).waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            threadControl(in: app),
+            "localCli||fixture-agent-idle|start|"
+        )
+
+        selectWorkspaceAgent(
+            "Active child agent",
+            rootCard: rootCard,
+            window: window,
+            scrollView: inspectorScroll,
+            app: app
+        )
+        let activeSend = element("cove.workspace.send", in: app)
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            activeSend.label == "Steer Active Turn"
+        })
+        for _ in 0..<8 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        composer.click()
+        composer.typeText("Steer the exact child.")
+        XCTAssertTrue(activeSend.isEnabled)
+        activeSend.click()
+        XCTAssertTrue(text("Send this prompt to Active child agent?", in: app).exists)
+        element("cove.workspace.confirm-send", in: app).click()
+        XCTAssertTrue(
+            text("Prompt steered to the active turn.", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        XCTAssertEqual(
+            threadControl(in: app),
+            "localCli||fixture-agent-active|steer|fixture-child-turn"
+        )
+
+        selectWorkspaceAgent(
+            "Missing-turn child agent",
+            rootCard: rootCard,
+            window: window,
+            scrollView: inspectorScroll,
+            app: app
+        )
+        for _ in 0..<8 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        composer.click()
+        composer.typeText("Must remain disabled.")
+        XCTAssertFalse(element("cove.workspace.send", in: app).isEnabled)
+        XCTAssertTrue(
+            text(
+                "Cove does not have the exact active turn ID. Open the task in Codex to continue.",
+                in: app
+            ).exists
+        )
+
+        selectWorkspaceAgent(
+            "Pending child agent",
+            rootCard: rootCard,
+            window: window,
+            scrollView: inspectorScroll,
+            app: app
+        )
+        for _ in 0..<12 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        composer.click()
+        composer.typeText("Must wait for approval.")
+        XCTAssertFalse(element("cove.workspace.send", in: app).isEnabled)
+        XCTAssertTrue(
+            text(
+                "Resolve this agent's approval or question before sending a prompt.",
+                in: app
+            ).exists
+                || text(
+                    "Resolve this agent's pending approval or question before sending a prompt.",
+                    in: app
+                ).exists
+        )
+
+        let open = app.buttons["Open in Codex"].firstMatch
+        for _ in 0..<8 where !open.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(open.isHittable)
+        open.click()
+        XCTAssertEqual(jumpCount(in: app), 1)
+
+        let topLevelCard = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "New top-level task")
+        ).firstMatch
+        XCTAssertTrue(topLevelCard.waitForExistence(timeout: 2))
+        topLevelCard.click()
+        XCTAssertTrue(text("New top-level task", in: app).waitForExistence(timeout: 2))
+        for _ in 0..<8 where !composer.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        composer.click()
+        composer.typeText("Start the new task.")
+        let topLevelSend = element("cove.workspace.send", in: app)
+        XCTAssertEqual(topLevelSend.label, "Start Turn")
+        XCTAssertTrue(topLevelSend.isEnabled)
+        topLevelSend.click()
+        element("cove.workspace.confirm-send", in: app).click()
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.threadControl(in: app)
+                == "codexDesktop||fixture-new-top-level|start|"
+        })
+    }
+
+    @MainActor
+    func testWorkspaceAgentOpenFailureOffersVerifiedParent() {
+        let app = launchFixture("workspace-agent-open-fallback")
+        XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let rootCard = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Openable parent task")
+        ).firstMatch
+        rootCard.click()
+        let disclosure = window.buttons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.agent.disclosure."
+            )
+        ).firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            disclosure.label,
+            "Expand child agents for Openable parent task"
+        )
+        disclosure.click()
+        let child = app.buttons["Inspect Unavailable child location"].firstMatch
+        XCTAssertTrue(child.waitForExistence(timeout: 2))
+        child.click()
+        let inspector = element("cove.workspace.inspector", in: app)
+        let inspectorScroll = inspector.scrollViews.firstMatch
+        let open = app.buttons["Open in Codex"].firstMatch
+        for _ in 0..<12 where !open.isHittable {
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertTrue(open.isHittable)
+        open.click()
+        XCTAssertTrue(
+            element("cove.session-open-failure", in: app)
+                .waitForExistence(timeout: 2)
+        )
+        let openParent = element("cove.workspace.open-parent", in: app)
+        XCTAssertTrue(openParent.waitForExistence(timeout: 2))
+        XCTAssertEqual(jumpCount(in: app), 1)
+        openParent.click()
+        XCTAssertTrue(waitUntil(timeout: 2) { self.jumpCount(in: app) == 2 })
+        XCTAssertFalse(element("cove.session-open-failure", in: app).exists)
+    }
+
+    @MainActor
+    func testWorkspaceCombinesParentAndChildArtifactOrder() {
+        let app = launchFixture("workspace-primary")
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let rootCard = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Fixture parent task")
+        ).firstMatch
+        rootCard.click()
+        let inspector = element("cove.workspace.inspector", in: app)
+        let scroll = inspector.scrollViews.firstMatch
+        let labels = window.textFields.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.artifact.label."
+            )
+        )
+        for _ in 0..<10 where labels.count < 2 || !labels.firstMatch.isHittable {
+            scroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertEqual(labels.count, 2)
+        XCTAssertEqual(stringValue(of: labels.firstMatch), "Child artifact")
+        XCTAssertEqual(stringValue(of: labels.element(boundBy: 1)), "Parent artifact")
+
+        let artifactRows = window.groups.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.artifact.row."
+            )
+        )
+        XCTAssertEqual(artifactRows.count, 2)
+        let dragSource = artifactRows.element(boundBy: 1).coordinate(
+            withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)
+        )
+        let dragDestination = artifactRows.firstMatch.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
+        )
+        dragSource.click(
+            forDuration: 0.6,
+            thenDragTo: dragDestination,
+            withVelocity: .slow,
+            thenHoldForDuration: 0.5
+        )
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: labels.firstMatch) == "Parent artifact"
+        })
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: labels.firstMatch) == "Child artifact"
+        })
+        app.typeKey("z", modifierFlags: [.command, .shift])
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: labels.firstMatch) == "Parent artifact"
+        })
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: labels.firstMatch) == "Child artifact"
+        })
+    }
+
+    @MainActor
+    func testWorkspaceFaviconRowsCardsFallbackAndSuggestionsStayOffline() {
+        let app = launchFixture("workspace-favicon")
+        XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let card = window.buttons.matching(
+            NSPredicate(format: "label CONTAINS %@", "Favicon fixture task")
+        ).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 2))
+        card.click()
+
+        let inspector = element("cove.workspace.inspector", in: app)
+        let scroll = inspector.scrollViews.firstMatch
+        let labels = window.textFields.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.artifact.label."
+            )
+        )
+        for _ in 0..<10 where labels.count < 2 || !labels.firstMatch.isHittable {
+            scroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        XCTAssertEqual(labels.count, 2)
+        XCTAssertTrue(text("suggestion-favicon.com", in: app).waitForExistence(timeout: 2))
+
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            let value = self.fixtureFaviconStates()
+            return [
+                "card:loaded-favicon.com=loaded",
+                "row:loaded-favicon.com=loaded",
+                "card:fallback-favicon.com=fallback",
+                "row:fallback-favicon.com=fallback",
+            ].allSatisfy(value.contains)
+        })
+        XCTAssertFalse(fixtureFaviconStates().contains("suggestion-favicon.com"))
+        XCTAssertEqual(
+            app.images.matching(
+                NSPredicate(format: "label CONTAINS[c] %@", "favicon")
+            ).count,
+            0,
+            "Artifact favicons must remain decorative in Accessibility."
+        )
+    }
+
+    @MainActor
+    func testWorkspacePrivacyDoesNotRenderOrFetchFavicons() {
+        let app = launchFixture("workspace-favicon-privacy")
+        XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
+        app.typeKey("w", modifierFlags: [.command, .shift])
+        let window = app.windows["Codex Cove Workspace"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let card = window.buttons.matching(
+            identifier: "cove.workspace.card.redacted"
+        ).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 2))
+        card.click()
+
+        XCTAssertFalse(text("Loaded favicon", in: app).exists)
+        XCTAssertFalse(text("Fallback favicon", in: app).exists)
+        XCTAssertFalse(text("suggestion-favicon.com", in: app).exists)
+        XCTAssertFalse(
+            element("cove.workspace.artifact.label.loaded-favicon.com", in: app).exists
+        )
+        XCTAssertEqual(fixtureFaviconStates(), "")
+    }
+
+    @MainActor
     func testWorkspaceStartsCompletedHookOnlyLocalTask() {
         let app = launchFixture("mixed-20")
         XCTAssertTrue(element("cove.overlay", in: app).waitForExistence(timeout: 5))
@@ -551,7 +871,10 @@ final class CodexCoveUITests: XCTestCase {
         let send = element("cove.workspace.send", in: app)
         XCTAssertTrue(send.isEnabled)
         send.click()
-        XCTAssertTrue(text("Send this prompt?", in: app).waitForExistence(timeout: 2))
+        XCTAssertTrue(
+            text("Send this prompt to Fixture task 7?", in: app)
+                .waitForExistence(timeout: 2)
+        )
         element("cove.workspace.confirm-send", in: app).click()
         XCTAssertTrue(text("Turn started.", in: app).waitForExistence(timeout: 2))
     }
@@ -630,6 +953,20 @@ final class CodexCoveUITests: XCTestCase {
             },
             "Workspace reorder must participate in Undo"
         )
+        app.typeKey("z", modifierFlags: [.command, .shift])
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                cards.firstMatch.identifier == originalSecondCardID
+            },
+            "Workspace reorder must participate in Redo"
+        )
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(
+            waitUntil(timeout: 2) {
+                cards.firstMatch.identifier == originalFirstCardID
+            },
+            "Workspace reorder must remain undoable after Redo"
+        )
 
         let firstCard = cards.firstMatch
         XCTAssertTrue(firstCard.isHittable)
@@ -661,19 +998,68 @@ final class CodexCoveUITests: XCTestCase {
         artifactLabel.click()
         artifactLabel.typeText("Release issue")
         artifactURL.click()
-        artifactURL.typeText("https://example.com/releases/1")
+        artifactURL.typeText("https://artifact-one.test/releases/1")
         element("cove.workspace.link-add", in: app).click()
-        XCTAssertTrue(text("example.com", in: app).waitForExistence(timeout: 2))
+        XCTAssertTrue(text("artifact-one.test", in: app).waitForExistence(timeout: 2))
+        artifactLabel.click()
+        artifactLabel.typeText("Build docs")
+        artifactURL.click()
+        artifactURL.typeText("https://artifact-two.test/docs")
+        element("cove.workspace.link-add", in: app).click()
+        XCTAssertTrue(text("artifact-two.test", in: app).waitForExistence(timeout: 2))
+
+        let savedLabels = window.textFields.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.artifact.label."
+            )
+        )
+        XCTAssertEqual(savedLabels.count, 2)
+        savedLabels.firstMatch.click()
+        savedLabels.firstMatch.typeKey("a", modifierFlags: .command)
+        savedLabels.firstMatch.typeText("Renamed release issue")
+        savedLabels.firstMatch.typeKey(.return, modifierFlags: [])
+        XCTAssertEqual(stringValue(of: savedLabels.firstMatch), "Renamed release issue")
+        savedLabels.firstMatch.click()
+        savedLabels.firstMatch.typeKey("a", modifierFlags: .command)
+        savedLabels.firstMatch.typeText("Discard this edit")
+        savedLabels.firstMatch.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(stringValue(of: savedLabels.firstMatch), "Renamed release issue")
+
+        let reorderMenus = window.menuButtons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.artifact.reorder."
+            )
+        )
+        XCTAssertEqual(reorderMenus.count, 2)
+        savedLabels.element(boundBy: 1).click()
+        savedLabels.element(boundBy: 1).typeKey("a", modifierFlags: .command)
+        savedLabels.element(boundBy: 1).typeText("Focus-saved docs")
+        reorderMenus.firstMatch.click()
+        let moveEarlier = app.menuItems["Move Earlier"]
+        XCTAssertTrue(moveEarlier.waitForExistence(timeout: 2))
+        XCTAssertFalse(moveEarlier.isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(
+            stringValue(of: savedLabels.element(boundBy: 1)),
+            "Focus-saved docs"
+        )
+        reorderMenus.element(boundBy: 1).click()
+        XCTAssertTrue(app.menuItems["Move Earlier"].waitForExistence(timeout: 2))
+        app.menuItems["Move Earlier"].click()
+        XCTAssertEqual(stringValue(of: savedLabels.firstMatch), "Focus-saved docs")
+        reorderMenus.firstMatch.click()
+        XCTAssertTrue(app.menuItems["Move Later"].waitForExistence(timeout: 2))
+        app.menuItems["Move Later"].click()
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            self.stringValue(of: savedLabels.firstMatch) == "Renamed release issue"
+        })
         let artifactOpen = window.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH %@", "cove.workspace.artifact.open.")
         ).firstMatch
         XCTAssertTrue(artifactOpen.waitForExistence(timeout: 2))
         artifactOpen.click()
-        let artifactRemove = window.buttons.matching(
-            NSPredicate(format: "identifier BEGINSWITH %@", "cove.workspace.artifact.remove.")
-        ).firstMatch
-        XCTAssertTrue(artifactRemove.waitForExistence(timeout: 2))
-        artifactRemove.click()
 
         let composer = element("cove.workspace.composer", in: app)
         for _ in 0..<8 where !composer.isHittable {
@@ -686,7 +1072,10 @@ final class CodexCoveUITests: XCTestCase {
         let send = element("cove.workspace.send", in: app)
         XCTAssertTrue(send.isEnabled)
         send.click()
-        XCTAssertTrue(text("Send this prompt?", in: app).waitForExistence(timeout: 2))
+        XCTAssertTrue(
+            text("Send this prompt to Release dashboard?", in: app)
+                .waitForExistence(timeout: 2)
+        )
         element("cove.workspace.confirm-send", in: app).click()
         XCTAssertTrue(
             text("Prompt steered to the active turn.", in: app)
@@ -771,6 +1160,27 @@ final class CodexCoveUITests: XCTestCase {
                 .matching(identifier: "cove.workspace").count,
             1
         )
+        let reopenedLabels = window.textFields.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.artifact.label."
+            )
+        )
+        XCTAssertTrue(waitUntil(timeout: 2) {
+            reopenedLabels.allElementsBoundByIndex.contains {
+                self.stringValue(of: $0) == "Renamed release issue"
+            }
+        })
+        let artifactRemove = window.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "cove.workspace.artifact.remove.")
+        ).firstMatch
+        XCTAssertTrue(artifactRemove.waitForExistence(timeout: 2))
+        let reopenedScroll = element("cove.workspace.inspector", in: app)
+            .scrollViews.firstMatch
+        for _ in 0..<8 where !artifactRemove.isHittable {
+            reopenedScroll.scroll(byDeltaX: 0, deltaY: -220)
+        }
+        artifactRemove.click()
     }
 
     @MainActor
@@ -2216,9 +2626,20 @@ final class CodexCoveUITests: XCTestCase {
 
     @MainActor
     private func jumpCount(in app: XCUIApplication) -> Int {
+        if let value = Int(fixtureMarkerValue(named: "jump-count.txt")) {
+            return value
+        }
         let marker = element("cove.fixture.jump-count", in: app)
         guard marker.waitForExistence(timeout: 2) else { return -1 }
         return Int(stringValue(of: marker)) ?? -1
+    }
+
+    @MainActor
+    private func threadControl(in app: XCUIApplication) -> String {
+        let value = fixtureMarkerValue(named: "thread-control.txt")
+        return value.isEmpty
+            ? stringValue(of: element("cove.fixture.thread-control", in: app))
+            : value
     }
 
     @MainActor
@@ -2241,6 +2662,48 @@ final class CodexCoveUITests: XCTestCase {
             return String(describing: value)
         }
         return ""
+    }
+
+    private func fixtureFaviconStates() -> String {
+        fixtureMarkerValue(named: "favicon-states.txt")
+    }
+
+    private func fixtureMarkerValue(named name: String) -> String {
+        let url = stateDirectory.appendingPathComponent(name)
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    @MainActor
+    private func selectWorkspaceAgent(
+        _ name: String,
+        rootCard: XCUIElement,
+        window: XCUIElement,
+        scrollView: XCUIElement,
+        app: XCUIApplication
+    ) {
+        rootCard.click()
+        let disclosureQuery = window.buttons.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "cove.workspace.agent.disclosure."
+            )
+        )
+        for _ in 0..<12 where !disclosureQuery.firstMatch.isHittable {
+            scrollView.scroll(byDeltaX: 0, deltaY: 220)
+        }
+        let disclosure = disclosureQuery.firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 2))
+        XCTAssertTrue(disclosure.isHittable)
+        if stringValue(of: disclosure) != "Expanded" {
+            disclosure.click()
+        }
+        for _ in 0..<8 where !app.buttons["Inspect \(name)"].firstMatch.isHittable {
+            scrollView.scroll(byDeltaX: 0, deltaY: 220)
+        }
+        let agent = app.buttons["Inspect \(name)"].firstMatch
+        XCTAssertTrue(agent.waitForExistence(timeout: 2))
+        XCTAssertTrue(agent.isHittable)
+        agent.click()
     }
 
     @MainActor

@@ -57,6 +57,7 @@ struct CoveWorkspaceWindowView: View {
                     projection: unfilteredProjection,
                     store: store,
                     workspace: workspace,
+                    undoManager: undoManager,
                     redactsSensitiveContent: redactsSensitiveContent
                 )
                 .frame(minWidth: 340, idealWidth: 400, maxWidth: 520)
@@ -268,6 +269,7 @@ struct CoveWorkspaceWindowView: View {
             enforcePrivacyStateIfNeeded()
             workspace.reconcileMembership(with: store.state.session.snapshots)
             workspace.onReconcileRequested?()
+            workspace.refreshSelectedControlTarget()
         }
         .onChange(of: store.state.session.snapshots) { _, snapshots in
             workspace.reconcileMembership(with: snapshots)
@@ -310,7 +312,7 @@ struct CoveWorkspaceWindowView: View {
         let card = CoveWorkspaceCard(
             item: item,
             redactsSensitiveContent: redactsSensitiveContent,
-            isSelected: workspace.selectedIdentity == item.identity,
+            isSelected: selectedRootIdentity == item.identity,
             onSelect: { workspace.select(item.identity) }
         )
         .contextMenu { cardMenu(item) }
@@ -339,6 +341,7 @@ struct CoveWorkspaceWindowView: View {
                         column: entry.element,
                         columnIndex: entry.offset,
                         items: items(in: entry.element.id),
+                        selectedRootIdentity: selectedRootIdentity,
                         redactsSensitiveContent: redactsSensitiveContent,
                         store: store,
                         workspace: workspace
@@ -413,11 +416,9 @@ struct CoveWorkspaceWindowView: View {
     private func registerGridUndo(_ previous: [CoveSessionIdentity]) {
         guard previous != workspace.state.gridOrder else { return }
         undoManager?.registerUndo(withTarget: workspace) { target in
-            let redo = target.state.gridOrder
+            let inverse = target.state.gridOrder
             target.restoreGridOrder(previous)
-            undoManager?.registerUndo(withTarget: target) { redoTarget in
-                redoTarget.restoreGridOrder(redo)
-            }
+            registerGridUndo(inverse)
         }
         undoManager?.setActionName("Reorder Workspace")
     }
@@ -448,6 +449,12 @@ struct CoveWorkspaceWindowView: View {
             ),
             redactSensitiveContent: redactsSensitiveContent
         )
+    }
+
+    private var selectedRootIdentity: CoveSessionIdentity? {
+        workspace.selectedIdentity.flatMap {
+            unfilteredProjection.owningTaskIdentity(for: $0) ?? $0
+        }
     }
 
     private func unfilteredItem(_ identity: CoveSessionIdentity) -> CoveWorkspaceItem? {
@@ -593,6 +600,7 @@ private struct CoveWorkspaceCard: View {
                 : "\(item.displayName), \(item.snapshot.status.displayName), \(item.identity.source.displayName)"
         )
         .accessibilityHint("Opens the task inspector without marking it read")
+        .accessibilityValue(isSelected ? "Selected" : "")
         .accessibilityIdentifier(
             redactsSensitiveContent
                 ? "cove.workspace.card.redacted"
@@ -682,6 +690,7 @@ private struct CoveWorkspaceBoardColumn: View {
     let column: CoveWorkspaceColumn
     let columnIndex: Int
     let items: [CoveWorkspaceItem]
+    let selectedRootIdentity: CoveSessionIdentity?
     let redactsSensitiveContent: Bool
     @ObservedObject var store: CoveStore
     @ObservedObject var workspace: CoveWorkspaceStore
@@ -701,7 +710,7 @@ private struct CoveWorkspaceBoardColumn: View {
                         CoveWorkspaceCard(
                             item: item,
                             redactsSensitiveContent: redactsSensitiveContent,
-                            isSelected: workspace.selectedIdentity == item.identity,
+                            isSelected: selectedRootIdentity == item.identity,
                             onSelect: { workspace.select(item.identity) }
                         )
                         .contextMenu {
@@ -777,9 +786,13 @@ private struct CoveWorkspaceBadges: View {
                     .background(.quaternary, in: Capsule())
             }
             ForEach(Array(links.prefix(3))) { link in
-                Image(systemName: link.url.isFileURL ? "doc" : "link")
+                CoveFaviconView(
+                    artifactURL: link.url,
+                    fallbackSystemImage: link.url.isFileURL ? "doc" : "link",
+                    presentationContext: "card"
+                )
+                    .frame(width: 14, height: 14)
                     .help(link.label)
-                    .accessibilityLabel(link.serviceLabel)
             }
         }
     }
@@ -790,6 +803,7 @@ private struct CoveWorkspaceInspector: View {
     let projection: CoveWorkspaceProjection
     @ObservedObject var store: CoveStore
     @ObservedObject var workspace: CoveWorkspaceStore
+    let undoManager: UndoManager?
     let redactsSensitiveContent: Bool
 
     @State private var tagsText = ""
@@ -855,7 +869,9 @@ private struct CoveWorkspaceInspector: View {
         }
         .onChange(of: projection.items) { _, _ in refreshArtifactSuggestions() }
         .confirmationDialog(
-            "Send this prompt?",
+            redactsSensitiveContent
+                ? "Send this prompt?"
+                : "Send this prompt to \(item.displayName)?",
             isPresented: Binding(
                 get: { preparedSend != nil },
                 set: { if !$0 { preparedSend = nil } }
@@ -904,13 +920,14 @@ private struct CoveWorkspaceInspector: View {
         GroupBox("Agents") {
             VStack(alignment: .leading, spacing: 6) {
                 CoveWorkspaceHierarchyNode(
-                    identity: item.identity,
+                    identity: owningTaskIdentity,
                     projection: projection,
                     store: store,
+                    workspace: workspace,
                     redactsSensitiveContent: redactsSensitiveContent
                 )
                 let unattached = projection.unattachedAgents.filter {
-                    $0 != item.identity
+                    $0 != owningTaskIdentity
                 }
                 if !unattached.isEmpty {
                     DisclosureGroup("Unattached agents") {
@@ -919,6 +936,7 @@ private struct CoveWorkspaceInspector: View {
                                 identity: identity,
                                 projection: projection,
                                 store: store,
+                                workspace: workspace,
                                 redactsSensitiveContent: redactsSensitiveContent
                             )
                         }
@@ -952,8 +970,8 @@ private struct CoveWorkspaceInspector: View {
                     Picker(
                         "Board column",
                         selection: Binding(
-                            get: { workspace.state.columnID(for: item.identity) },
-                            set: { workspace.assign(item.identity, to: $0) }
+                            get: { workspace.state.columnID(for: owningTaskIdentity) },
+                            set: { workspace.assign(owningTaskIdentity, to: $0) }
                         )
                     ) {
                         ForEach(workspace.state.columns) { column in
@@ -976,23 +994,28 @@ private struct CoveWorkspaceInspector: View {
                         Text("Attach a web link, local plan, file, or folder.")
                             .foregroundStyle(.secondary)
                     }
-                    ForEach(artifacts) { artifact in
-                        HStack(spacing: 8) {
-                            Image(systemName: artifact.link.url.isFileURL ? "doc" : "link")
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(artifact.link.label)
-                                Text(artifactDestination(artifact.link.url))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Button("Open") { workspace.openArtifact(artifact) }
-                                .accessibilityIdentifier("cove.workspace.artifact.open.\(artifact.id)")
-                            Button(role: .destructive) {
-                                workspace.removeArtifact(artifact)
-                            } label: { Image(systemName: "trash") }
-                            .accessibilityIdentifier("cove.workspace.artifact.remove.\(artifact.id)")
+                    ForEach(Array(artifacts.enumerated()), id: \.element.id) {
+                        index, artifact in
+                        CoveWorkspaceArtifactRow(
+                            artifact: artifact,
+                            canMoveEarlier: index > 0,
+                            canMoveLater: index + 1 < artifacts.count,
+                            destination: artifactDestination(artifact.link.url),
+                            onRename: { workspace.renameArtifact(artifact, label: $0) },
+                            onMoveEarlier: { moveArtifact(artifact, offset: -1) },
+                            onMoveLater: { moveArtifact(artifact, offset: 1) },
+                            onOpen: { workspace.openArtifact(artifact) },
+                            onRemove: { workspace.removeArtifact(artifact) }
+                        )
+                        .contentShape(Rectangle())
+                        .dropDestination(for: String.self) { values, _ in
+                            guard let sourceID = values.first,
+                                  let source = artifacts.first(where: {
+                                      $0.id == sourceID
+                                  })
+                            else { return false }
+                            moveArtifact(source, droppingOn: artifact)
+                            return true
                         }
                     }
                     if !workspace.artifactSuggestions.isEmpty {
@@ -1014,7 +1037,7 @@ private struct CoveWorkspaceInspector: View {
                                     workspace.addArtifact(
                                         label: suggestion.link.label,
                                         url: suggestion.link.url,
-                                        to: item.identity,
+                                        to: owningTaskIdentity,
                                         requireExistingLocalFile: suggestion.link.url.isFileURL
                                     )
                                     refreshArtifactSuggestions()
@@ -1039,7 +1062,7 @@ private struct CoveWorkspaceInspector: View {
     }
 
     private var composer: some View {
-        GroupBox("Prompt") {
+        GroupBox(redactsSensitiveContent ? "Prompt" : "Prompt · \(item.displayName)") {
             if redactsSensitiveContent {
                 Text("Prompt drafts and templates are hidden by Cove privacy protection.")
                     .foregroundStyle(.secondary)
@@ -1077,8 +1100,21 @@ private struct CoveWorkspaceInspector: View {
                         .help("Preview a one-time start or exact-turn steer. Delivery is never retried automatically.")
                         .accessibilityIdentifier("cove.workspace.send")
                     }
-                    if promptTarget.controlRoute == nil {
+                    if workspace.refreshingControlIdentity == item.identity {
+                        Text("Checking current agent state…")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("cove.workspace.control-refresh")
+                    } else if store.state.pendingDirectRequests.contains(where: {
+                        $0.sessionIdentity == item.identity
+                    }) {
+                        Text("Resolve this agent's approval or question before sending a prompt.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if promptTarget.controlRoute == nil {
                         Text("Prompting is unavailable for this route. Open the exact task in Codex.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if promptTarget.status == .waitingApproval
+                        || promptTarget.status == .waitingInput {
+                        Text("Resolve this agent's pending approval or question before sending a prompt.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if !promptTarget.canAcceptThreadControl {
                         Text("Cove does not have the exact active turn ID. Open the task in Codex to continue.")
@@ -1110,7 +1146,18 @@ private struct CoveWorkspaceInspector: View {
                 }
             }
             if let failure = store.sessionOpenFailureMessage(for: item.snapshot) {
-                Text(failure).font(.caption).foregroundStyle(.red)
+                CoveSessionOpenFailureView(
+                    message: failure,
+                    theme: store.state.theme,
+                    redactsSensitiveContent: redactsSensitiveContent
+                )
+                if let parent = nearestOpenableParent {
+                    Button("Open Parent Location") {
+                        store.open(parent.snapshot, reportingFor: item.snapshot)
+                    }
+                        .help("Open the nearest authoritative same-origin parent location. This does not open the selected agent itself.")
+                        .accessibilityIdentifier("cove.workspace.open-parent")
+                }
             }
         }
     }
@@ -1129,12 +1176,36 @@ private struct CoveWorkspaceInspector: View {
         workspace.promptTarget(for: item.snapshot)
     }
 
+    private var owningTaskIdentity: CoveSessionIdentity {
+        projection.owningTaskIdentity(for: item.identity) ?? item.identity
+    }
+
+    private var nearestOpenableParent: CoveWorkspaceItem? {
+        guard item.identity != owningTaskIdentity else { return nil }
+        var parentID = item.snapshot.parentSessionId
+        var visited = Set<CoveSessionIdentity>()
+        while let sessionID = parentID,
+              let identity = CoveSessionIdentity(
+                  source: item.identity.source,
+                  hostId: item.identity.remoteHostId,
+                  sessionId: sessionID
+              ),
+              visited.insert(identity).inserted,
+              let parent = projection.item(identity) {
+            if store.canOpen(parent.snapshot) {
+                return parent
+            }
+            parentID = parent.snapshot.parentSessionId
+        }
+        return nil
+    }
+
     private func addLink() {
         guard let url = candidateLinkURL else { return }
         workspace.addArtifact(
             label: linkLabel,
             url: url,
-            to: item.identity
+            to: owningTaskIdentity
         )
         linkLabel = ""
         linkURL = ""
@@ -1147,7 +1218,8 @@ private struct CoveWorkspaceInspector: View {
               !canonical.isFileURL,
               !linkLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               linkLabel.utf8.count <= CoveWorkspaceLimits.linkLabelBytes,
-              artifacts.count < CoveWorkspaceLimits.linksPerCard
+              (workspace.state.card(for: owningTaskIdentity)?.links.count ?? 0)
+                < CoveWorkspaceLimits.linksPerCard
         else { return nil }
         return canonical
     }
@@ -1157,7 +1229,7 @@ private struct CoveWorkspaceInspector: View {
     }
 
     private var descendantIdentities: [CoveSessionIdentity] {
-        var result = [item.identity]
+        var result = [owningTaskIdentity]
         var index = 0
         while index < result.count {
             for child in projection.item(result[index])?.children ?? [] where !result.contains(child) {
@@ -1178,7 +1250,7 @@ private struct CoveWorkspaceInspector: View {
             workspace.addArtifact(
                 label: url.lastPathComponent,
                 url: url,
-                to: item.identity,
+                to: owningTaskIdentity,
                 requireExistingLocalFile: true
             )
         }
@@ -1187,6 +1259,63 @@ private struct CoveWorkspaceInspector: View {
 
     private func artifactDestination(_ url: URL) -> String {
         url.isFileURL ? url.path : (url.host ?? url.absoluteString)
+    }
+
+    private func moveArtifact(
+        _ artifact: CoveWorkspaceStore.ArtifactReference,
+        offset: Int
+    ) {
+        guard let index = artifacts.firstIndex(where: { $0.id == artifact.id }) else {
+            return
+        }
+        let destination = min(max(0, index + offset), artifacts.count - 1)
+        guard destination != index else { return }
+        let previous = workspace.artifactOrder
+        if offset < 0 {
+            workspace.moveArtifact(artifact, before: artifacts[destination])
+        } else {
+            workspace.moveArtifact(artifact, after: artifacts[destination])
+        }
+        registerArtifactUndo(previous)
+    }
+
+    private func moveArtifact(
+        _ artifact: CoveWorkspaceStore.ArtifactReference,
+        before destination: CoveWorkspaceStore.ArtifactReference
+    ) {
+        let previous = workspace.artifactOrder
+        workspace.moveArtifact(artifact, before: destination)
+        registerArtifactUndo(previous)
+    }
+
+    private func moveArtifact(
+        _ artifact: CoveWorkspaceStore.ArtifactReference,
+        droppingOn destination: CoveWorkspaceStore.ArtifactReference
+    ) {
+        guard let sourceIndex = artifacts.firstIndex(where: {
+            $0.id == artifact.id
+        }), let destinationIndex = artifacts.firstIndex(where: {
+            $0.id == destination.id
+        }), sourceIndex != destinationIndex else { return }
+        let previous = workspace.artifactOrder
+        if sourceIndex < destinationIndex {
+            workspace.moveArtifact(artifact, after: destination)
+        } else {
+            workspace.moveArtifact(artifact, before: destination)
+        }
+        registerArtifactUndo(previous)
+    }
+
+    private func registerArtifactUndo(
+        _ previous: [CoveWorkspaceStore.ArtifactReference]
+    ) {
+        guard previous != workspace.artifactOrder else { return }
+        undoManager?.registerUndo(withTarget: workspace) { target in
+            let inverse = target.artifactOrder
+            target.restoreArtifactOrder(previous)
+            registerArtifactUndo(inverse)
+        }
+        undoManager?.setActionName("Reorder Artifacts")
     }
 
     private func confirmPreparedSend() {
@@ -1200,42 +1329,209 @@ private struct CoveWorkspaceInspector: View {
     }
 }
 
+private struct CoveWorkspaceArtifactRow: View {
+    let artifact: CoveWorkspaceStore.ArtifactReference
+    let canMoveEarlier: Bool
+    let canMoveLater: Bool
+    let destination: String
+    let onRename: (String) -> Void
+    let onMoveEarlier: () -> Void
+    let onMoveLater: () -> Void
+    let onOpen: () -> Void
+    let onRemove: () -> Void
+
+    @State private var draftLabel: String
+    @FocusState private var labelIsFocused: Bool
+
+    init(
+        artifact: CoveWorkspaceStore.ArtifactReference,
+        canMoveEarlier: Bool,
+        canMoveLater: Bool,
+        destination: String,
+        onRename: @escaping (String) -> Void,
+        onMoveEarlier: @escaping () -> Void,
+        onMoveLater: @escaping () -> Void,
+        onOpen: @escaping () -> Void,
+        onRemove: @escaping () -> Void
+    ) {
+        self.artifact = artifact
+        self.canMoveEarlier = canMoveEarlier
+        self.canMoveLater = canMoveLater
+        self.destination = destination
+        self.onRename = onRename
+        self.onMoveEarlier = onMoveEarlier
+        self.onMoveLater = onMoveLater
+        self.onOpen = onOpen
+        self.onRemove = onRemove
+        _draftLabel = State(initialValue: artifact.link.label)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+                .frame(width: 14, height: 18)
+                .draggable(artifact.id)
+                .accessibilityHidden(true)
+            CoveFaviconView(
+                artifactURL: artifact.link.url,
+                fallbackSystemImage: artifact.link.url.isFileURL ? "doc" : "link",
+                presentationContext: "row"
+            )
+            .frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                TextField("Artifact label", text: $draftLabel)
+                    .focused($labelIsFocused)
+                    .onSubmit(commitLabel)
+                    .onExitCommand {
+                        draftLabel = artifact.link.label
+                        labelIsFocused = false
+                    }
+                    .accessibilityIdentifier(
+                        "cove.workspace.artifact.label.\(artifact.id)"
+                    )
+                Text(destination)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Menu {
+                Button("Move Earlier", action: onMoveEarlier)
+                    .disabled(!canMoveEarlier)
+                Button("Move Later", action: onMoveLater)
+                    .disabled(!canMoveLater)
+            } label: {
+                Image(systemName: "line.3.horizontal")
+            }
+            .menuStyle(.borderlessButton)
+            .help("Reorder this artifact.")
+            .accessibilityLabel("Reorder \(artifact.link.label)")
+            .accessibilityIdentifier(
+                "cove.workspace.artifact.reorder.\(artifact.id)"
+            )
+            Button("Open", action: onOpen)
+                .accessibilityIdentifier("cove.workspace.artifact.open.\(artifact.id)")
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "trash")
+            }
+            .accessibilityIdentifier("cove.workspace.artifact.remove.\(artifact.id)")
+        }
+        .onChange(of: labelIsFocused) { wasFocused, isFocused in
+            if wasFocused && !isFocused { commitLabel() }
+        }
+        .onChange(of: artifact.link.label) { _, label in
+            if !labelIsFocused { draftLabel = label }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("cove.workspace.artifact.row.\(artifact.id)")
+    }
+
+    private func commitLabel() {
+        let normalized = draftLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              normalized.utf8.count <= CoveWorkspaceLimits.linkLabelBytes
+        else {
+            onRename(draftLabel)
+            draftLabel = artifact.link.label
+            return
+        }
+        guard normalized != artifact.link.label else {
+            draftLabel = normalized
+            return
+        }
+        onRename(normalized)
+        draftLabel = normalized
+    }
+}
+
 private struct CoveWorkspaceHierarchyNode: View {
     let identity: CoveSessionIdentity
     let projection: CoveWorkspaceProjection
     @ObservedObject var store: CoveStore
+    @ObservedObject var workspace: CoveWorkspaceStore
     let redactsSensitiveContent: Bool
+
+    @State private var isExpanded = false
 
     var body: some View {
         if let item = projection.item(identity) {
             if item.children.isEmpty {
                 row(item)
             } else {
-                DisclosureGroup {
-                    ForEach(item.children) { child in
-                        CoveWorkspaceHierarchyNode(
-                            identity: child,
-                            projection: projection,
-                            store: store,
-                            redactsSensitiveContent: redactsSensitiveContent
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) {
+                        Button { isExpanded.toggle() } label: {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            redactsSensitiveContent
+                                ? (isExpanded ? "Collapse child agents" : "Expand child agents")
+                                : (isExpanded
+                                    ? "Collapse child agents for \(item.displayName)"
+                                    : "Expand child agents for \(item.displayName)")
                         )
+                        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                        .accessibilityIdentifier(
+                            redactsSensitiveContent
+                                ? "cove.workspace.agent.disclosure.redacted"
+                                : "cove.workspace.agent.disclosure.\(item.identity.id)"
+                        )
+                        row(item)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                } label: { row(item) }
+                    if isExpanded {
+                        ForEach(item.children) { child in
+                            CoveWorkspaceHierarchyNode(
+                                identity: child,
+                                projection: projection,
+                                store: store,
+                                workspace: workspace,
+                                redactsSensitiveContent: redactsSensitiveContent
+                            )
+                        }
+                        .padding(.leading, 20)
+                    }
+                }
             }
         }
     }
 
     private func row(_ item: CoveWorkspaceItem) -> some View {
         HStack {
-            Image(systemName: item.snapshot.status.workspaceIcon)
-                .foregroundStyle(item.snapshot.status.workspaceColor)
-            Text(redactsSensitiveContent ? "Codex agent" : item.displayName)
-                .lineLimit(1)
-            Text(item.snapshot.status.displayName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Button {
+                workspace.select(item.identity)
+            } label: {
+                HStack {
+                    Image(systemName: item.snapshot.status.workspaceIcon)
+                        .foregroundStyle(item.snapshot.status.workspaceColor)
+                    Text(redactsSensitiveContent ? "Codex agent" : item.displayName)
+                        .lineLimit(1)
+                    Text(item.snapshot.status.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                redactsSensitiveContent
+                    ? "Inspect Codex agent"
+                    : "Inspect \(item.displayName)"
+            )
+            .accessibilityValue(
+                workspace.selectedIdentity == item.identity ? "Selected" : ""
+            )
+            .accessibilityIdentifier(
+                redactsSensitiveContent
+                    ? "cove.workspace.agent.redacted"
+                    : "cove.workspace.agent.\(item.identity.id)"
+            )
             Spacer()
-            Button { store.open(item.snapshot) } label: {
+            Button {
+                workspace.select(item.identity)
+                store.open(item.snapshot)
+            } label: {
                 Image(systemName: "arrow.up.forward.app")
             }
             .buttonStyle(.plain)

@@ -12,6 +12,62 @@ private enum ProbeFailure: Error {
     case failed
 }
 
+private final class FaviconURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) private static var responseData = Data()
+    nonisolated(unsafe) private static var responseStatus = 200
+    nonisolated(unsafe) private static var responseError: Error?
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    private static let lock = NSLock()
+
+    static func configure(
+        data: Data,
+        status: Int = 200,
+        error: Error? = nil
+    ) {
+        lock.lock()
+        responseData = data
+        responseStatus = status
+        responseError = error
+        requests = []
+        lock.unlock()
+    }
+
+    static func capturedRequests() -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests.append(request)
+        let data = Self.responseData
+        let status = Self.responseStatus
+        let error = Self.responseError
+        Self.lock.unlock()
+        if let error {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: status,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": String(data.count)]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !data.isEmpty { client?.urlProtocol(self, didLoad: data) }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 private actor ProbeSender: CoveDecisionSending {
     let shouldFail: Bool
     private var frames: [CoveDecisionFrame] = []
@@ -210,6 +266,8 @@ private struct CoveStoreFoundationTests {
     }
 
     static func main() async {
+        testWorkspaceArtifactMutations()
+        await testFaviconLoader()
         do {
             try testUITestTemporaryDirectoryPolicy()
         } catch {
@@ -353,6 +411,228 @@ private struct CoveStoreFoundationTests {
         precondition(failureStore.decisionAttemptCount == 2)
 
         print("CoveStore foundation tests passed")
+    }
+
+    static func testWorkspaceArtifactMutations() {
+        let root = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "workspace-root"
+        )!
+        let child = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "workspace-child"
+        )!
+        var workspace = CoveWorkspaceState(gridOrder: [root, child])
+        workspace.setLinks([
+            .init(label: "Root", url: URL(string: "https://example.com/root")!),
+        ], for: root)
+        workspace.setLinks([
+            .init(label: "Child", url: URL(string: "https://example.org/child")!),
+        ], for: child)
+        let now = Date(timeIntervalSince1970: 2_000)
+        let snapshots = [
+            CoveSessionSnapshot(
+                snapshotId: root.sessionId,
+                status: .idle,
+                priority: 5,
+                title: "Root",
+                timestamp: now,
+                sessionId: root.sessionId,
+                source: .localCli,
+                liveness: .live
+            ),
+            CoveSessionSnapshot(
+                snapshotId: child.sessionId,
+                status: .idle,
+                priority: 5,
+                title: "Child",
+                timestamp: now,
+                sessionId: child.sessionId,
+                source: .localCli,
+                parentSessionId: root.sessionId,
+                liveness: .live
+            ),
+        ]
+        workspace.observe(snapshots)
+        let store = CoveWorkspaceStore(
+            initialState: workspace,
+            writesEnabled: false,
+            openArtifactURL: { _ in true }
+        )
+        let projection = CoveWorkspaceProjection(
+            snapshots: snapshots,
+            workspace: store.state
+        )
+        var artifacts = store.artifacts(for: root, projection: projection)
+        precondition(artifacts.map(\.link.label) == ["Root", "Child"])
+        let originalOrder = store.artifactOrder
+        let childArtifact = artifacts[1]
+        let childID = childArtifact.link.id
+        let childURL = childArtifact.link.url
+        store.renameArtifact(childArtifact, label: "  Renamed child  ")
+        artifacts = store.artifacts(for: root, projection: projection)
+        precondition(artifacts[1].link.label == "Renamed child")
+        precondition(artifacts[1].link.id == childID)
+        precondition(artifacts[1].link.url == childURL)
+        store.renameArtifact(artifacts[1], label: "   ")
+        precondition(store.artifacts(for: root, projection: projection)[1].link.label == "Renamed child")
+        store.renameArtifact(
+            artifacts[1],
+            label: String(repeating: "é", count: 65)
+        )
+        precondition(
+            store.artifacts(for: root, projection: projection)[1].link.label
+                == "Renamed child"
+        )
+        store.moveArtifact(artifacts[1], before: artifacts[0])
+        precondition(
+            store.artifacts(for: root, projection: projection).map(\.link.label)
+                == ["Renamed child", "Root"]
+        )
+        store.restoreArtifactOrder(originalOrder)
+        precondition(
+            store.artifacts(for: root, projection: projection).map(\.link.label)
+                == ["Root", "Renamed child"]
+        )
+    }
+
+    static func testFaviconLoader() async {
+        let blockedArtifactURLs = [
+            "https://localhost/path",
+            "https://intranet/path",
+            "https://127.0.0.1/path",
+            "https://127.1/path",
+            "https://127.0.1/path",
+            "https://127.000.000.001/path",
+            "https://0177.0.0.1/path",
+            "https://0x7f.0.0.1/path",
+            "https://2130706433/path",
+            "https://0x7f000001/path",
+            "https://8.8.2056/path",
+            "https://[::1]/path",
+            "https://[::ffff:127.0.0.1]/path",
+            "https://service.local/path",
+            "https://home.arpa/path",
+            "https://HOME.ARPA./path",
+            "https://service.home.arpa/path",
+        ].map { URL(string: $0)! }
+        precondition(
+            CoveFaviconLoader.faviconURL(
+                for: URL(string: "https://Example.COM/private/path?token=secret")!
+            ) == URL(string: "https://example.com/favicon.ico")!
+        )
+        precondition(
+            CoveFaviconLoader.faviconURL(
+                for: URL(string: "http://example.com:8080/path")!
+            ) == URL(string: "https://example.com/favicon.ico")!
+        )
+        precondition(
+            CoveFaviconLoader.faviconURL(
+                for: URL(string: "https://127.0.0.1.example.com/path")!
+            ) == URL(string: "https://127.0.0.1.example.com/favicon.ico")!
+        )
+        for url in blockedArtifactURLs {
+            precondition(CoveFaviconLoader.faviconURL(for: url) == nil)
+        }
+
+        let png = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )!
+        FaviconURLProtocol.configure(data: png)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FaviconURLProtocol.self]
+        let loader = CoveFaviconLoader(configuration: configuration)
+        for url in blockedArtifactURLs { loader.load(for: url) }
+        precondition(FaviconURLProtocol.capturedRequests().isEmpty)
+        let artifactURL = URL(string: "https://example.com/private?token=secret")!
+        loader.load(for: artifactURL)
+        loader.load(for: artifactURL)
+        let loaded = await waitUntil {
+            loader.image(for: artifactURL) != nil
+        }
+        precondition(loaded)
+        let requests = FaviconURLProtocol.capturedRequests()
+        precondition(requests.count == 1)
+        precondition(requests[0].url == URL(string: "https://example.com/favicon.ico"))
+        precondition(requests[0].value(forHTTPHeaderField: "Cookie") == nil)
+        precondition(requests[0].value(forHTTPHeaderField: "Authorization") == nil)
+        loader.load(for: artifactURL)
+        try? await Task.sleep(for: .milliseconds(50))
+        precondition(FaviconURLProtocol.capturedRequests().count == 1)
+
+        func littleEndianBytes(_ value: Int) -> [UInt8] {
+            let value = UInt32(value)
+            return [
+                UInt8(truncatingIfNeeded: value),
+                UInt8(truncatingIfNeeded: value >> 8),
+                UInt8(truncatingIfNeeded: value >> 16),
+                UInt8(truncatingIfNeeded: value >> 24),
+            ]
+        }
+        var ico = Data([0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0])
+        ico.append(contentsOf: littleEndianBytes(48))
+        ico.append(contentsOf: littleEndianBytes(22))
+        ico.append(contentsOf: littleEndianBytes(40))
+        ico.append(contentsOf: littleEndianBytes(1))
+        ico.append(contentsOf: littleEndianBytes(2))
+        ico.append(contentsOf: [1, 0, 32, 0])
+        ico.append(contentsOf: littleEndianBytes(0))
+        ico.append(contentsOf: littleEndianBytes(4))
+        for _ in 0..<4 { ico.append(contentsOf: littleEndianBytes(0)) }
+        ico.append(contentsOf: [0, 0, 255, 255, 0, 0, 0, 0])
+        FaviconURLProtocol.configure(data: ico)
+        let icoLoader = CoveFaviconLoader(configuration: configuration)
+        let icoURL = URL(string: "https://ico.example.com/artifact")!
+        icoLoader.load(for: icoURL)
+        let icoLoaded = await waitUntil { icoLoader.image(for: icoURL) != nil }
+        precondition(icoLoaded)
+
+        func assertRejected(
+            _ host: String,
+            data: Data = Data(),
+            status: Int = 200,
+            error: Error? = nil
+        ) async {
+            FaviconURLProtocol.configure(
+                data: data,
+                status: status,
+                error: error
+            )
+            let rejectedLoader = CoveFaviconLoader(configuration: configuration)
+            let url = URL(string: "https://\(host)/artifact")!
+            let initial = rejectedLoader.revision
+            rejectedLoader.load(for: url)
+            let completed = await waitUntil {
+                rejectedLoader.revision != initial
+            }
+            precondition(completed)
+            precondition(rejectedLoader.image(for: url) == nil)
+        }
+
+        await assertRejected("missing.example.com", status: 404)
+        await assertRejected("redirect.example.com", status: 302)
+        await assertRejected(
+            "invalid-image.example.com",
+            data: Data("not an image".utf8)
+        )
+        await assertRejected(
+            "timeout.example.com",
+            error: URLError(.timedOut)
+        )
+
+        FaviconURLProtocol.configure(data: Data(repeating: 0, count: 256 * 1_024 + 1))
+        let oversizedLoader = CoveFaviconLoader(configuration: configuration)
+        let initialRevision = oversizedLoader.revision
+        oversizedLoader.load(for: URL(string: "https://oversized.example.com/x")!)
+        let rejectedOversized = await waitUntil {
+            oversizedLoader.revision != initialRevision
+        }
+        precondition(rejectedOversized)
+        precondition(
+            oversizedLoader.image(for: URL(string: "https://oversized.example.com/x")!) == nil
+        )
     }
 
     static func testSessionOpenFailureFeedback() {
@@ -950,6 +1230,7 @@ private struct CoveStoreFoundationTests {
             launchId: "missing-launch",
             source: .localCli
         )
+        precondition(!service.canJump(to: missing))
         let result = service.jump(to: missing)
         precondition(!result.focusedExactLocation)
         precondition(openedURLs.isEmpty)
@@ -963,6 +1244,7 @@ private struct CoveStoreFoundationTests {
             sessionId: "verified-desktop",
             source: .codexDesktop
         )
+        precondition(service.canJump(to: desktop))
         precondition(service.jump(to: desktop).focusedExactLocation)
         precondition(
             openedURLs.map(\.absoluteString)
@@ -977,6 +1259,7 @@ private struct CoveStoreFoundationTests {
             sessionId: "",
             source: .codexDesktop
         )
+        precondition(!service.canJump(to: emptyDesktop))
         precondition(!service.jump(to: emptyDesktop).focusedExactLocation)
         precondition(
             openedURLs.map(\.absoluteString)
@@ -1385,6 +1668,42 @@ private struct CoveStoreFoundationTests {
             sessionId: "shared-metadata-session"
         )
         precondition(remoteAfterExactRemoval == nil)
+
+        let sparseIdentity = CoveSessionIdentity(
+            source: .localCli,
+            hostId: nil,
+            sessionId: "sparse-metadata-session"
+        )!
+        bridge.record(
+            CoveWireEnvelope(
+                eventId: "sparse-metadata-initial",
+                kind: .sessionStatus,
+                timestamp: Date(timeIntervalSince1970: 5),
+                source: .localCli,
+                sessionId: sparseIdentity.sessionId,
+                launchId: "sparse-launch",
+                payload: .object([
+                    "status": .string(CoveSessionStatus.working.rawValue),
+                    "parentThreadId": .string("sparse-parent"),
+                ])
+            ),
+            state: CoveState()
+        )
+        guard let omitted = CoveEventDecoder.decodeLine(
+            #"{"schemaVersion":1,"eventId":"sparse-metadata-omitted","kind":"sessionStatus","timestamp":"1970-01-01T00:00:06Z","source":"localCli","sessionId":"sparse-metadata-session","payload":{"status":"working"}}"#
+        ) else { fatalError("Expected omitted metadata envelope") }
+        bridge.record(omitted, state: CoveState())
+        let retained = try storage.metadata(identity: sparseIdentity)
+        precondition(retained?.launchId == "sparse-launch")
+        precondition(retained?.parentSessionId == "sparse-parent")
+
+        guard let cleared = CoveEventDecoder.decodeLine(
+            #"{"schemaVersion":1,"eventId":"sparse-metadata-cleared","kind":"sessionStatus","timestamp":"1970-01-01T00:00:07Z","source":"localCli","sessionId":"sparse-metadata-session","launchId":null,"payload":{"status":"working","parentThreadId":null}}"#
+        ) else { fatalError("Expected explicit-null metadata envelope") }
+        bridge.record(cleared, state: CoveState())
+        let clearedMetadata = try storage.metadata(identity: sparseIdentity)
+        precondition(clearedMetadata?.launchId == nil)
+        precondition(clearedMetadata?.parentSessionId == nil)
     }
 
     static func testEditorFocusResponseContract() {

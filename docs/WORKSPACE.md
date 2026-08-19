@@ -130,8 +130,13 @@ Cove attaches an agent only when Codex provides an authoritative
 `parentThreadId` within the same local, Desktop, or selected remote origin. It
 never infers a parent from similar names, output, or timing.
 
-Each hierarchy row shows the agent's status and an exact **Open in Codex**
-button. Missing parents and cycles appear under **Unattached agents**.
+Each hierarchy row shows the agent's status. Select the row to inspect, start,
+or steer that exact agent; the owning task card remains highlighted and the
+full hierarchy stays available. **Open in Codex** first targets the exact
+selected agent. If it has no independent location, Cove reports that failure
+and may offer a separately labeled **Open Parent Location** action for a
+verified same-origin parent. Missing parents, conflicting parent claims, and
+cycles remain under **Unattached agents** rather than being guessed.
 
 ## Workspace details
 
@@ -150,10 +155,22 @@ each up to 64 UTF-8 bytes.
 
 Artifacts are parent-task context. The inspector lists every attached web link,
 local file, and folder with its real host or path plus **Open** and **Remove**.
+Edit a saved label in place; press Return or move focus to save, or Escape to
+restore the saved value. Drag rows or use **Move Earlier**/**Move Later** to
+change the single order shared by the parent and its agents. Reordering is
+undoable.
 Enter a short label and an absolute `http://` or `https://` URL, then choose
 **Add Link**, or choose **Add File or Folder…** for local plans such as an
 `EXECPLAN.md`. URLs with embedded user names or passwords, remote file URLs,
 packages, apps, scripts, executables, and special files are rejected.
+
+Saved web links attempt to display the host's HTTPS `/favicon.ico` in the
+inspector and card badges. Cove sends no cookies, credentials, saved path, query,
+or fragment, follows no redirects, and keeps successful icons only in bounded
+process memory. Missing, invalid, local/private-host, or oversized icons retain
+the generic link symbol. Suggestions never trigger a favicon request before you
+add them. Showing cards or the artifact inspector can therefore contact the
+hosts of links you explicitly saved.
 
 Suggestions are confirmation-only: Cove looks only at bounded live assistant
 output from the selected parent and its authoritative agents. It never scans a
@@ -198,12 +215,14 @@ Send is unavailable when:
 - the server does not support the required public operation; or
 - another send is already in progress.
 
-For a completed or idle local CLI task observed only through hooks, Cove first
-uses the public local Codex app-server to read that exact thread without turns,
-then resumes it without returning turn history. Only exact matching, idle state
-enables **Start Turn**. An active hook-only task remains unavailable because
-Cove will not guess its current turn identifier; open it in Codex or launch
-future CLI tasks with `codex-cove launch` for exact steering.
+For a local CLI task observed only through hooks, Cove first uses the public
+local Codex app-server to read that exact thread without resuming it. Spawned
+agents are accepted only when their bounded, non-cyclic parent chain ends at an
+exact CLI root. Cove also reads the bounded turn summary: idle/completed state
+enables **Start Turn**, while active state enables **Steer Active Turn** only
+with the exact current turn ID. Before delivery it repeats the same source and
+turn checks. Missing, conflicting, review/compact, or stale provenance remains
+unavailable.
 
 Cove rechecks the target, operation, route, turn ID, pending requests, and
 composer text at confirmation time. If anything changed, Send fails visibly.

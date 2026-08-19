@@ -49,6 +49,8 @@ Start with the guide that matches what you are trying to do.
   supervision, retained tasks, and parent-owned artifacts.
 - [Codex Cove 0.7.1 release notes](releases/v0.7.1.md) — prompting for
   completed and idle hook-observed local CLI tasks.
+- [Codex Cove 0.8.0 release notes](releases/v0.8.0.md) — editable and ordered
+  artifacts, privacy-bounded favicons, and exact nested-agent control.
 
 ## Version-specific engineering records
 

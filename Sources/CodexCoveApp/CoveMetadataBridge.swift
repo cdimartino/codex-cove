@@ -128,11 +128,18 @@ final class CoveMetadataBridge {
                 existing?.updatedAt ?? .distantPast,
                 pending?.updatedAt ?? .distantPast
             )
+            let launchID = eventIsCurrent && envelope.advertisesLaunchID
+                ? envelope.launchId
+                : envelope.launchId ?? existing?.launchId ?? pending?.launchId
+            let parentSessionID = eventIsCurrent
+                    && envelope.advertisesParentSessionID
+                ? envelope.parentSessionID()
+                : envelope.parentSessionID()
+                    ?? existing?.parentSessionId
+                    ?? pending?.parentSessionId
             let metadata = CoveSessionMetadata(
                 sessionId: sessionID,
-                launchId: envelope.launchId
-                    ?? existing?.launchId
-                    ?? pending?.launchId,
+                launchId: launchID,
                 turnId: eventIsCurrent
                     ? envelope.turnId ?? existing?.turnId ?? pending?.turnId
                     : existing?.turnId ?? envelope.turnId ?? pending?.turnId,
@@ -149,9 +156,7 @@ final class CoveMetadataBridge {
                 hostId: envelope.hostId
                     ?? existing?.hostId
                     ?? pending?.hostId,
-                parentSessionId: envelope.parentSessionID()
-                    ?? existing?.parentSessionId
-                    ?? pending?.parentSessionId,
+                parentSessionId: parentSessionID,
                 updatedAt: updatedAt,
                 startedAt: startedAt
             )

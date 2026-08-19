@@ -72,6 +72,7 @@ struct CoveOverlayRootView: View {
                     stateDirectory: fixtureStateDirectory,
                     decisionAttemptCount: store.fixtureRecordedDecisionCount,
                     jumpCount: store.fixtureRecordedJumpCount,
+                    threadControl: store.fixtureRecordedThreadControl,
                     queueSectionOrder: state.settings.queueSectionOrder,
                     textScale: state.settings.textScale
                 )
