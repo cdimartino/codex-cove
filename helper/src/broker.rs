@@ -1317,13 +1317,11 @@ fn accept_rpc_websocket(
 ) -> io::Result<WebSocket<UnixStream>> {
     stream.set_read_timeout(Some(handshake_timeout))?;
     stream.set_write_timeout(Some(handshake_timeout))?;
-    let config = WebSocketConfig {
-        write_buffer_size: 0,
-        max_write_buffer_size: max_bytes.saturating_mul(2).max(max_bytes.saturating_add(1)),
-        max_message_size: Some(max_bytes),
-        max_frame_size: Some(max_bytes),
-        ..WebSocketConfig::default()
-    };
+    let config = WebSocketConfig::default()
+        .write_buffer_size(0)
+        .max_write_buffer_size(max_bytes.saturating_mul(2).max(max_bytes.saturating_add(1)))
+        .max_message_size(Some(max_bytes))
+        .max_frame_size(Some(max_bytes));
     tungstenite::accept_hdr_with_config(
         stream,
         |request: &Request, response: Response| {
@@ -1373,12 +1371,12 @@ fn websocket_send_jsonl(
     }
     let text = String::from_utf8(line)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    websocket_send_message(websocket, Message::Text(text), "outbound")
+    websocket_send_message(websocket, Message::Text(text.into()), "outbound")
 }
 
 fn close_websocket_ignoring_closed(
     websocket: &mut WebSocket<UnixStream>,
-    frame: Option<tungstenite::protocol::CloseFrame<'static>>,
+    frame: Option<tungstenite::protocol::CloseFrame>,
 ) -> io::Result<()> {
     match websocket.close(frame) {
         Ok(()) => Ok(()),
@@ -2678,7 +2676,8 @@ mod tests {
         websocket
             .send(Message::Text(
                 r#"{"jsonrpc":"2.0","id":"bootstrap","method":"initialize","params":{}}"#
-                    .to_owned(),
+                    .to_owned()
+                    .into(),
             ))
             .unwrap();
 
@@ -2689,7 +2688,9 @@ mod tests {
 
         websocket
             .send(Message::Text(
-                r#"{"jsonrpc":"2.0","id":"7","result":{"answers":{"q":"native"}}}"#.to_owned(),
+                r#"{"jsonrpc":"2.0","id":"7","result":{"answers":{"q":"native"}}}"#
+                    .to_owned()
+                    .into(),
             ))
             .unwrap();
         let mut decision_client = UnixStream::connect(&decision).unwrap();
@@ -2746,6 +2747,54 @@ mod tests {
 
         let error = broker.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(!listen.exists());
+        assert!(!decision.exists());
+    }
+
+    #[test]
+    fn websocket_rejects_invalid_client_key_before_starting_app_server() {
+        let temp = short_tempdir();
+        let fake_codex = temp.path().join("fake-codex");
+        let marker = temp.path().join("started");
+        fs::write(
+            &fake_codex,
+            format!(
+                "#!/bin/sh\nprintf started > '{}'\nexec sleep 30\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_codex, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut config = Config::for_home(temp.path());
+        config.event_socket = temp.path().join("missing-events.sock");
+        config.runtime_directory = temp.path().join("run");
+        let listen = broker_socket(&config.runtime_directory, "launch-ws-invalid-key");
+        let decision = decision_socket(&config.runtime_directory, "launch-ws-invalid-key");
+        let broker_config = config.clone();
+        let broker_listen = listen.clone();
+        let broker = thread::spawn(move || {
+            run_broker(
+                &broker_listen,
+                "launch-ws-invalid-key",
+                &fake_codex,
+                &broker_config,
+                AppServerMode::DirectStdio,
+            )
+        });
+
+        assert!(wait_for_socket(&listen, Duration::from_secs(1)));
+        assert!(wait_for_socket(&decision, Duration::from_secs(1)));
+        let mut stream = UnixStream::connect(&listen).unwrap();
+        stream
+            .write_all(
+                b"GET /rpc HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: invalid\r\n\r\n",
+            )
+            .unwrap();
+
+        let error = broker.join().unwrap().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!marker.exists());
         assert!(!listen.exists());
         assert!(!decision.exists());
     }
@@ -2859,7 +2908,9 @@ mod tests {
         assert!(wait_for_socket(&decision, Duration::from_secs(1)));
         let stream = UnixStream::connect(&listen).unwrap();
         let (mut websocket, _) = tungstenite::client("ws://localhost/rpc", stream).unwrap();
-        websocket.send(Message::Text("x".repeat(128))).unwrap();
+        websocket
+            .send(Message::Text("x".repeat(128).into()))
+            .unwrap();
         let error = broker.join().unwrap().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(!listen.exists());
@@ -2902,7 +2953,8 @@ mod tests {
         websocket
             .send(Message::Text(
                 r#"{"jsonrpc":"2.0","id":"bootstrap","method":"initialize","params":{}}"#
-                    .to_owned(),
+                    .to_owned()
+                    .into(),
             ))
             .unwrap();
 
