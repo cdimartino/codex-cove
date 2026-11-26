@@ -17,6 +17,22 @@ concurrency:
 jobs:
   validate:
     name: Build, test, and package
+    # Fixed CI-only environments. Native fork approval happens before jobs
+    # start; the approver need not become the PR event's actor.
+    environment: &ci-environment
+      name: >-
+        ${{
+          ((github.run_attempt == '1' &&
+            (contains(fromJSON('["191587","6660202"]'), github.actor_id) ||
+             (github.event_name == 'pull_request' &&
+              github.event.pull_request.head.repo.fork == true &&
+              github.event.pull_request.head.repo.id != github.event.repository.id &&
+              contains(fromJSON('["NONE","CONTRIBUTOR","FIRST_TIME_CONTRIBUTOR","FIRST_TIMER"]'), github.event.pull_request.author_association)))) ||
+           (github.run_attempt != '1' &&
+            contains(fromJSON('["cdimartino","iovis"]'), github.triggering_actor)))
+          && 'ci-authorized' || 'ci-approval'
+        }}
+      deployment: false
     runs-on: macos-26
     timeout-minutes: 60
     env:
@@ -205,6 +221,7 @@ jobs:
 
   remote-helpers:
     name: Cross-build remote helpers
+    environment: *ci-environment
     runs-on: macos-26
     timeout-minutes: 45
     env:
