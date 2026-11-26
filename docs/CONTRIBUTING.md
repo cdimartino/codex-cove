@@ -28,6 +28,32 @@ modify hooks, shell links, editor extensions, login items, or remote hosts.
 Use installation targets only when the behavior under test requires those
 integrations and you are prepared to restore your local machine afterward.
 
+## Who can run CI
+
+Both required CI jobs use the same environment selection. Initial runs from
+the owner or designated CI writer go directly to `ci-authorized`. So do
+external contributors' fork PRs once GitHub admits the run under **Require
+approval for all external contributors**. Review the proposed workflow before
+using GitHub's **Approve workflows to run**. A rerun uses the initiating
+writer's login for this decision but retains the original ref, SHA and token
+privileges.
+
+Other runs, including same-repository Dependabot PRs, wait on `ci-approval`
+before either job gets a runner. In **Review deployments**, check the repository,
+run ID and PR head SHA you reviewed before approving that run; PR CI tests the
+event's merge commit, not a moving branch tip. A new head triggers a new run.
+Both checks retain their required names and must actually pass. CI creates no
+deployment records and receives no additional token permissions.
+
+Keep both CI environments free of secrets and variables. `ci-approval` must
+exist with only the two designated reviewers and admin bypass disabled;
+`ci-authorized` has no protection rules. GitHub creates missing environments
+without protections, so verify both settings before enabling these workflows
+or after changing access. The fork policy lets **any writer** approve a run:
+review that policy and release dispatch access before granting write access.
+Workflow YAML on an editable PR or branch is not an independent access
+boundary. CI approval grants no access to the `release` environment.
+
 ## Choose the right layer
 
 | Change | Primary location | Expected tests |
